@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* The whole app is a dark slate theme. Tell native form controls (select
+   dropdown popups, scrollbars, audio/video chrome) to render dark as well —
+   otherwise the dropdown list opens as white text on a white background and
+   is unreadable. */
+:root {
+  color-scheme: dark;
+}
+
+/* Belt-and-braces: pin the popup colors explicitly for browsers/OS themes
+   that render a light option list regardless of color-scheme. */
+select option {
+  background-color: #1e293b; /* slate-800 — matches the Select control */
+  color: #f1f5f9; /* slate-100 */
+}

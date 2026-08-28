@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<html lang="en">
+  <body>
+    <script>
+      // Keycloak silent check-sso helper: loaded in a hidden iframe by
+      // keycloak-js. When the auth response lands here, forward it to the
+      // parent window so it can complete the silent login check.
+      parent.postMessage(location.href, location.origin);
+    </script>
+  </body>
+</html>

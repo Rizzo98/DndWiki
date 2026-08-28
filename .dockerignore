@@ -1,0 +1,23 @@
+# Build-context hygiene. The compose build context is the repo root, so
+# per-app .dockerignore files never apply — exclude heavy/generated dirs here.
+# This also prevents local npm file: junctions (e.g. apps/web/node_modules/
+# @dnd-wiki/sdk on Windows) from being serialized into the image as broken
+# Linux symlinks.
+
+**/.git
+**/node_modules
+**/.next
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/*.egg-info
+**/.cache
+**/dist
+*.log
+rebuild-log.txt
+e2e-*.txt
+kc-token.txt
+**/pytest-cache-files-*
+**/.env
+**/.env.*

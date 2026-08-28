@@ -1,0 +1,9 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "paths": {
+      "@dnd-wiki/sdk": ["../../libs/typescript/dnd-sdk/src"]
+    }
+  }
+}

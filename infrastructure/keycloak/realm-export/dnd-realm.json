@@ -1,0 +1,53 @@
+{
+  "realm": "dnd",
+  "enabled": true,
+  "displayName": "DnD Wiki",
+  "sslRequired": "external",
+  "registrationAllowed": true,
+  "verifyEmail": false,
+  "loginWithEmailAllowed": true,
+  "roles": {
+    "realm": [
+      { "name": "dm", "description": "Dungeon Master — campaign admin" },
+      { "name": "player", "description": "Player — read-only viewer" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "dnd-web",
+      "name": "DnD Wiki Web",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": ["http://localhost:3000/*", "http://dnd.localhost/*"],
+      "webOrigins": ["http://localhost:3000", "http://dnd.localhost"],
+      "defaultClientScopes": ["web-origins", "acr", "roles", "profile", "email"],
+      "optionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt"]
+    },
+    {
+      "clientId": "dnd-mobile",
+      "name": "DnD Wiki Mobile",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": ["dndwiki://callback"],
+      "defaultClientScopes": ["web-origins", "acr", "roles", "profile", "email"],
+      "optionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt"]
+    },
+    {
+      "clientId": "dnd-services",
+      "name": "DnD Wiki internal services",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "serviceAccountsEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "standardFlowEnabled": false,
+      "secret": "change-me"
+    }
+  ]
+}

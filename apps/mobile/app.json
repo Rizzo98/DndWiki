@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "name": "DnD Wiki Recorder",
+    "slug": "dnd-wiki-mobile",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "dndwiki",
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "DnD Wiki records your D&D sessions so the platform can transcribe them into your campaign wiki."
+      }
+    },
+    "android": {
+      "permissions": ["RECORD_AUDIO", "INTERNET"]
+    }
+  }
+}

@@ -1,0 +1,55 @@
+# ============================================================================
+# DnD Wiki — API transcription variant (OpenAI Speech-to-Text).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.api.yml up -d --build
+#
+# Replaces the on-prem WhisperX transcription worker (ASR + pyannote
+# diarization + wav2vec2 alignment, multi-GB local models, GPU recommended)
+# with a thin HTTP worker that calls OpenAI /audio/transcriptions using the
+# gpt-4o-transcribe-diarize model (cloud ASR + speaker diarization in one
+# request). No local ML models, no GPU, no model downloads.
+#
+# Speaker identification is NOT touched: speaker-service still matches the
+# diarized labels against the campaign voiceprints in Qdrant (ECAPA-TDNN
+# embeddings), so the voiceprint naming system is fully preserved.
+#
+# Requirements:
+#   - OPENAI_API_KEY in .env (placeholder below) with access to
+#     gpt-4o-transcribe-diarize.
+#   - Internet egress from the transcription worker to api.openai.com.
+#
+# The base docker-compose.yml (WhisperX on-prem) is left untouched; the GPU
+# override (docker-compose.gpu.yml) and this API override are mutually
+# exclusive — use one or the other.
+#
+# NOTE: environment maps are merged per-key, so this override only adds the
+# OpenAI settings; the base WhisperX env vars are ignored by this worker
+# (pydantic-settings extra="ignore"). The base models_cache volume mount is
+# harmless (the API image never reads it).
+# To execute this override: docker compose -f docker-compose.yml -f docker-compose.api.yml up -d --build
+# ============================================================================
+
+services:
+  transcription-service:
+    build:
+      context: .
+      dockerfile: services/transcription-openai-service/Dockerfile
+    environment:
+      SERVICE_NAME: transcription-service
+      SERVICE_DB_NAME: dnd_sessions
+      SESSION_SERVICE_URL: http://session-service:8000
+      # --- OpenAI Speech-to-Text (placeholders — fill .env before use) ---
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-placeholder-change-me}
+      OPENAI_TRANSCRIPTION_MODEL: ${OPENAI_TRANSCRIPTION_MODEL:-gpt-4o-transcribe-diarize}
+      OPENAI_RESPONSE_FORMAT: ${OPENAI_RESPONSE_FORMAT:-diarized_json}
+      OPENAI_CHUNKING_STRATEGY: ${OPENAI_CHUNKING_STRATEGY:-auto}
+      OPENAI_TRANSCRIPTION_LANGUAGE: ${OPENAI_TRANSCRIPTION_LANGUAGE:-}
+      # Long recordings are decoded locally (ffmpeg) and sliced into
+      # fixed-length chunks: OpenAI caps each upload at 25 MB. 300 s of
+      # 16 kHz mono PCM WAV is ~9.2 MiB.
+      OPENAI_CHUNK_SECONDS: ${OPENAI_CHUNK_SECONDS:-300}
+      # Safety cap per uploaded WAV chunk (keep < 25 MB, OpenAI's hard limit).
+      OPENAI_MAX_UPLOAD_MB: ${OPENAI_MAX_UPLOAD_MB:-24}
+      OPENAI_API_BASE: ${OPENAI_API_BASE:-https://api.openai.com/v1}
+      OPENAI_REQUEST_TIMEOUT_SEC: ${OPENAI_REQUEST_TIMEOUT_SEC:-900}
+      OPENAI_MAX_RETRIES: ${OPENAI_MAX_RETRIES:-3}

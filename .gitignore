@@ -1,0 +1,54 @@
+# --- Environment / secrets (never commit) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+
+# --- Local dev tokens / e2e artifacts (never commit) ---
+e2e-*.txt
+kc-token.txt
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+pytest-cache-files-*/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+test_out*.txt
+
+# --- Node / frontends ---
+node_modules/
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+.expo/
+apps/mobile/.expo/
+
+# --- Models / local data (never commit) ---
+ml/models/
+models/
+data/
+
+# --- IDE / OS ---
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# --- Logs ---
+*.log
+logs/
+rebuild-log.txt

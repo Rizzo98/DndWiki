@@ -1,0 +1,605 @@
+# ============================================================================
+# DnD Wiki — local development stack
+#
+#   Start:              docker compose up -d --build
+#   With GPU (transcr): docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#   Monitoring:         docker compose --profile monitoring up -d
+# ============================================================================
+
+name: dnd-wiki
+
+# --- Shared environment injected into every application service ------------
+x-common-env: &common-env
+  ENVIRONMENT: ${ENVIRONMENT:-development}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: ${POSTGRES_USER:-dnd}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dnd}
+  REDIS_URL: redis://redis:6379/0
+  RABBITMQ_URL: amqp://${RABBITMQ_USER:-dnd}:${RABBITMQ_PASSWORD:-dnd}@rabbitmq:5672/%2f
+  MINIO_ENDPOINT: minio:9000
+  MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-dndminio}
+  MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-dndminio123}
+  MINIO_SECURE: "false"
+  QDRANT_URL: http://qdrant:6333
+  MEILI_URL: http://meilisearch:7700
+  MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-dndsearchkey}
+  KEYCLOAK_URL: http://keycloak:8080
+  KEYCLOAK_REALM: ${KEYCLOAK_REALM:-dnd}
+  KEYCLOAK_SERVICE_CLIENT_ID: dnd-services
+  KEYCLOAK_SERVICE_CLIENT_SECRET: ${KEYCLOAK_SERVICE_CLIENT_SECRET:-change-me}
+  SERVICE_PORT: "8000"
+
+services:
+  # ---------------------------------------------------------------- gateway
+  gateway:
+    # v3.1's bundled Docker client is incompatible with Docker Engine 29+
+    # (empty "Error response from daemon:" -> no routers registered). v3.6+ works.
+    image: traefik:v3.6
+    command:
+      - --api.insecure=true
+      - --api.dashboard=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.traefik.address=:8090
+    ports:
+      - "80:80"       # API + web edge
+      - "8090:8090"   # Traefik dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.dashboard.rule=Host(`traefik.dnd.localhost`)
+      - traefik.http.routers.dashboard.service=api@internal
+      - traefik.http.routers.dashboard.entrypoints=traefik
+    networks: [dnd-net]
+
+  # ----------------------------------------------------------------- keycloak
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/dnd_keycloak
+      KC_DB_USERNAME: ${POSTGRES_USER:-dnd}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:-dnd}
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_HTTP_PORT: "8080"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./infrastructure/keycloak/realm-export:/opt/keycloak/data/import:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+    networks: [dnd-net]
+
+  # ---------------------------------------------------------------- postgres
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dnd}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dnd}
+      POSTGRES_DB: ${POSTGRES_DB:-dnd}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      # Creates one database per service (database-per-service pattern)
+      - ./infrastructure/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dnd} -d ${POSTGRES_DB:-dnd}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [dnd-net]
+
+  # ------------------------------------------------------------------- redis
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [dnd-net]
+
+  # ---------------------------------------------------------------- rabbitmq
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-dnd}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-dnd}
+    ports:
+      - "5672:5672"     # AMQP
+      - "15672:15672"   # Management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      # Reference topology (exchanges/queues are also declared idempotently
+      # by dnd_common at service startup, so this file is documentation-grade)
+      - ./infrastructure/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+    networks: [dnd-net]
+
+  # ------------------------------------------------------------------- minio
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-dndminio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-dndminio123}
+    ports:
+      - "9000:9000"     # S3 API
+      # Console on 19001: Zscaler Client Connector (ZSATunnel) already
+      # occupies host port 9001 (127.0.0.1:9001 / [::]:9001).
+      - "19001:9001"    # Console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks: [dnd-net]
+
+  # One-shot job: create buckets (recordings, transcripts, wiki-assets)
+  minio-init:
+    image: minio/mc:latest
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"; do sleep 2; done
+        mc mb -p local/recordings local/transcripts local/wiki-assets local/voice-samples
+        mc anonymous set download local/wiki-assets || true
+        echo "MinIO buckets ready"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-dndminio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-dndminio123}
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+    networks: [dnd-net]
+
+  # ------------------------------------------------------------------ qdrant
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"     # REST/gRPC
+      - "6334:6334"     # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks: [dnd-net]
+
+  # ------------------------------------------------------------- meilisearch
+  meilisearch:
+    image: getmeili/meilisearch:v1.8
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-dndsearchkey}
+      MEILI_ENV: development
+    ports:
+      - "7700:7700"
+    volumes:
+      - meili_data:/meili_data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks: [dnd-net]
+
+  # ------------------------------------------------------------ user-service
+  user-service:
+    build:
+      context: .
+      dockerfile: services/user-service/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_NAME: user-service
+      SERVICE_DB_NAME: dnd_users
+      CAMPAIGN_SERVICE_URL: http://campaign-service:8000
+      VOICE_EMBEDDING_MODEL: ${VOICE_EMBEDDING_MODEL:-speechbrain/spkrec-ecapa-voxceleb}
+      HF_TOKEN: ${HF_TOKEN:-}
+    ports:
+      - "8001:8000"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.user.rule=(Host(`api.dnd.localhost`) || Host(`gateway`)) && (PathPrefix(`/api/users`) || PathPrefix(`/api/voice`))
+      - traefik.http.routers.user.entrypoints=web
+      - traefik.http.services.user.loadbalancer.server.port=8000
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      keycloak: { condition: service_healthy }
+      qdrant: { condition: service_healthy }
+      minio-init: { condition: service_completed_successfully }
+    networks: [dnd-net]
+
+  # -------------------------------------------------------- campaign-service
+  campaign-service:
+    build:
+      context: .
+      dockerfile: services/campaign-service/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_NAME: campaign-service
+      SERVICE_DB_NAME: dnd_campaigns
+    ports:
+      - "8002:8000"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.campaign.rule=(Host(`api.dnd.localhost`) || Host(`gateway`)) && PathPrefix(`/api/campaigns`)
+      - traefik.http.routers.campaign.entrypoints=web
+      - traefik.http.services.campaign.loadbalancer.server.port=8000
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      keycloak: { condition: service_healthy }
+    networks: [dnd-net]
+
+  # --------------------------------------------------------- session-service
+  session-service:
+    build:
+      context: .
+      dockerfile: services/session-service/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_NAME: session-service
+      SERVICE_DB_NAME: dnd_sessions
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-512}
+      CAMPAIGN_SERVICE_URL: http://campaign-service:8000
+    ports:
+      - "8003:8000"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.session.rule=(Host(`api.dnd.localhost`) || Host(`gateway`)) && PathPrefix(`/api/sessions`)
+      - traefik.http.routers.session.entrypoints=web
+      - traefik.http.services.session.loadbalancer.server.port=8000
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      minio-init: { condition: service_completed_successfully }
+      keycloak: { condition: service_healthy }
+    networks: [dnd-net]
+
+  # ---------------------------------------------------- transcription-service
+  # Runs WhisperX. CPU-only by default; use docker-compose.gpu.yml for GPU.
+  transcription-service:
+    build:
+      context: .
+      dockerfile: services/transcription-service/Dockerfile
+      args:
+        BASE_IMAGE: ${TRANSCRIPTION_BASE_IMAGE:-python:3.12-slim}
+    environment:
+      <<: *common-env
+      SERVICE_NAME: transcription-service
+      SERVICE_DB_NAME: dnd_sessions
+      SESSION_SERVICE_URL: http://session-service:8000
+      HF_TOKEN: ${HF_TOKEN:-}
+      WHISPER_MODEL: ${WHISPER_MODEL:-small}
+      DIARIZATION_MODEL: ${DIARIZATION_MODEL:-pyannote/speaker-diarization-3.1}
+      WHISPER_BATCH_SIZE: ${WHISPER_BATCH_SIZE:-8}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-float16}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-}
+      # Long recordings are processed in fixed-length chunks; partial results
+      # are published as transcription.progress after every chunk
+      WHISPER_CHUNK_SECONDS: ${WHISPER_CHUNK_SECONDS:-300}
+      # Comma-separated languages whose wav2vec2 alignment checkpoints are
+      # pre-downloaded at container start (torch.hub cache, on models_cache)
+      PREWARM_LANGUAGES: ${PREWARM_LANGUAGES:-}
+      # torch.hub cache lives on the models volume so alignment checkpoints
+      # survive container recreates
+      TORCH_HOME: /app/models/torch
+      # HF's Xet CDN is flaky on some networks; classic HTTP is more reliable
+      HF_HUB_DISABLE_XET: "1"
+    ports:
+      - "8004:8000"
+    volumes:
+      - models_cache:/app/models
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.transcription.rule=(Host(`api.dnd.localhost`) || Host(`gateway`)) && PathPrefix(`/api/transcription`)
+      - traefik.http.routers.transcription.entrypoints=web
+      - traefik.http.services.transcription.loadbalancer.server.port=8000
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+      minio-init: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
+      keycloak: { condition: service_healthy }
+      session-service: { condition: service_started }
+    networks: [dnd-net]
+
+  # ---------------------------------------------------------- speaker-service
+  speaker-service:
+    build:
+      context: .
+      dockerfile: services/speaker-service/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_NAME: speaker-service
+      SERVICE_DB_NAME: dnd_sessions
+      SESSION_SERVICE_URL: http://session-service:8000
+      VOICE_EMBEDDING_MODEL: ${VOICE_EMBEDDING_MODEL:-speechbrain/spkrec-ecapa-voxceleb}
+      SPEAKER_MATCH_THRESHOLD: ${SPEAKER_MATCH_THRESHOLD:-0.75}
+      # Re-cluster raw diarizer labels before matching (override per-chunk labels)
+      RELABEL_ENABLED: ${RELABEL_ENABLED:-true}
+      RELABEL_MODE: ${RELABEL_MODE:-threshold}
+      RELABEL_MERGE_THRESHOLD: ${RELABEL_MERGE_THRESHOLD:-0.5}
+      RELABEL_ANCHOR_THRESHOLD: ${RELABEL_ANCHOR_THRESHOLD:-0.6}
+      RELABEL_MIN_TURN_SEC: ${RELABEL_MIN_TURN_SEC:-1.0}
+      RELABEL_SPEAKER_COUNT: ${RELABEL_SPEAKER_COUNT:-0}
+      # When true, transcription.completed is left to refiner-service (LLM
+      # contextual pass); speaker-service identifies from transcription.refined
+      REFINER_ENABLED: ${REFINER_ENABLED:-true}
+      HF_TOKEN: ${HF_TOKEN:-}
+      # HF's Xet CDN is flaky on some networks; classic HTTP is more reliable
+      HF_HUB_DISABLE_XET: "1"
+    ports:
+      - "8005:8000"
+    volumes:
+      - models_cache:/app/models
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.speaker.rule=(Host(`api.dnd.localhost`) || Host(`gateway`)) && PathPrefix(`/api/speakers`)
+      - traefik.http.routers.speaker.entrypoints=web
+      - traefik.http.services.speaker.loadbalancer.server.port=8000
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+      qdrant: { condition: service_healthy }
+      minio-init: { condition: service_completed_successfully }
+      session-service: { condition: service_started }
+    networks: [dnd-net]
+
+  # ---------------------------------------------------------- content-service
+  content-service:
+    build:
+      context: .
+      dockerfile: services/content-service/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_NAME: content-service
+      SERVICE_DB_NAME: dnd_content
+      LLM_PROVIDER: ${LLM_PROVIDER:-deepseek}
+      LLM_MODEL: ${LLM_MODEL:-deepseek/deepseek-chat}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.2}
+      LLM_CHUNK_CONCURRENCY: ${LLM_CHUNK_CONCURRENCY:-4}
+      LLM_JSON_RETRIES: ${LLM_JSON_RETRIES:-1}
+      PROMPT_VERSION: ${PROMPT_VERSION:-v1}
+      CHUNK_TOKENS: ${CHUNK_TOKENS:-4000}
+      CHUNK_OVERLAP: ${CHUNK_OVERLAP:-0.1}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
+      WIKI_SERVICE_URL: http://wiki-service:8000
+      SESSION_SERVICE_URL: http://session-service:8000
+      USER_SERVICE_URL: http://user-service:8000
+    ports:
+      - "8006:8000"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.content.rule=(Host(`api.dnd.localhost`) || Host(`gateway`)) && PathPrefix(`/api/content`)
+      - traefik.http.routers.content.entrypoints=web
+      - traefik.http.services.content.loadbalancer.server.port=8000
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      wiki-service: { condition: service_started }
+      minio-init: { condition: service_completed_successfully }
+    networks: [dnd-net]
+
+  # ------------------------------------------------------------ refiner-service
+  # LLM contextual diarization: consumes transcription.completed, fixes
+  # transcription errors + speaker attribution with an LLM (turn-level,
+  # preserving timings), rewrites the artifacts and emits transcription.refined
+  # for speaker-service to match voiceprints. REFINER_ENABLED=false turns it
+  # into a no-op pass-through (speaker-service then identifies directly from
+  # transcription.completed, as before the refiner existed).
+  refiner-service:
+    build:
+      context: .
+      dockerfile: services/refiner-service/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_NAME: refiner-service
+      SERVICE_DB_NAME: dnd_sessions
+      REFINER_ENABLED: ${REFINER_ENABLED:-true}
+      # LLM (same provider config as content-service; one .env drives both)
+      LLM_PROVIDER: ${LLM_PROVIDER:-deepseek}
+      LLM_MODEL: ${LLM_MODEL:-deepseek/deepseek-chat}
+      # Optional per-stage model override (empty = use LLM_MODEL)
+      REFINER_MODEL: ${REFINER_MODEL:-}
+      # Editing should be deterministic; keep near 0.
+      REFINER_TEMPERATURE: ${REFINER_TEMPERATURE:-0.0}
+      REFINER_MAX_TOKENS: ${REFINER_MAX_TOKENS:-4096}
+      REFINER_JSON_RETRIES: ${REFINER_JSON_RETRIES:-1}
+      REFINER_PROMPT_VERSION: ${REFINER_PROMPT_VERSION:-v1}
+      # Turns per LLM call + overlap used to carry labels across windows
+      REFINER_WINDOW_TURNS: ${REFINER_WINDOW_TURNS:-100}
+      REFINER_WINDOW_OVERLAP: ${REFINER_WINDOW_OVERLAP:-15}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
+      SESSION_SERVICE_URL: http://session-service:8000
+    ports:
+      - "8010:8000"
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+      minio-init: { condition: service_completed_successfully }
+      session-service: { condition: service_started }
+    networks: [dnd-net]
+
+  # ------------------------------------------------------------ wiki-service
+  wiki-service:
+    build:
+      context: .
+      dockerfile: services/wiki-service/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_NAME: wiki-service
+      SERVICE_DB_NAME: dnd_wiki
+      CAMPAIGN_SERVICE_URL: http://campaign-service:8000
+    ports:
+      - "8007:8000"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.wiki.rule=(Host(`api.dnd.localhost`) || Host(`gateway`)) && PathPrefix(`/api/wiki`)
+      - traefik.http.routers.wiki.entrypoints=web
+      - traefik.http.services.wiki.loadbalancer.server.port=8000
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      keycloak: { condition: service_healthy }
+    networks: [dnd-net]
+
+  # ---------------------------------------------------------- search-service
+  search-service:
+    build:
+      context: .
+      dockerfile: services/search-service/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_NAME: search-service
+    ports:
+      - "8008:8000"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.search.rule=(Host(`api.dnd.localhost`) || Host(`gateway`)) && PathPrefix(`/api/search`)
+      - traefik.http.routers.search.entrypoints=web
+      - traefik.http.services.search.loadbalancer.server.port=8000
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+      meilisearch: { condition: service_healthy }
+    networks: [dnd-net]
+
+  # ------------------------------------------------------ notification-service
+  notification-service:
+    build:
+      context: .
+      dockerfile: services/notification-service/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_NAME: notification-service
+    ports:
+      - "8009:8000"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.notification.rule=(Host(`api.dnd.localhost`) || Host(`gateway`)) && PathPrefix(`/api/notifications`)
+      - traefik.http.routers.notification.entrypoints=web
+      - traefik.http.services.notification.loadbalancer.server.port=8000
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    networks: [dnd-net]
+
+  # --------------------------------------------------------------------- web
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://api.dnd.localhost
+      # BFF proxy target: inside the alpine (musl) web container *.localhost resolves to
+      # the container's own loopback (RFC 6761), so the server-side proxy reaches Traefik
+      # by compose service name instead. Traefik accepts Host(`gateway`).
+      API_GATEWAY_URL: http://gateway
+      NEXT_PUBLIC_KEYCLOAK_URL: http://localhost:8080
+      NEXT_PUBLIC_KEYCLOAK_REALM: ${KEYCLOAK_REALM:-dnd}
+      NEXT_PUBLIC_KEYCLOAK_CLIENT_ID: dnd-web
+    ports:
+      - "3000:3000"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.web.rule=(Host(`dnd.localhost`) || Host(`gateway`))
+      - traefik.http.routers.web.entrypoints=web
+      - traefik.http.services.web.loadbalancer.server.port=3000
+    depends_on:
+      - gateway
+    networks: [dnd-net]
+
+  # -------------------------------------------------------------- monitoring
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    profiles: ["monitoring"]
+    volumes:
+      - ./infrastructure/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks: [dnd-net]
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    profiles: ["monitoring"]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infrastructure/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    networks: [dnd-net]
+
+  loki:
+    image: grafana/loki:3.1.0
+    profiles: ["monitoring"]
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./infrastructure/monitoring/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+    networks: [dnd-net]
+
+  tempo:
+    image: grafana/tempo:2.5.0
+    profiles: ["monitoring"]
+    command: -config.file=/etc/tempo/tempo-config.yml
+    volumes:
+      - ./infrastructure/monitoring/tempo/tempo-config.yml:/etc/tempo/tempo-config.yml:ro
+      - tempo_data:/tmp/tempo
+    ports:
+      - "3200:3200"
+    networks: [dnd-net]
+
+networks:
+  dnd-net:
+    driver: bridge
+
+volumes:
+  pg_data:
+  rabbitmq_data:
+  minio_data:
+  qdrant_data:
+  meili_data:
+  models_cache:
+  prom_data:
+  grafana_data:
+  loki_data:
+  tempo_data:

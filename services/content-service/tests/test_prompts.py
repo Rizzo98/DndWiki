@@ -1,0 +1,203 @@
+"""Tests for the versioned prompt + extraction schema."""
+
+import json
+
+from app.prompts import (
+    EXTRACTION_SCHEMA,
+    PROMPT_VERSION,
+    SYSTEM_PROMPT,
+    build_chunk_message,
+)
+
+
+def test_prompt_version_is_v10():
+    assert PROMPT_VERSION == "v10"
+
+
+def test_schema_requires_all_categories():
+    required = set(EXTRACTION_SCHEMA["required"])
+    assert {
+        "language",
+        "session_summary",
+        "characters",
+        "locations",
+        "events",
+        "timeline_entries",
+    } <= required
+
+
+def test_entities_carry_both_fact_kinds():
+    for kind in ("characters", "locations"):
+        properties = EXTRACTION_SCHEMA["properties"][kind]["items"]["properties"]
+        assert "facts" in properties
+        assert "session_facts" in properties
+
+
+def test_characters_carry_party_hint():
+    # player vs NPC: the model flags party members; the merger also matches
+    # against the campaign's member character names deterministically
+    properties = EXTRACTION_SCHEMA["properties"]["characters"]["items"]["properties"]
+    assert "is_party" in properties
+
+
+def test_characters_carry_static_info_and_relationships():
+    # v5: the page's static info table is auto-filled from the session, and
+    # durable relationships map to wiki relations (membership/alliance/lead)
+    properties = EXTRACTION_SCHEMA["properties"]["characters"]["items"]["properties"]
+    for field in ("race", "class", "gender", "height", "weight", "age"):
+        assert field in properties
+    assert "relationships" in properties
+    rel_types = properties["relationships"]["properties"]
+    assert {"member_of", "allied_with", "led_by", "owner"} <= set(rel_types)
+
+
+def test_system_prompt_keeps_relationships_persistent():
+    # a relationship must be a tie that survives the session - never an event
+    assert "PERSISTENT" in SYSTEM_PROMPT
+    assert "session_facts" in SYSTEM_PROMPT
+    assert "relationship" in SYSTEM_PROMPT.lower()
+
+
+def test_locations_carry_geospatial_hints():
+    properties = EXTRACTION_SCHEMA["properties"]["locations"]["items"]["properties"]
+    assert "place_type" in properties
+    assert "part_of" in properties
+
+
+def test_locations_carry_type_specific_detail_fields():
+    # v8: the location page renders structured sections from these fields —
+    # settlements (population/government/...), regions (capital/terrain/...),
+    # worlds (pantheon/planes), buildings (owner/purpose), dungeons
+    # (entrance/levels/hazards), wilderness (terrain/climate/hazards/...)
+    properties = EXTRACTION_SCHEMA["properties"]["locations"]["items"]["properties"]
+    for field in (
+        "history", "founded", "population", "government", "ruler",
+        "demographics", "economy", "defenses", "religion", "districts",
+        "notable_locations", "capital", "terrain", "climate", "pantheon",
+        "planes", "owner", "purpose", "entrance", "levels", "hazards",
+        "flora_fauna",
+    ):
+        assert field in properties, field
+
+
+def test_system_prompt_scopes_location_detail_fields():
+    # detail fields must be filled only when the chunk states them; facts
+    # that fit a field go there, not into 'facts'
+    assert "population" in SYSTEM_PROMPT
+    assert "never guess" in SYSTEM_PROMPT
+    assert "history" in SYSTEM_PROMPT
+
+
+def test_events_carry_date_and_type():
+    # v9: world events become wiki pages + timeline entries; they carry the
+    # campaign date when stated and a coarse event type
+    properties = EXTRACTION_SCHEMA["properties"]["events"]["items"]["properties"]
+    assert "in_world_date" in properties
+    assert "event_type" in properties
+
+
+def test_system_prompt_limits_events_to_world_significant():
+    # the timeline must stay meaningful: routine session activity is excluded
+    assert "WORLD-SIGNIFICANT" in SYSTEM_PROMPT
+    assert "When in doubt" in SYSTEM_PROMPT
+    assert "timeline" in SYSTEM_PROMPT.lower()
+    # concrete exclusion examples for the model
+    assert "shopping" in SYSTEM_PROMPT
+    assert "travel" in SYSTEM_PROMPT
+    # included kinds spelled out
+    assert "sieges" in SYSTEM_PROMPT
+    assert "betrayals" in SYSTEM_PROMPT
+
+
+def test_schema_is_serializable_and_valid_json():
+    # the system prompt embeds the schema as JSON; it must round-trip
+    payload = json.loads(json.dumps(EXTRACTION_SCHEMA))
+    assert payload["type"] == "object"
+
+
+def test_system_prompt_contains_schema():
+    assert "session_summary" in SYSTEM_PROMPT
+    assert "timeline_entries" in SYSTEM_PROMPT
+
+
+def test_system_prompt_asks_for_transcript_language():
+    # language consistency: output in the players' language, keep names as-is
+    assert "language" in SYSTEM_PROMPT
+    assert "Never translate proper names" in SYSTEM_PROMPT
+    assert "same" in SYSTEM_PROMPT  # 'that same language'
+
+
+def test_system_prompt_rejects_generic_entity_names():
+    # proper-name rule with concrete English + Italian examples
+    assert "PROPER NAME" in SYSTEM_PROMPT
+    assert "città" in SYSTEM_PROMPT.lower()
+    assert "the inn" in SYSTEM_PROMPT
+
+
+def test_system_prompt_explains_facts_vs_session_facts():
+    assert "DURABLE" in SYSTEM_PROMPT
+    assert "ONE-SHOT" in SYSTEM_PROMPT
+    assert "session_facts" in SYSTEM_PROMPT
+
+
+def test_system_prompt_explains_player_characters():
+    # wiki convention: players appear under their CHARACTER name only
+    assert "Party (player characters)" in SYSTEM_PROMPT
+    assert "character name" in SYSTEM_PROMPT.lower()
+
+
+def test_build_chunk_message_has_context():
+    message = build_chunk_message("[00:00:00] Aragorn: hi", 0, 3)
+    assert "chunk 1 of 3" in message
+    assert "Aragorn: hi" in message
+
+
+def test_build_chunk_message_lists_out_of_world_speakers():
+    message = build_chunk_message("[00:00:00] Aragorn: hi", 0, 3, out_of_world=["Dungeon Master"])
+    assert "Out-of-world speakers" in message
+    assert "Dungeon Master" in message
+    assert "never characters" in message
+    # no out_of_world -> no narrator note
+    assert "Out-of-world" not in build_chunk_message("view", 0, 1)
+
+
+def test_system_prompt_is_cross_session():
+    # the wiki must read like a standalone, cross-session entry: no chunk /
+    # session / fragment references, no filler, no dangling references
+    assert "CROSS-SESSION" in SYSTEM_PROMPT
+    assert "in questo frammento" in SYSTEM_PROMPT
+    assert "fragment" in SYSTEM_PROMPT.lower()
+
+
+def test_system_prompt_excludes_the_narrator():
+    # the DM narrates the world but is not part of it -> never a character
+    assert "Dungeon Master" in SYSTEM_PROMPT
+    assert "never" in SYSTEM_PROMPT.lower()
+
+
+def test_system_prompt_personality_is_durable():
+    # personality must be durable traits, never a scene reaction
+    assert "DURABLE" in SYSTEM_PROMPT
+    assert "creatura" in SYSTEM_PROMPT.lower()
+
+
+def test_system_prompt_ownership_relations():
+    # ownership is a durable relationship: "È il proprietario della Locanda
+    # del Fumo Aspro" -> owner ["Locanda del Fumo Aspro"]
+    assert "owner" in SYSTEM_PROMPT
+    assert "Locanda del Fumo Aspro" in SYSTEM_PROMPT
+
+
+def test_system_prompt_cross_references_are_linkable():
+    # named entities must be referenced by their exact proper name so the
+    # renderer can turn them into links
+    assert "linkable" in SYSTEM_PROMPT.lower()
+    assert "proper name" in SYSTEM_PROMPT.lower()
+
+
+def test_system_prompt_requires_unique_location_names():
+    # generic nouns alone ("Ospedale", "Strada Maestra") must be composed
+    # with their named anchor or dropped
+    assert "Ospedale di Fatumastra" in SYSTEM_PROMPT
+    assert "Strada Maestra" in SYSTEM_PROMPT
+    assert "PROPER" in SYSTEM_PROMPT
