@@ -127,10 +127,19 @@ and `chunk` are unchanged), and the artifacts at `transcript_uri` /
       {"start": 0.0, "end": 4.2, "chunk": 0, "speaker": "SPEAKER_00", "text": "Welcome back, heroes."}
     ],
     "refined": true,
-    "refiner": {"provider": "deepseek", "model": "deepseek/deepseek-chat", "prompt_version": "v1"}
+    "refiner": {
+      "provider": "deepseek",
+      "model": "deepseek/deepseek-chat",
+      "prompt_version": "v2",
+      "cast": {"injected": true, "members": 4, "with_description": 3}
+    }
   }
 }
 ```
+
+> The `refiner.cast` object records how much campaign context (character names
+> + physical descriptions, fetched from campaign-service) was injected into
+> the LLM prompt; `injected` is false when no cast was available.
 
 > speaker-service binds both `transcription.completed` and
 > `transcription.refined` on `speakers.identify`; when `REFINER_ENABLED` is

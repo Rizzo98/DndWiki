@@ -169,7 +169,7 @@ class TimelineEventCreate(BaseModel):
 
     campaign_id: UUID
     page_id: UUID | None = None
-    in_world_date: str | None = Field(default=None, max_length=64)
+    in_world_date: str | None = Field(default=None, max_length=256)
     summary: str = Field(min_length=1, max_length=2000)
     source_session_id: UUID | None = None
     approved: bool = True
@@ -179,7 +179,7 @@ class TimelineEventUpdate(BaseModel):
     """Payload for PATCH /api/wiki/timeline/{id} (DM edits/approves)."""
 
     page_id: UUID | None = None
-    in_world_date: str | None = Field(default=None, max_length=64)
+    in_world_date: str | None = Field(default=None, max_length=256)
     summary: str | None = Field(default=None, min_length=1, max_length=2000)
     approved: bool | None = None
 
@@ -216,7 +216,7 @@ class TimelineUpsert(BaseModel):
 
     campaign_id: UUID
     page_id: UUID
-    in_world_date: str | None = Field(default=None, max_length=64)
+    in_world_date: str | None = Field(default=None, max_length=256)
     summary: str = Field(min_length=1, max_length=2000)
     source_session_id: UUID | None = None
 

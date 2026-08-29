@@ -36,6 +36,7 @@ import aio_pika
 from dnd_common.events import Event, connect_rabbitmq, consume, publish
 from dnd_common.transcript import speaker_turns
 
+from app.clients.campaign_service import CampaignServiceClient
 from app.clients.session_service import (
     STATUS_FAILED,
     STATUS_REFINED,
@@ -47,6 +48,7 @@ from app.core.config import ServiceSettings, get_settings
 from app.llm import RefinerLLM
 from app.refine import (
     apply_refined,
+    build_cast_block,
     build_context_blocks,
     canonicalize,
     rewrite_transcript,
@@ -60,6 +62,7 @@ logger = logging.getLogger(__name__)
 _settings: ServiceSettings | None = None
 _storage: ObjectStorage | None = None
 _client: SessionServiceClient | None = None
+_campaign_client: CampaignServiceClient | None = None
 _llm: RefinerLLM | None = None
 
 
@@ -84,6 +87,13 @@ def get_client(settings: ServiceSettings) -> SessionServiceClient:
     return _client
 
 
+def get_campaign_client(settings: ServiceSettings) -> CampaignServiceClient:
+    global _campaign_client
+    if _campaign_client is None:
+        _campaign_client = CampaignServiceClient(settings)
+    return _campaign_client
+
+
 def get_llm(settings: ServiceSettings) -> RefinerLLM:
     global _llm
     if _llm is None:
@@ -98,6 +108,7 @@ async def process_job(
     client: SessionServiceClient,
     llm: RefinerLLM,
     publisher: Callable[[Event], Awaitable[None]],
+    campaign_client: CampaignServiceClient | None = None,
 ) -> None:
     """Refine one session's transcript end-to-end; raises on failure."""
     payload = event.payload
@@ -145,6 +156,29 @@ async def process_job(
             settings.effective_model,
         )
 
+        # The campaign cast (character names + physical descriptions) gives
+        # the LLM the context to correct misheard names and attribute speech
+        # to the right person. Best-effort: a campaign-service outage or a
+        # deleted campaign never fails refinement - the pass just runs
+        # without the cast.
+        cast_lines: list[str] = []
+        if campaign_client is not None and campaign_id:
+            try:
+                members = await campaign_client.list_members(campaign_id)
+                cast_lines = build_cast_block(members)
+                logger.info(
+                    "session %s: %d cast member(s) injected (%d with description)",
+                    session_id,
+                    len(cast_lines),
+                    sum(1 for m in members if (m.get("character_description") or "").strip()),
+                )
+            except Exception:  # cast context is best-effort
+                logger.warning(
+                    "could not fetch campaign cast for %s; refining without it",
+                    campaign_id,
+                    exc_info=True,
+                )
+
         decisions: dict[int, tuple[str, str]] = {}
         windows = turn_windows(
             len(turns), settings.refiner_window_turns, settings.refiner_window_overlap
@@ -158,6 +192,7 @@ async def process_job(
                 fixed_count=fixed,
                 window_index=w_index,
                 total_windows=len(windows),
+                cast_lines=cast_lines,
             )
             for index, item in raw.items():
                 if start <= index < end and index >= start + fixed:
@@ -178,6 +213,11 @@ async def process_job(
             "provider": settings.llm_provider,
             "model": settings.effective_model,
             "prompt_version": settings.prompt_version,
+            "cast": {
+                "injected": bool(cast_lines),
+                "members": len(cast_lines),
+                "with_description": sum(1 for line in cast_lines if "—" in line),
+            },
         }
         await _rewrite_artifacts(
             storage,
@@ -279,12 +319,13 @@ async def handle(event: Event, connection: aio_pika.abc.AbstractConnection) -> N
     settings = _get_settings()
     storage = get_storage(settings)
     client = get_client(settings)
+    campaign_client = get_campaign_client(settings)
     llm = get_llm(settings)
 
     async def publisher(ev: Event) -> None:
         await publish(connection, ev)
 
-    await process_job(event, settings, storage, client, llm, publisher)
+    await process_job(event, settings, storage, client, llm, publisher, campaign_client)
 
 
 async def main() -> None:

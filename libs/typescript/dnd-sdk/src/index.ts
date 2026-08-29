@@ -41,6 +41,8 @@ export interface CampaignMember {
   player_name: string;
   /** DM-curated character name. */
   character_name: string;
+  /** DM-curated physical description of the character (refiner context). */
+  character_description: string | null;
   joined_at: string;
 }
 

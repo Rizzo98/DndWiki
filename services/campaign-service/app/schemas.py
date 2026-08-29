@@ -10,13 +10,36 @@ SLUG_PATTERN = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
 ROLE_PATTERN = "^(dm|player)$"
 
 
+class CampaignMemberCreate(BaseModel):
+    """One player to add when a campaign is created.
+
+    player_name and character_name are the DM-curated display data;
+    character_description is the physical description of the character (used
+    by the refiner LLM pass to recognize who is speaking); user_id is the
+    optional link to an existing platform user (Keycloak subject).
+    """
+
+    player_name: str = Field(min_length=1, max_length=255)
+    character_name: str = Field(min_length=1, max_length=255)
+    character_description: str = Field(min_length=1, max_length=10000)
+    user_id: UUID | None = None
+
+
 class CampaignCreate(BaseModel):
-    """Payload for POST /api/campaigns; the caller becomes the DM."""
+    """Payload for POST /api/campaigns; the caller becomes the DM.
+
+    members is REQUIRED (at least one player at the table): the DM adds the
+    roster while creating the campaign. Each member carries player name,
+    character name, the character's physical description (used by the
+    refiner LLM pass) and an optional link to an existing platform user.
+    The DM's own member row is created automatically.
+    """
 
     name: str = Field(min_length=1, max_length=255)
     slug: str | None = Field(default=None, min_length=1, max_length=64, pattern=SLUG_PATTERN)
     description: str | None = Field(default=None, max_length=2000)
     settings: dict[str, Any] = Field(default_factory=dict)
+    members: list[CampaignMemberCreate] = Field(min_length=1)
 
 
 class CampaignUpdate(BaseModel):
@@ -60,6 +83,7 @@ class CampaignMemberOut(BaseModel):
     role: str
     player_name: str
     character_name: str
+    character_description: str | None = None
     joined_at: datetime
 
 
@@ -75,6 +99,7 @@ class MemberAdd(BaseModel):
 
     player_name: str = Field(min_length=1, max_length=255)
     character_name: str = Field(min_length=1, max_length=255)
+    character_description: str = Field(min_length=1, max_length=10000)
     user_id: UUID | None = None
 
 
@@ -88,6 +113,7 @@ class MemberUpdate(BaseModel):
 
     player_name: str | None = Field(default=None, min_length=1, max_length=255)
     character_name: str | None = Field(default=None, min_length=1, max_length=255)
+    character_description: str | None = Field(default=None, min_length=1, max_length=10000)
     user_id: UUID | None = None
     unlink_user: bool = False
 

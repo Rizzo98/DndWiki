@@ -12,6 +12,19 @@ export function errMessage(err: unknown): string {
     const d = err.detail as { detail?: unknown } | string | null | undefined;
     if (typeof d === "string") return d;
     if (d && typeof d === "object" && "detail" in d && typeof d.detail === "string") return d.detail;
+    // FastAPI validation errors arrive as an array of {type, loc, msg, ...};
+    // render them readably ("members.0.player_name: String should have at least 1 character")
+    // instead of the opaque "422 Unprocessable Entity".
+    if (Array.isArray(d)) {
+      const parts = d
+        .filter((item): item is { loc?: unknown[]; msg?: unknown } => typeof item === "object" && item !== null)
+        .map((item) => {
+          const loc = (item.loc ?? []).filter((p): p is string => typeof p === "string" && p !== "body").join(".");
+          const msg = typeof item.msg === "string" ? item.msg : "Invalid value";
+          return loc ? `${loc}: ${msg}` : msg;
+        });
+      if (parts.length > 0) return parts.join("; ");
+    }
     return `${err.status} ${err.message}`;
   }
   return err instanceof Error ? err.message : String(err);

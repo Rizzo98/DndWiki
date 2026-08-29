@@ -75,6 +75,7 @@ class RefinerLLM:
         fixed_count: int,
         window_index: int,
         total_windows: int,
+        cast_lines: list[str] | None = None,
     ) -> dict[int, tuple[str, str]]:
         """Refine one window of turns (raises RefineError on unusable output)."""
         import litellm  # lazy: heavy dependency, only needed at runtime
@@ -95,6 +96,7 @@ class RefinerLLM:
                     fixed_count=fixed_count,
                     window_index=window_index,
                     total_windows=total_windows,
+                    cast_lines=cast_lines,
                 ),
             },
         ]

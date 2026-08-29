@@ -88,11 +88,48 @@ class FakeLLM:
         }
         self.calls = []
 
-    async def refine_window(self, turns, *, context_blocks, fixed_count, window_index, total_windows):
+    async def refine_window(
+        self, turns, *, context_blocks, fixed_count, window_index, total_windows, cast_lines=None
+    ):
         self.calls.append(
-            (list(turns), list(context_blocks), fixed_count, window_index, total_windows)
+            (
+                list(turns),
+                list(context_blocks),
+                fixed_count,
+                window_index,
+                total_windows,
+                list(cast_lines or []),
+            )
         )
         return dict(self.decisions)
+
+
+class FakeCampaignClient:
+    """Returns a canned roster; records fetch calls, optionally failing."""
+
+    def __init__(self, members=None, error=None):
+        self.members = members or [
+            {
+                "role": "dm",
+                "player_name": "Gandalf",
+                "character_name": "Dungeon Master",
+                "character_description": None,
+            },
+            {
+                "role": "player",
+                "player_name": "Alice",
+                "character_name": "Rowan",
+                "character_description": "Tall half-elf rogue with a silver braid",
+            },
+        ]
+        self.error = error
+        self.calls = []
+
+    async def list_members(self, campaign_id):
+        self.calls.append(campaign_id)
+        if self.error is not None:
+            raise self.error
+        return list(self.members)
 
 
 class FakePublisher:
@@ -148,6 +185,64 @@ async def test_refine_happy_path(tmp_path):
     assert [s["speaker"] for s in dseg["segments"]] == ["SPEAKER_01", "SPEAKER_00"]
     assert tseg["segments"][0]["speaker"] == "SPEAKER_01"
     assert tseg["segments"][0]["words"] == []  # other keys preserved
+
+
+async def test_refine_injects_campaign_cast(tmp_path):
+    s = settings()
+    storage = FakeStorage(transcript={"segments": transcript_segments()})
+    client = FakeClient()
+    llm = FakeLLM()
+    campaign = FakeCampaignClient()
+    publisher = FakePublisher()
+
+    await process_job(
+        completed_event(), s, storage, client, llm, publisher, campaign_client=campaign
+    )
+
+    assert campaign.calls == [CAMPAIGN_ID]
+    # cast lines reach every window call (here: the single window)
+    assert llm.calls[0][5] == [
+        "- Dungeon Master (Gandalf) (dm, narrator)",
+        "- Rowan (Alice) — Tall half-elf rogue with a silver braid",
+    ]
+    refined = next(e for e in publisher.events if e.type == "transcription.refined")
+    assert refined.payload["refiner"]["cast"]["injected"] is True
+    assert refined.payload["refiner"]["cast"]["members"] == 2
+    assert refined.payload["refiner"]["cast"]["with_description"] == 1
+
+
+async def test_refine_cast_failure_is_best_effort(tmp_path):
+    """A campaign-service outage never fails refinement."""
+    s = settings()
+    storage = FakeStorage(transcript={"segments": transcript_segments()})
+    client = FakeClient()
+    llm = FakeLLM()
+    campaign = FakeCampaignClient(error=RuntimeError("campaign-service down"))
+    publisher = FakePublisher()
+
+    await process_job(
+        completed_event(), s, storage, client, llm, publisher, campaign_client=campaign
+    )
+
+    assert [c[1] for c in client.status_calls] == ["refining", "refined"]
+    assert llm.calls[0][5] == []  # no cast lines, still refined
+    refined = next(e for e in publisher.events if e.type == "transcription.refined")
+    assert refined.payload["refiner"]["cast"]["injected"] is False
+    assert refined.payload["segments"][0]["speaker"] == "SPEAKER_01"
+
+
+async def test_refine_no_campaign_client_refines_without_cast(tmp_path):
+    s = settings()
+    storage = FakeStorage(transcript={"segments": transcript_segments()})
+    client = FakeClient()
+    llm = FakeLLM()
+    publisher = FakePublisher()
+
+    await process_job(completed_event(), s, storage, client, llm, publisher)
+
+    assert llm.calls[0][5] == []
+    refined = next(e for e in publisher.events if e.type == "transcription.refined")
+    assert refined.payload["refiner"]["cast"]["injected"] is False
 
 
 async def test_refine_disabled_passthrough(tmp_path):

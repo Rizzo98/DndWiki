@@ -86,6 +86,7 @@ async def create_campaign(
         settings=body.settings,
         dm_user_id=_user_id(user),
         dm_player_name=services.display_name_from_claims(user),
+        members=[m.model_dump() for m in body.members],
     )
     return _out(campaign, services.DM_ROLE)
 
@@ -186,6 +187,7 @@ async def add_member(
         campaign_id,
         player_name=body.player_name,
         character_name=body.character_name,
+        character_description=body.character_description,
         user_id=body.user_id,
     )
 
@@ -206,6 +208,7 @@ async def update_member(
         member_id,
         player_name=body.player_name,
         character_name=body.character_name,
+        character_description=body.character_description,
         user_id=body.user_id,
         unlink=body.unlink_user,
     )

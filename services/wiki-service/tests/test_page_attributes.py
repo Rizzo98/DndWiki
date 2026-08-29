@@ -264,6 +264,30 @@ async def test_event_bad_enum_rejected(session_factory):
             )
 
 
+async def test_event_long_in_world_date_accepted(session_factory):
+    """Verbose campaign-calendar dates (e.g. Italian ordinal phrasing)
+    must not trip the 64-char limit: the schema allows 256 chars."""
+    campaign = uuid4()
+    long_date = ("33esimo giorno del primo mese dell'anno della "
+                 "settima era sotto la luna cremisi")
+    assert len(long_date) > 64
+    async with session_factory() as db:
+        page = await services.create_page(
+            db,
+            campaign_id=campaign,
+            kind="event",
+            title="Il Ritorno della Settima Era",
+            content_json={
+                "summary": "The seventh era dawns.",
+                "attributes": {
+                    "event_type": "discovery",
+                    "in_world_date": long_date,
+                },
+            },
+        )
+        assert page.content_json["attributes"]["in_world_date"] == long_date
+
+
 async def test_update_validates_against_page_kind(session_factory):
     campaign = uuid4()
     async with session_factory() as db:

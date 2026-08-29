@@ -229,8 +229,17 @@ export interface ContentSummaryResponse {
 
 export const campaignsApi = {
   list: (token: string) => request<Campaign[]>(token, "/api/campaigns"),
-  create: (token: string, body: { name: string; slug?: string; description?: string; settings?: Record<string, unknown> }) =>
-    request<Campaign>(token, "/api/campaigns", jsonInit("POST", body)),
+  create: (
+    token: string,
+    body: {
+      name: string;
+      slug?: string;
+      description?: string;
+      settings?: Record<string, unknown>;
+      /** Players added at creation (required, at least one). */
+      members: { player_name: string; character_name: string; character_description: string; user_id?: string | null }[];
+    },
+  ) => request<Campaign>(token, "/api/campaigns", jsonInit("POST", body)),
   get: (token: string, id: string) => request<Campaign>(token, `/api/campaigns/${id}`),
   update: (token: string, id: string, body: { name?: string; slug?: string; description?: string; settings?: Record<string, unknown> }) =>
     request<Campaign>(token, `/api/campaigns/${id}`, jsonInit("PATCH", body)),
@@ -238,9 +247,9 @@ export const campaignsApi = {
   restore: (token: string, id: string) => request<Campaign>(token, `/api/campaigns/${id}/restore`, jsonInit("POST")),
 
   members: (token: string, campaignId: string) => request<CampaignMember[]>(token, `/api/campaigns/${campaignId}/members`),
-  addMember: (token: string, campaignId: string, body: { player_name: string; character_name: string; user_id?: string | null }) =>
+  addMember: (token: string, campaignId: string, body: { player_name: string; character_name: string; character_description: string; user_id?: string | null }) =>
     request<CampaignMember>(token, `/api/campaigns/${campaignId}/members`, jsonInit("POST", body)),
-  updateMember: (token: string, campaignId: string, memberId: string, body: { player_name?: string; character_name?: string; user_id?: string | null; unlink_user?: boolean }) =>
+  updateMember: (token: string, campaignId: string, memberId: string, body: { player_name?: string; character_name?: string; character_description?: string; user_id?: string | null; unlink_user?: boolean }) =>
     request<CampaignMember>(token, `/api/campaigns/${campaignId}/members/${memberId}`, jsonInit("PATCH", body)),
   removeMember: (token: string, campaignId: string, memberId: string) =>
     request<void>(token, `/api/campaigns/${campaignId}/members/${memberId}`, { method: "DELETE" }),

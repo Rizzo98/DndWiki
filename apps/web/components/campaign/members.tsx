@@ -6,7 +6,7 @@
 "use client";
 
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { Alert, Badge, Button, Card, EmptyState, Field, TextInput, fmtDate } from "@/components/ui";
+import { Alert, Badge, Button, Card, EmptyState, Field, TextInput, TextArea, fmtDate } from "@/components/ui";
 import { useAuth } from "@/lib/auth";
 import { campaignsApi, usersApi, type Campaign, type CampaignMember, type User } from "@/lib/api";
 import { errMessage, useAsyncData } from "@/lib/use-async";
@@ -18,12 +18,13 @@ interface MemberRow extends CampaignMember {
 interface MemberPayload {
   player_name: string;
   character_name: string;
+  character_description: string;
   user_id: string | null;
 }
 
 // ----------------------------------------------------------- user picker
 
-function UserPicker({
+export function UserPicker({
   token,
   value,
   onChange,
@@ -171,6 +172,7 @@ function MemberForm({
         <Field label="Player name">
           <TextInput
             required
+            maxLength={255}
             value={form.player_name}
             onChange={(e) => setForm({ ...form, player_name: e.target.value })}
             placeholder="e.g. Alice"
@@ -179,12 +181,26 @@ function MemberForm({
         <Field label="Character name">
           <TextInput
             required
+            maxLength={255}
             value={form.character_name}
             onChange={(e) => setForm({ ...form, character_name: e.target.value })}
             placeholder="e.g. Rowan, half-elf rogue"
           />
         </Field>
       </div>
+      <Field
+        label="Character description"
+        hint="Physical description — the transcript refiner uses it to recognize who is speaking."
+      >
+        <TextArea
+          required
+          rows={2}
+          maxLength={10000}
+          value={form.character_description}
+          onChange={(e) => setForm({ ...form, character_description: e.target.value })}
+          placeholder="e.g. Tall half-elf rogue with silver hair and a scar over the left eye"
+        />
+      </Field>
       <Field
         label="Link to user (optional)"
         hint="Link this player to an existing platform account so they can use the app."
@@ -259,9 +275,10 @@ export function MembersTab({ campaign }: { campaign: Campaign }) {
     setBusy(true);
     setFormError(null);
     try {
-      const body: { player_name?: string; character_name?: string; user_id?: string; unlink_user?: boolean } = {};
+      const body: { player_name?: string; character_name?: string; character_description?: string; user_id?: string; unlink_user?: boolean } = {};
       if (prev && payload.player_name !== prev.player_name) body.player_name = payload.player_name;
       if (prev && payload.character_name !== prev.character_name) body.character_name = payload.character_name;
+      if (prev && payload.character_description !== (prev.character_description ?? "")) body.character_description = payload.character_description;
       if (!prev || payload.user_id !== prev.user_id) {
         if (payload.user_id === null) body.unlink_user = true;
         else body.user_id = payload.user_id;
@@ -322,6 +339,11 @@ export function MembersTab({ campaign }: { campaign: Campaign }) {
                   <div className="mt-0.5 text-xs text-slate-400">
                     {"Character: " + (m.character_name || "—")} · joined {fmtDate(m.joined_at)}
                   </div>
+                  {m.character_description ? (
+                    <div className="mt-1 max-w-xl text-xs italic text-slate-500 line-clamp-2">
+                      {m.character_description}
+                    </div>
+                  ) : null}
                 </div>
                 <div className="flex items-center gap-2">
                   <Button variant="ghost" onClick={() => { setEditingId(m.id); setFormError(null); }}>
@@ -345,7 +367,7 @@ export function MembersTab({ campaign }: { campaign: Campaign }) {
             <h2 className="mb-4 text-lg font-semibold">Edit {editing.player_name || "member"}</h2>
             <MemberForm
               key={editing.id}
-              initial={{ player_name: editing.player_name, character_name: editing.character_name, user_id: editing.user_id }}
+              initial={{ player_name: editing.player_name, character_name: editing.character_name, character_description: editing.character_description ?? "", user_id: editing.user_id }}
               submitLabel="Save changes"
               busy={busy}
               error={formError}
@@ -363,7 +385,7 @@ export function MembersTab({ campaign }: { campaign: Campaign }) {
             <h2 className="mb-4 text-lg font-semibold">Add player</h2>
             <MemberForm
               key="new"
-              initial={{ player_name: "", character_name: "", user_id: null }}
+              initial={{ player_name: "", character_name: "", character_description: "", user_id: null }}
               submitLabel="Add member"
               busy={busy}
               error={formError}

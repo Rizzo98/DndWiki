@@ -255,7 +255,7 @@ class EventAttributes(BaseModel):
 
     event_type: EventType = "other"
     # campaign-specific calendar string, e.g. "17 Ches 1492 DR"
-    in_world_date: str | None = Field(default=None, max_length=64)
+    in_world_date: str | None = Field(default=None, max_length=256)
     participants: list[str] | None = None
     event_status: EventStatus = "unknown"
 

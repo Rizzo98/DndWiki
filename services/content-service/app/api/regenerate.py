@@ -7,8 +7,10 @@ binding — no new topology, no duplicate pipelines (the state machine refuses
 concurrent runs, and regeneration overwrites the previous summary).
 
 Authorization: campaign DM, or any user with the 'dev' realm role.
-Allowed source states: content_ready | reviewed - unpublish first for
-published sessions; failed sessions need their own retry flow.
+Allowed source states: content_ready | reviewed | failed - unpublish
+first for published sessions. A failed session re-enters generating_wiki
+from the same transcript (the state machine accepts failed ->
+generating_wiki for this debug retry).
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ router = APIRouter(prefix="/api/content", tags=["debug"])
 
 #: States a (debug) regeneration may start from — the state machine must
 #: accept GENERATING_WIKI from each of these.
-REGENERABLE_STATUSES = {"content_ready", "reviewed"}
+REGENERABLE_STATUSES = {"content_ready", "reviewed", "failed"}
 
 
 def get_publisher(request: Request) -> EventPublisher:

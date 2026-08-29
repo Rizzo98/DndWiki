@@ -435,7 +435,7 @@ services:
       REFINER_TEMPERATURE: ${REFINER_TEMPERATURE:-0.0}
       REFINER_MAX_TOKENS: ${REFINER_MAX_TOKENS:-4096}
       REFINER_JSON_RETRIES: ${REFINER_JSON_RETRIES:-1}
-      REFINER_PROMPT_VERSION: ${REFINER_PROMPT_VERSION:-v1}
+      REFINER_PROMPT_VERSION: ${REFINER_PROMPT_VERSION:-v2}
       # Turns per LLM call + overlap used to carry labels across windows
       REFINER_WINDOW_TURNS: ${REFINER_WINDOW_TURNS:-100}
       REFINER_WINDOW_OVERLAP: ${REFINER_WINDOW_OVERLAP:-15}
@@ -444,12 +444,16 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
       SESSION_SERVICE_URL: http://session-service:8000
+      # Campaign cast (character names + physical descriptions) injected into
+      # the LLM prompt so it can correct names and attribute speakers.
+      CAMPAIGN_SERVICE_URL: http://campaign-service:8000
     ports:
       - "8010:8000"
     depends_on:
       rabbitmq: { condition: service_healthy }
       minio-init: { condition: service_completed_successfully }
       session-service: { condition: service_started }
+      campaign-service: { condition: service_started }
     networks: [dnd-net]
 
   # ------------------------------------------------------------ wiki-service

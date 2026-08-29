@@ -57,6 +57,89 @@ async def test_create_campaign_colliding_slug_gets_suffix(session_factory):
         assert second.slug == "same-name-2"
 
 
+async def test_create_campaign_with_members(session_factory):
+    dm = uuid.uuid4()
+    player = uuid.uuid4()
+    async with session_factory() as db:
+        campaign = await services.create_campaign(
+            db,
+            name="The Fellowship",
+            dm_user_id=dm,
+            members=[
+                {
+                    "player_name": "Alice",
+                    "character_name": "Rowan",
+                    "character_description": "Tall half-elf rogue",
+                },
+                {
+                    "player_name": "Bob",
+                    "character_name": "Cedric",
+                    "character_description": "Stocky dwarf cleric",
+                    "user_id": player,
+                },
+            ],
+        )
+        members = await services.list_members(db, campaign.id)
+        by_role = {m.role: m for m in members}
+        assert set(by_role) == {"dm", "player"}
+        dm_member = by_role["dm"]
+        assert dm_member.user_id == dm
+        assert dm_member.character_name == "Dungeon Master"
+        assert dm_member.character_description is None
+        players = sorted(
+            (m for m in members if m.role == "player"),
+            key=lambda m: m.player_name,
+        )
+        assert [m.player_name for m in players] == ["Alice", "Bob"]
+        assert players[0].character_description == "Tall half-elf rogue"
+        assert players[1].character_description == "Stocky dwarf cleric"
+        assert players[1].user_id == player
+
+
+async def test_create_campaign_members_duplicate_user_409(session_factory):
+    dm = uuid.uuid4()
+    player = uuid.uuid4()
+    async with session_factory() as db:
+        # linking the DM (already a member) in the payload is a 409
+        with pytest.raises(HTTPException) as exc:
+            await services.create_campaign(
+                db,
+                name="Dup",
+                dm_user_id=dm,
+                members=[
+                    {
+                        "player_name": "A",
+                        "character_name": "B",
+                        "character_description": "C",
+                        "user_id": dm,
+                    }
+                ],
+            )
+        assert exc.value.status_code == 409
+        # the same user twice in one payload is a 409
+        with pytest.raises(HTTPException) as exc:
+            await services.create_campaign(
+                db,
+                name="Dup2",
+                dm_user_id=dm,
+                members=[
+                    {
+                        "player_name": "A",
+                        "character_name": "B",
+                        "character_description": "C",
+                        "user_id": player,
+                    },
+                    {
+                        "player_name": "D",
+                        "character_name": "E",
+                        "character_description": "F",
+                        "user_id": player,
+                    },
+                ],
+            )
+        assert exc.value.status_code == 409
+
+
 async def test_slugify():
     assert slugify("The Fellowship") == "the-fellowship"
     assert slugify("  A B C  ") == "a-b-c"
@@ -129,13 +212,20 @@ async def test_archive_twice_409(session_factory, seed_campaign):
 
 
 async def _add_player(
-    db, campaign_id, *, player_name="Alice", character_name="Rowan", user_id=None
+    db,
+    campaign_id,
+    *,
+    player_name="Alice",
+    character_name="Rowan",
+    character_description=None,
+    user_id=None,
 ):
     return await services.add_member(
         db,
         campaign_id,
         player_name=player_name,
         character_name=character_name,
+        character_description=character_description,
         user_id=user_id,
     )
 
@@ -143,11 +233,14 @@ async def _add_player(
 async def test_add_member_unlinked(session_factory, seed_campaign):
     campaign = await seed_campaign(dm_id=uuid.uuid4())
     async with session_factory() as db:
-        member = await _add_player(db, campaign.id)
+        member = await _add_player(
+            db, campaign.id, character_description="Tall half-elf rogue"
+        )
         assert member.role == "player"
         assert member.user_id is None
         assert member.player_name == "Alice"
         assert member.character_name == "Rowan"
+        assert member.character_description == "Tall half-elf rogue"
         assert member.joined_at is not None
         assert member.id is not None
 
@@ -202,9 +295,11 @@ async def test_update_member_rename(session_factory, seed_campaign):
             member.id,
             player_name="Alice the Bold",
             character_name="Rowan II",
+            character_description="Now with a cybernetic arm",
         )
         assert updated.player_name == "Alice the Bold"
         assert updated.character_name == "Rowan II"
+        assert updated.character_description == "Now with a cybernetic arm"
         assert updated.user_id is None
 
 

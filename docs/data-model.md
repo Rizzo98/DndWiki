@@ -66,6 +66,8 @@ campaign_members
   role           text NOT NULL          -- dm | player
   player_name    text NOT NULL          -- DM-curated player name
   character_name text NOT NULL          -- character the player plays
+  character_description text NULL       -- physical description of the
+                                        -- character (refiner LLM context)
   joined_at      timestamptz
   UNIQUE (campaign_id, user_id)         -- a user links at most once per
                                         -- campaign; NULLs exempt so many

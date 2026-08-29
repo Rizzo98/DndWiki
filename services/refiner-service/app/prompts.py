@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 
 #: Strict JSON schema given to the LLM (OpenAI-style; LiteLLM passes it through
 #: to providers that support response_format; others just follow instructions).
@@ -65,6 +65,13 @@ Rules:
 - Keep the exact same number of turns, in the same order: return exactly one
   output object per input turn, identified by its "index". Timestamps and
   chunk numbers are fixed and must never be repeated or reordered.
+- A CAMPAIGN CAST is provided: the characters at the table (with the players
+  behind them and, when available, each character's physical description).
+  Use it to correct misheard character names and to attribute speech to the
+  right person - a turn should sound like the character speaking it (their
+  voice, mannerisms, and physical traits as described). When the cast is
+  present, do not invent characters outside it. Never use a character or
+  player name as a speaker label: labels stay canonical SPEAKER_XX values.
 
 Respond with a single JSON object matching EXACTLY this schema (no markdown,
 no commentary outside the JSON):
@@ -80,12 +87,25 @@ def build_window_message(
     fixed_count: int,
     window_index: int,
     total_windows: int,
+    cast_lines: list[str] | None = None,
 ) -> str:
     """User message for one refinement window."""
     lines: list[str] = []
     lines.append(
         f"Session transcript refinement, window {window_index + 1}/{total_windows}."
     )
+    if cast_lines:
+        lines.append("")
+        lines.append(
+            "Campaign cast (characters at the table; player in parentheses, "
+            "physical description after the dash):"
+        )
+        lines.extend(cast_lines)
+        lines.append(
+            "Use these names and descriptions to correct misheard names and to "
+            "attribute each turn to the right character. Speaker labels stay "
+            "canonical SPEAKER_XX values."
+        )
     if context_blocks:
         lines.append("")
         lines.append(

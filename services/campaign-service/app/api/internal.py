@@ -56,6 +56,21 @@ async def get_campaign_internal(
     return CampaignInternalOut(id=campaign.id, name=campaign.name, dm_user_id=campaign.dm_user_id)
 
 
+@router.get("/campaigns/{campaign_id}/members", response_model=list[CampaignMemberOut])
+async def list_campaign_members_internal(
+    campaign_id: UUID,
+    db: AsyncSession = Depends(get_session),
+):
+    """Full roster of a campaign for internal consumers.
+
+    Used by refiner-service so the LLM contextual pass knows the campaign's
+    cast: character names + physical descriptions let it correct misheard
+    names and attribute speakers to the right person. 404 when the campaign
+    does not exist.
+    """
+    return await services.list_members(db, campaign_id)
+
+
 @router.get("/members/{member_id}", response_model=CampaignMemberOut)
 async def get_member_by_id(
     member_id: UUID,

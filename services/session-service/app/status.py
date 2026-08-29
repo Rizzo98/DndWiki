@@ -14,8 +14,10 @@ between transcription and speaker identification). When the refiner is
 disabled, transcription.completed goes straight from 'transcribed' to
 'identifying_speakers' as before.
 
-Failures land on 'failed' (terminal); 'published' may be pulled back to
-'reviewed' when the DM unpublishes.
+Failures land on 'failed'; 'published' may be pulled back to 'reviewed'
+when the DM unpublishes. 'failed' -> 'generating_wiki' is the debug
+regenerate retry (same transcript, content-service); all other forward
+progress from 'failed' stays blocked.
 
 'generating_wiki' is reachable again from 'content_ready'/'reviewed': the
 debug regenerate flow re-runs wiki generation from the same transcript
@@ -67,12 +69,14 @@ ALLOWED_TRANSITIONS: dict[SessionStatus, set[SessionStatus]] = {
         SessionStatus.FAILED,
     },
     SessionStatus.GENERATING_WIKI: {SessionStatus.CONTENT_READY, SessionStatus.FAILED},
-    # content_ready/reviewed -> generating_wiki: debug regenerate (same transcript)
+    # content_ready/reviewed/failed -> generating_wiki: debug regenerate (same transcript)
     SessionStatus.CONTENT_READY: {SessionStatus.REVIEWED, SessionStatus.GENERATING_WIKI, SessionStatus.FAILED},
     SessionStatus.REVIEWED: {SessionStatus.PUBLISHED, SessionStatus.CONTENT_READY, SessionStatus.GENERATING_WIKI, SessionStatus.FAILED},
     SessionStatus.PUBLISHED: {SessionStatus.REVIEWED, SessionStatus.FAILED},
-    # failed is terminal; a future 'retry' endpoint can move it back explicitly
-    SessionStatus.FAILED: set(),
+    # failed is terminal for forward progress; the debug regenerate flow
+    # may retry wiki generation from the same transcript (content-service
+    # POST /api/content/sessions/{id}/regenerate)
+    SessionStatus.FAILED: {SessionStatus.GENERATING_WIKI},
 }
 
 

@@ -133,7 +133,7 @@ class TimelineEvent(Base):
         ForeignKey("wiki_pages.id", ondelete="SET NULL")
     )
     # campaign-specific calendar string, e.g. "17 Ches 1492 DR"
-    in_world_date: Mapped[str | None] = mapped_column(String(64))
+    in_world_date: Mapped[str | None] = mapped_column(String(256))
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     approved: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"

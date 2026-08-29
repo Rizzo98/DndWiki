@@ -49,6 +49,12 @@ re-clustering), exactly as before this service existed.
    their labels, which is how speaker identity carries across windows. A
    compact per-label "rolodex" of already-finalized speakers is included so a
    speaker absent from the overlap still reuses their label.
+3b. Every window also receives the **campaign cast** (fetched from
+   campaign-service): one line per member with the character name, the player
+   behind it and the character's physical description. The LLM uses it to
+   correct misheard character names and to attribute speech to the right
+   person. Best-effort: if campaign-service is unreachable or the campaign is
+   gone, refinement runs without the cast (logged, never failing the job).
 4. Decisions are canonicalized (`SPEAKER_XX`, first-appearance stable) and
    mapped back onto the original segments: `start`/`end`/`chunk` are
    preserved, only `speaker` and `text` change. The corrected turn text is
@@ -70,7 +76,8 @@ enrolls the voice).
 | `REFINER_TEMPERATURE` | `0.0` | editing should be deterministic |
 | `REFINER_MAX_TOKENS` | `4096` | per-window output cap |
 | `REFINER_JSON_RETRIES` | `1` | corrective retries on malformed JSON |
-| `REFINER_PROMPT_VERSION` | `v1` | prompt/schema version recorded on artifacts |
+| `REFINER_PROMPT_VERSION` | `v2` | prompt/schema version recorded on artifacts |
+| `CAMPAIGN_SERVICE_URL` | `http://localhost:8002` | campaign-service internal API (campaign cast for the LLM context) |
 | `REFINER_WINDOW_TURNS` | `100` | turns per LLM call |
 | `REFINER_WINDOW_OVERLAP` | `15` | leading already-finalized turns per non-first window |
 | `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / ... | | provider keys (same as content-service) |

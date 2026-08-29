@@ -51,6 +51,45 @@ def fenced_json():
     return fence + "json\n" + '{"turns": [{"index": 0, "speaker": "SPEAKER_00", "text": "ok",}]}' + "\n" + fence
 
 
+async def test_refine_window_injects_cast_context(monkeypatch):
+    fake = install_fake_litellm(monkeypatch, [good_json()])
+    llm = RefinerLLM(make_settings())
+    cast = [
+        "- Rowan (Alice) — Tall half-elf rogue with a silver braid",
+        "- Cedric (Bob) — Stocky dwarf cleric with a braided beard",
+    ]
+    await llm.refine_window(
+        [{"index": 0, "text": "raw"}],
+        context_blocks=[],
+        fixed_count=0,
+        window_index=0,
+        total_windows=1,
+        cast_lines=cast,
+    )
+    user_msg = next(
+        m["content"] for m in fake._calls[0]["messages"] if m["role"] == "user"
+    )
+    assert "Campaign cast" in user_msg
+    assert "- Rowan (Alice) — Tall half-elf rogue with a silver braid" in user_msg
+    assert "SPEAKER_XX" in user_msg  # labels stay canonical
+
+
+async def test_refine_window_without_cast_context(monkeypatch):
+    fake = install_fake_litellm(monkeypatch, [good_json()])
+    llm = RefinerLLM(make_settings())
+    await llm.refine_window(
+        [{"index": 0, "text": "raw"}],
+        context_blocks=[],
+        fixed_count=0,
+        window_index=0,
+        total_windows=1,
+    )
+    user_msg = next(
+        m["content"] for m in fake._calls[0]["messages"] if m["role"] == "user"
+    )
+    assert "Campaign cast" not in user_msg
+
+
 async def test_refine_window_parses_valid_json(monkeypatch):
     install_fake_litellm(monkeypatch, [good_json()])
     llm = RefinerLLM(make_settings())

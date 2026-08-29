@@ -455,8 +455,8 @@ EXTRACTION_SCHEMA: dict = {
                         "type": "string",
                         "description": (
                             "Campaign calendar date of the event as stated by "
-                            "the table (e.g. '17 Ches 1492 DR'); empty when "
-                            "no date is mentioned."
+                            "the table, in a short compact form (e.g. '17 Ches "
+                            "1492 DR'); empty when no date is mentioned."
                         ),
                     },
                     "event_type": {
@@ -638,8 +638,10 @@ Rules:
   title: a short proper-name phrase ("The Siege of Fatumastra", "Death of
   Captain Marta"). description: 1-3 sentences in the table's language.
   participants: character names involved. in_world_date: the campaign calendar
-  date when the table states one, otherwise empty. event_type: one of battle /
-  negotiation / discovery / quest / catastrophe / political / other.
+  date when the table states one, otherwise empty; keep it SHORT (a compact
+  calendar notation like "17 Ches 1492 DR" or "33esimo giorno del primo mese,
+  settima era" — never a long prose description of the date). event_type: one
+  of battle / negotiation / discovery / quest / catastrophe / political / other.
 - timeline_entries: notable beats with their transcript time in HH:MM:SS
   format and a one-line summary; characters involved. These stay session-scoped
   (they are NOT events and never become pages).

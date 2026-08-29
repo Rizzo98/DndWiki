@@ -69,6 +69,10 @@ class CampaignMember(Base):
     character_name: Mapped[str] = mapped_column(
         String(255), nullable=False, default="", server_default=""
     )
+    # DM-curated physical description of the character (used by the refiner
+    # LLM pass to recognize who is speaking). Nullable: existing members and
+    # invite-joined players have none until the DM fills it in.
+    character_description: Mapped[str | None] = mapped_column(Text)
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (

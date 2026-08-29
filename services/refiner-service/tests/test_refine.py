@@ -6,6 +6,7 @@ from dnd_common.transcript import Turn, speaker_turns
 from app.refine import (
     RefineError,
     apply_refined,
+    build_cast_block,
     build_context_blocks,
     canonicalize,
     parse_decisions,
@@ -155,6 +156,62 @@ def test_context_blocks_first_appearance_order():
     decisions = {1: ("SPEAKER_01", "second words"), 0: ("SPEAKER_00", "first words")}
     blocks = build_context_blocks(turns, segments, decisions)
     assert blocks == ['SPEAKER_00: "first words"', 'SPEAKER_01: "second words"']
+
+
+# --- build_cast_block ----------------------------------------------------------
+
+
+def test_build_cast_block_formats_members():
+    members = [
+        {
+            "role": "dm",
+            "player_name": "Gandalf",
+            "character_name": "Dungeon Master",
+            "character_description": "The narrator and keeper of the world",
+        },
+        {
+            "role": "player",
+            "player_name": "Alice",
+            "character_name": "Rowan",
+            "character_description": "Tall half-elf rogue with a silver braid",
+        },
+        {
+            "role": "player",
+            "player_name": "Bob",
+            "character_name": "Cedric",
+            "character_description": "Stocky dwarf cleric with a braided beard",
+        },
+    ]
+    lines = build_cast_block(members)
+    assert lines[0].startswith("- Dungeon Master (Gandalf) (dm, narrator) — The narrator")
+    assert "Rowan (Alice) — Tall half-elf rogue with a silver braid" in lines[1]
+    assert "Cedric (Bob) — Stocky dwarf cleric with a braided beard" in lines[2]
+
+
+def test_build_cast_block_skips_members_without_character():
+    members = [
+        {"role": "player", "player_name": "Bob", "character_name": "", "character_description": "x"},
+        {"role": "player", "player_name": "Carol", "character_name": "   ", "character_description": "y"},
+        {"role": "player", "player_name": "Alice", "character_name": "Rowan", "character_description": "z"},
+    ]
+    assert build_cast_block(members) == ["- Rowan (Alice) — z"]
+
+
+def test_build_cast_block_missing_description_keeps_names():
+    members = [
+        {"role": "player", "player_name": "Alice", "character_name": "Rowan", "character_description": None},
+    ]
+    assert build_cast_block(members) == ["- Rowan (Alice)"]
+
+
+def test_build_cast_block_empty_and_long_description():
+    assert build_cast_block([]) == []
+    long = "word " * 300
+    lines = build_cast_block(
+        [{"role": "player", "player_name": "A", "character_name": "B", "character_description": long}]
+    )
+    assert len(lines) == 1
+    assert len(lines[0]) < len(long) + 40  # truncated
 
 
 # --- turn_view ---------------------------------------------------------------

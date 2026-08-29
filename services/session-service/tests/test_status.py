@@ -32,9 +32,10 @@ def test_invalid_transitions():
     # backwards
     assert not can_transition(SessionStatus.RECORDED, SessionStatus.UPLOADED)
     assert not can_transition(SessionStatus.PUBLISHED, SessionStatus.GENERATING_WIKI)
-    # failed is terminal
-    for target in ALLOWED_TRANSITIONS:
-        assert not can_transition(SessionStatus.FAILED, target)
+    # failed is terminal EXCEPT the debug regenerate retry (generating_wiki)
+    assert not can_transition(SessionStatus.FAILED, SessionStatus.CONTENT_READY)
+    assert not can_transition(SessionStatus.FAILED, SessionStatus.UPLOADED)
+    assert can_transition(SessionStatus.FAILED, SessionStatus.GENERATING_WIKI)
 
 
 def test_unpublish_allowed():
@@ -45,6 +46,8 @@ def test_debug_regenerate_transitions():
     # the regenerate flow re-enters generating_wiki from content_ready/reviewed
     assert can_transition(SessionStatus.CONTENT_READY, SessionStatus.GENERATING_WIKI)
     assert can_transition(SessionStatus.REVIEWED, SessionStatus.GENERATING_WIKI)
+    # failed sessions may retry wiki generation from the same transcript
+    assert can_transition(SessionStatus.FAILED, SessionStatus.GENERATING_WIKI)
     # published sessions must be unpublished first; earlier stages stay linear
     assert not can_transition(SessionStatus.PUBLISHED, SessionStatus.GENERATING_WIKI)
     assert not can_transition(SessionStatus.SPEAKERS_IDENTIFIED, SessionStatus.CONTENT_READY)

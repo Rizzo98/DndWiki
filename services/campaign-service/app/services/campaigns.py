@@ -119,12 +119,19 @@ async def create_campaign(
     description: str | None = None,
     settings: dict | None = None,
     dm_player_name: str | None = None,
+    members: list[dict] | None = None,
 ) -> Campaign:
-    """Persist a campaign and make the creator its DM (role 'dm' member row).
+    """Persist a campaign, make the creator its DM, and add its players.
 
     The DM member row carries player_name (claim-derived when available,
     "Dungeon Master" otherwise) and character_name "Dungeon Master"; the DM
     can edit both later via PATCH /members/{id}.
+
+    members (optional at service level; the API requires at least one) are
+    the players at the table: each dict carries player_name, character_name,
+    character_description and an optional user_id link. Linking a user that
+    is already a member of the campaign (the DM row included) or twice in
+    the same payload is rejected with 409.
     """
     final_slug = await unique_slug(db, slug or slugify(name))
     campaign = Campaign(
@@ -135,7 +142,31 @@ async def create_campaign(
         settings=settings or {},
     )
     db.add(campaign)
-    await db.flush()  # get campaign.id for the member row
+    await db.flush()  # get campaign.id for the member rows
+
+    # The creator becomes the DM member row, so their user can never be
+    # linked again in the creation payload.
+    seen: set[UUID] = {dm_user_id}
+    for item in members or []:
+        user_id = item.get("user_id")
+        if user_id is not None:
+            if user_id in seen or await get_member(db, campaign.id, user_id) is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="User is already a member of this campaign",
+                )
+            seen.add(user_id)
+        db.add(
+            CampaignMember(
+                campaign_id=campaign.id,
+                user_id=user_id,
+                role=PLAYER_ROLE,
+                player_name=item["player_name"],
+                character_name=item["character_name"],
+                character_description=item.get("character_description"),
+            )
+        )
+
     db.add(
         CampaignMember(
             campaign_id=campaign.id,
@@ -147,7 +178,13 @@ async def create_campaign(
     )
     await db.commit()
     await db.refresh(campaign)
-    logger.info("campaign %s created (slug=%s) by user %s", campaign.id, final_slug, dm_user_id)
+    logger.info(
+        "campaign %s created (slug=%s) by user %s with %d member(s)",
+        campaign.id,
+        final_slug,
+        dm_user_id,
+        len(members or []),
+    )
     return campaign
 
 
@@ -220,15 +257,18 @@ async def add_member(
     *,
     player_name: str,
     character_name: str,
+    character_description: str | None = None,
     user_id: UUID | None = None,
     role: str = PLAYER_ROLE,
 ) -> CampaignMember:
     """DM adds a player to a campaign (v1: always as 'player').
 
-    player_name/character_name are the DM-curated display data; user_id is
-    the optional link to an existing platform user. Linking a user that is
-    already a member of the campaign is rejected with 409 (the DB unique
-    constraint (campaign_id, user_id) backs this up).
+    player_name/character_name are the DM-curated display data;
+    character_description is the character's physical description (used by
+    the refiner LLM pass); user_id is the optional link to an existing
+    platform user. Linking a user that is already a member of the campaign
+    is rejected with 409 (the DB unique constraint (campaign_id, user_id)
+    backs this up).
     """
     await get_campaign_or_404(db, campaign_id)
     if user_id is not None and await get_member(db, campaign_id, user_id) is not None:
@@ -239,6 +279,7 @@ async def add_member(
         role=role,
         player_name=player_name,
         character_name=character_name,
+        character_description=character_description,
     )
     db.add(member)
     await db.commit()
@@ -263,6 +304,7 @@ async def update_member(
     *,
     player_name: str | None = None,
     character_name: str | None = None,
+    character_description: str | None = None,
     user_id: UUID | None = None,
     unlink: bool = False,
 ) -> CampaignMember:
@@ -288,6 +330,8 @@ async def update_member(
         member.player_name = player_name
     if character_name is not None:
         member.character_name = character_name
+    if character_description is not None:
+        member.character_description = character_description
     if unlink:
         member.user_id = None
     elif user_id is not None:

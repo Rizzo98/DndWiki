@@ -48,6 +48,30 @@ def turn_view(turns: list[Turn], segments: list[dict[str, Any]], index: int) -> 
     }
 
 
+def build_cast_block(members: list[dict[str, Any]]) -> list[str]:
+    """Compact per-member cast lines for the LLM prompt.
+
+    One line per member with a character name: "character (player) — physical
+    description". The DM row is tagged so the LLM knows one speaker is the
+    narrator. Members without a character name (e.g. freshly invite-joined
+    players) are skipped; descriptions are truncated to keep the window lean.
+    """
+    lines: list[str] = []
+    for member in members or []:
+        character = (member.get("character_name") or "").strip()
+        if not character:
+            continue
+        player = (member.get("player_name") or "").strip()
+        suffix = " (dm, narrator)" if member.get("role") == "dm" else ""
+        desc = (member.get("character_description") or "").strip()
+        if desc:
+            desc = " ".join(desc.split())[:200]
+            lines.append(f"- {character} ({player}){suffix} — {desc}")
+        else:
+            lines.append(f"- {character} ({player}){suffix}")
+    return lines
+
+
 def turn_windows(n_turns: int, window: int, overlap: int) -> list[tuple[int, int, int]]:
     """Sliding windows over turn indexes 0..n_turns-1.
 

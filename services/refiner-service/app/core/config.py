@@ -40,7 +40,7 @@ class ServiceSettings(Settings):
     refiner_json_retries: int = 1
     # Version of app/prompts.py shipped with this deployment; recorded on the
     # rewritten artifacts so the DM can see which prompt produced a transcript.
-    prompt_version: str = "v1"
+    prompt_version: str = "v2"
     # Optional per-stage model override (e.g. a bigger editor model); empty
     # falls back to llm_model.
     refiner_model: str = ""
@@ -62,6 +62,11 @@ class ServiceSettings(Settings):
     # --- internal service APIs ---
     session_service_url: str = "http://localhost:8003"
     session_service_timeout_sec: float = 30.0
+    # campaign-service provides the campaign cast (character names + physical
+    # descriptions) injected into the LLM prompt so it can correct names and
+    # attribute speakers to the right person.
+    campaign_service_url: str = "http://localhost:8002"
+    campaign_service_timeout_sec: float = 5.0
 
     # --- MinIO ---
     minio_transcripts_bucket: str = "transcripts"

@@ -88,7 +88,8 @@ so a failed job is never re-run or DLQ-spammed.
 SAME transcript: it rebuilds the speaker map from session-service, republishes
 a synthetic `speakers.identified` event (the only consumer is this service's
 queue), and lets the normal pipeline produce fresh v2 drafts. Allowed from
-`content_ready` / `reviewed` sessions with all speakers named. Authorization:
+`content_ready` / `reviewed` / `failed` sessions with all speakers named
+(a failed session retries from the same transcript). Authorization:
 campaign DM, or any user with the Keycloak `dev` realm role.
 The web UI exposes it as a "Debug: rerun generation" button on the session
 summary card for users carrying that role.

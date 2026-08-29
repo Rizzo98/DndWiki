@@ -96,6 +96,18 @@ async def test_regenerate_happy_path(client):
     assert bobby["display_name"] == "Bobby"
 
 
+async def test_regenerate_allows_failed_status(client):
+    """A failed session may retry wiki generation from the same transcript."""
+    regen._session_client = FakeSessionClient(status="failed")
+    regen._campaign_client = FakeCampaignClient()
+    resp = await client.post(f"/api/content/sessions/{SESSION_ID}/regenerate")
+    assert resp.status_code == 200
+    assert resp.json()["queued"] is True
+    events = client._publisher.events  # type: ignore[attr-defined]
+    assert len(events) == 1
+    assert events[0].type == "speakers.identified"
+
+
 async def test_regenerate_rejects_non_ready_status(client):
     regen._session_client = FakeSessionClient(status="published")
     regen._campaign_client = FakeCampaignClient()
