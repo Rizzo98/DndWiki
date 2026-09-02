@@ -11,6 +11,11 @@ single HTTPS call to OpenAI's Speech-to-Text API with the
 [`gpt-4o-transcribe-diarize`](https://developers.openai.com/api/docs/guides/speech-to-text)
 model, which performs ASR **and** speaker diarization in one request.
 
+> **Prefer the unified override:** both cloud backends are switchable through
+> one compose file — `docker-compose.transcription.yml` with
+> `TRANSCRIPTION_PROVIDER=openai|deepgram` (see the Deepgram variant below).
+> `docker-compose.api.yml` remains as this variant's OpenAI-only form.
+
 ## Why this variant
 
 | | on-prem (`docker-compose.yml`) | API (`docker-compose.api.yml`) |

@@ -40,7 +40,7 @@ class ServiceSettings(Settings):
     refiner_json_retries: int = 1
     # Version of app/prompts.py shipped with this deployment; recorded on the
     # rewritten artifacts so the DM can see which prompt produced a transcript.
-    prompt_version: str = "v2"
+    prompt_version: str = "v3"
     # Optional per-stage model override (e.g. a bigger editor model); empty
     # falls back to llm_model.
     refiner_model: str = ""

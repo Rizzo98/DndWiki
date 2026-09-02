@@ -44,6 +44,7 @@ async def test_create_campaign_201(client, user_id):
         json={
             "name": "The  Fellowship!!",
             "description": "Nine walkers",
+            "language": "it",
             "members": [
                 {
                     "player_name": "Alice",
@@ -60,6 +61,7 @@ async def test_create_campaign_201(client, user_id):
     assert body["status"] == "active"
     assert body["my_role"] == "dm"
     assert body["description"] == "Nine walkers"
+    assert body["language"] == "it"
 
 
 async def test_create_campaign_explicit_slug_and_settings(client, user_id):
@@ -68,6 +70,7 @@ async def test_create_campaign_explicit_slug_and_settings(client, user_id):
         json={
             "name": "Tales",
             "slug": "my-slug",
+            "language": "en",
             "settings": {"default_visibility": "public"},
             "members": [
                 {
@@ -99,6 +102,7 @@ async def test_create_campaign_invalid_slug_422(client, user_id):
         json={
             "name": "Tales",
             "slug": "Bad Slug!",
+            "language": "en",
             "members": [{"player_name": "A", "character_name": "B", "character_description": "C"}],
         },
     )
@@ -107,9 +111,13 @@ async def test_create_campaign_invalid_slug_422(client, user_id):
 
 async def test_create_campaign_requires_members_422(client, user_id):
     """The DM must add at least one player while creating the campaign."""
-    resp = await client.post("/api/campaigns", json={"name": "Tales"})
+    resp = await client.post(
+        "/api/campaigns", json={"name": "Tales", "language": "en"}
+    )
     assert resp.status_code == 422
-    resp = await client.post("/api/campaigns", json={"name": "Tales", "members": []})
+    resp = await client.post(
+        "/api/campaigns", json={"name": "Tales", "language": "en", "members": []}
+    )
     assert resp.status_code == 422
 
 
@@ -119,9 +127,29 @@ async def test_create_campaign_requires_member_description_422(client, user_id):
         "/api/campaigns",
         json={
             "name": "Tales",
+            "language": "en",
             "members": [{"player_name": "A", "character_name": "B"}],
         },
     )
+    assert resp.status_code == 422
+
+
+async def test_create_campaign_requires_language_422(client, user_id):
+    """The DM must choose the session language when creating the campaign."""
+    payload = {
+        "name": "Tales",
+        "members": [
+            {"player_name": "A", "character_name": "B", "character_description": "C"}
+        ],
+    }
+    # missing language -> 422
+    resp = await client.post("/api/campaigns", json=payload)
+    assert resp.status_code == 422
+    # empty language -> 422
+    resp = await client.post("/api/campaigns", json={**payload, "language": ""})
+    assert resp.status_code == 422
+    # unsupported language -> 422
+    resp = await client.post("/api/campaigns", json={**payload, "language": "xx"})
     assert resp.status_code == 422
 
 
@@ -132,6 +160,7 @@ async def test_create_campaign_member_linked_user(client, user_id):
         "/api/campaigns",
         json={
             "name": "Linked",
+            "language": "en",
             "members": [
                 {
                     "player_name": "Alice",
@@ -155,6 +184,7 @@ async def test_create_campaign_duplicate_member_user_409(client, user_id):
         "/api/campaigns",
         json={
             "name": "Dup",
+            "language": "en",
             "members": [
                 {
                     "player_name": "Alice",
@@ -170,6 +200,7 @@ async def test_create_campaign_duplicate_member_user_409(client, user_id):
         "/api/campaigns",
         json={
             "name": "Dup2",
+            "language": "en",
             "members": [
                 {
                     "player_name": "Alice",
@@ -193,6 +224,7 @@ async def test_create_campaign_duplicate_member_user_409(client, user_id):
         "/api/campaigns",
         json={
             "name": "Dup3",
+            "language": "en",
             "members": [
                 {
                     "player_name": "Alice",
@@ -243,11 +275,20 @@ async def test_patch_campaign_dm_allowed(client, claims, dm_id, seed_campaign):
     claims["sub"] = str(dm_id)
     campaign = await seed_campaign(dm_id=dm_id)
     resp = await client.patch(
-        f"/api/campaigns/{campaign.id}", json={"name": "Renamed", "description": "New"}
+        f"/api/campaigns/{campaign.id}",
+        json={"name": "Renamed", "description": "New", "language": "it"},
     )
     assert resp.status_code == 200
     assert resp.json()["name"] == "Renamed"
     assert resp.json()["description"] == "New"
+    assert resp.json()["language"] == "it"
+
+    # the DM may change the language later too
+    resp = await client.patch(
+        f"/api/campaigns/{campaign.id}", json={"language": "de"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["language"] == "de"
 
 
 async def test_patch_campaign_player_forbidden(
@@ -562,13 +603,16 @@ async def test_internal_membership_non_member_null(client, dm_id, seed_campaign)
 
 async def test_internal_campaign_dm(client, dm_id, seed_campaign):
     """content-service resolves the DM user id to tell narrator from players."""
-    campaign = await seed_campaign(dm_id=dm_id)
+    campaign = await seed_campaign(dm_id=dm_id, language="it")
     resp = await client.get(f"/internal/campaigns/{campaign.id}")
     assert resp.status_code == 200
     body = resp.json()
     assert body["id"] == str(campaign.id)
     assert body["name"] == "The Fellowship"
     assert body["dm_user_id"] == str(dm_id)
+    # transcription workers read the session language + description from here
+    assert body["language"] == "it"
+    assert body["description"] is None
 
 
 async def test_internal_campaign_unknown_404(client):

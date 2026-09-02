@@ -3,16 +3,16 @@
 "use client";
 
 import { FormEvent, useState } from "react";
-import { Alert, Badge, Button, Card, Field, TextArea, TextInput, fmtDate } from "@/components/ui";
+import { Alert, Badge, Button, Card, Field, Select, TextArea, TextInput, fmtDate } from "@/components/ui";
 import { useAuth } from "@/lib/auth";
-import { campaignsApi, type Campaign } from "@/lib/api";
+import { CAMPAIGN_LANGUAGES, campaignLanguageLabel, campaignsApi, type Campaign } from "@/lib/api";
 import { errMessage } from "@/lib/use-async";
 
 export function OverviewTab({ campaign, onChanged }: { campaign: Campaign; onChanged: () => void }) {
   const { token } = useAuth();
   const isDm = campaign.my_role === "dm";
   const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState({ name: campaign.name, slug: campaign.slug, description: campaign.description ?? "" });
+  const [form, setForm] = useState({ name: campaign.name, slug: campaign.slug, description: campaign.description ?? "", language: campaign.language });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -27,6 +27,7 @@ export function OverviewTab({ campaign, onChanged }: { campaign: Campaign; onCha
         name: form.name.trim(),
         slug: form.slug.trim() || undefined,
         description: form.description.trim() || undefined,
+        language: form.language,
       });
       setEditing(false);
       setNotice("Campaign updated.");
@@ -76,6 +77,10 @@ export function OverviewTab({ campaign, onChanged }: { campaign: Campaign; onCha
             </dd>
           </div>
           <div>
+            <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Language</dt>
+            <dd className="mt-1 text-sm text-slate-300">{campaignLanguageLabel(campaign.language)}</dd>
+          </div>
+          <div>
             <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">DM user id</dt>
             <dd className="mt-1 font-mono text-xs text-slate-400">{campaign.dm_user_id}</dd>
           </div>
@@ -111,6 +116,13 @@ export function OverviewTab({ campaign, onChanged }: { campaign: Campaign; onCha
               </Field>
               <Field label="Description">
                 <TextArea rows={3} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+              </Field>
+              <Field label="Language" hint="The language all sessions will be played in.">
+                <Select value={form.language} onChange={(e) => setForm({ ...form, language: e.target.value })}>
+                  {CAMPAIGN_LANGUAGES.map((l) => (
+                    <option key={l.code} value={l.code}>{l.label}</option>
+                  ))}
+                </Select>
               </Field>
               {error ? <Alert tone="error">{error}</Alert> : null}
               <Button type="submit" disabled={busy}>Save changes</Button>

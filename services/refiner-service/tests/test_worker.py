@@ -89,7 +89,8 @@ class FakeLLM:
         self.calls = []
 
     async def refine_window(
-        self, turns, *, context_blocks, fixed_count, window_index, total_windows, cast_lines=None
+        self, turns, *, context_blocks, fixed_count, window_index, total_windows,
+        cast_lines=None, member_count=None
     ):
         self.calls.append(
             (
@@ -99,6 +100,7 @@ class FakeLLM:
                 window_index,
                 total_windows,
                 list(cast_lines or []),
+                member_count,
             )
         )
         return dict(self.decisions)
@@ -205,10 +207,13 @@ async def test_refine_injects_campaign_cast(tmp_path):
         "- Dungeon Master (Gandalf) (dm, narrator)",
         "- Rowan (Alice) — Tall half-elf rogue with a silver braid",
     ]
+    # the roster size is forwarded as the max-speaker hint
+    assert llm.calls[0][6] == 2
     refined = next(e for e in publisher.events if e.type == "transcription.refined")
     assert refined.payload["refiner"]["cast"]["injected"] is True
     assert refined.payload["refiner"]["cast"]["members"] == 2
     assert refined.payload["refiner"]["cast"]["with_description"] == 1
+    assert refined.payload["refiner"]["cast"]["table_size"] == 2
 
 
 async def test_refine_cast_failure_is_best_effort(tmp_path):

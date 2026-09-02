@@ -17,10 +17,13 @@ from app.services.campaigns import ensure_utc, slugify
 async def test_create_campaign_makes_creator_dm(session_factory):
     dm = uuid.uuid4()
     async with session_factory() as db:
-        campaign = await services.create_campaign(db, name="The  Fellowship!!", dm_user_id=dm)
+        campaign = await services.create_campaign(
+            db, name="The  Fellowship!!", dm_user_id=dm, language="it"
+        )
         assert campaign.status == "active"
         assert campaign.dm_user_id == dm
         assert campaign.slug == "the-fellowship"  # slugified from name
+        assert campaign.language == "it"
 
         member = await services.get_member(db, campaign.id, dm)
         assert member is not None
@@ -33,7 +36,7 @@ async def test_create_campaign_uses_dm_player_name_hint(session_factory):
     dm = uuid.uuid4()
     async with session_factory() as db:
         campaign = await services.create_campaign(
-            db, name="Tales", dm_user_id=dm, dm_player_name="gandalf"
+            db, name="Tales", dm_user_id=dm, language="en", dm_player_name="gandalf"
         )
         member = await services.get_member(db, campaign.id, dm)
         assert member.player_name == "gandalf"
@@ -43,7 +46,7 @@ async def test_create_campaign_uses_dm_player_name_hint(session_factory):
 async def test_create_campaign_explicit_slug(session_factory):
     async with session_factory() as db:
         campaign = await services.create_campaign(
-            db, name="Tales", slug="my-custom-slug", dm_user_id=uuid.uuid4()
+            db, name="Tales", slug="my-custom-slug", dm_user_id=uuid.uuid4(), language="en"
         )
         assert campaign.slug == "my-custom-slug"
 
@@ -51,8 +54,12 @@ async def test_create_campaign_explicit_slug(session_factory):
 async def test_create_campaign_colliding_slug_gets_suffix(session_factory):
     dm = uuid.uuid4()
     async with session_factory() as db:
-        first = await services.create_campaign(db, name="Same Name", dm_user_id=dm)
-        second = await services.create_campaign(db, name="Same Name", dm_user_id=dm)
+        first = await services.create_campaign(
+            db, name="Same Name", dm_user_id=dm, language="en"
+        )
+        second = await services.create_campaign(
+            db, name="Same Name", dm_user_id=dm, language="en"
+        )
         assert first.slug == "same-name"
         assert second.slug == "same-name-2"
 
@@ -65,6 +72,7 @@ async def test_create_campaign_with_members(session_factory):
             db,
             name="The Fellowship",
             dm_user_id=dm,
+            language="it",
             members=[
                 {
                     "player_name": "Alice",
@@ -79,6 +87,7 @@ async def test_create_campaign_with_members(session_factory):
                 },
             ],
         )
+        assert campaign.language == "it"
         members = await services.list_members(db, campaign.id)
         by_role = {m.role: m for m in members}
         assert set(by_role) == {"dm", "player"}
@@ -106,6 +115,7 @@ async def test_create_campaign_members_duplicate_user_409(session_factory):
                 db,
                 name="Dup",
                 dm_user_id=dm,
+                language="en",
                 members=[
                     {
                         "player_name": "A",
@@ -122,6 +132,7 @@ async def test_create_campaign_members_duplicate_user_409(session_factory):
                 db,
                 name="Dup2",
                 dm_user_id=dm,
+                language="en",
                 members=[
                     {
                         "player_name": "A",
@@ -175,10 +186,15 @@ async def test_update_campaign(session_factory, seed_campaign):
     campaign = await seed_campaign(dm_id=uuid.uuid4())
     async with session_factory() as db:
         updated = await services.update_campaign(
-            db, campaign.id, name="Renamed", description="A tale"
+            db,
+            campaign.id,
+            name="Renamed",
+            description="A tale",
+            language="fr",
         )
         assert updated.name == "Renamed"
         assert updated.description == "A tale"
+        assert updated.language == "fr"
         assert updated.slug == campaign.slug  # untouched fields stay
 
 

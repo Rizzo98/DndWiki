@@ -51,6 +51,9 @@ campaigns
   name          text NOT NULL
   slug          text UNIQUE NOT NULL
   description   text
+  language      text NOT NULL DEFAULT 'en'
+                -- session language chosen by the DM at creation
+                -- (SUPPORTED_LANGUAGES: en|it|de|fr|es|pt)
   dm_user_id    uuid NOT NULL
   status        text DEFAULT 'active'   -- active | archived
   settings      jsonb DEFAULT '{}'      -- e.g. default page visibility
@@ -143,7 +146,8 @@ speaker_assignments                 -- diarized label -> campaign member per ses
   "segments": [
     {
       "start": 0.0, "end": 4.2, "text": "Welcome back, heroes.",
-      "chunk": 0, "speaker": "SPEAKER_00", "words": [{"word": "Welcome", "start": 0.0, "end": 0.5}]
+      "chunk": 0, "speaker": "SPEAKER_00", "speaker_confidence": 0.97, "confidence": 0.97,
+      "words": [{"word": "Welcome", "start": 0.0, "end": 0.5}]
     }
   ]
 }
@@ -156,6 +160,19 @@ assigned by the re-clustering or — when the refiner-service LLM contextual pas
 ran (REFINER_ENABLED) — by the LLM. Both artifacts gain a top-level `refiner`
 object ({enabled, provider, model, prompt_version}) when the refiner rewrites
 them; segment `start`/`end`/`chunk` are never changed by refinement.
+
+`speaker_confidence` (optional float 0..1) is the diarization confidence for
+the segment, reported by cloud API backends that provide it (Deepgram Nova 3:
+direct field or mean of the word-level `speaker_confidence` values). The web
+UI flags a speaker label when any of its segments falls below the
+low-confidence threshold, so the DM can re-check/re-assign the attribution.
+The field is preserved untouched by refiner-service and speaker-service
+re-clustering (unknown segment fields pass through).
+
+`confidence` (optional float 0..1) is the ASR text probability per utterance
+(AssemblyAI reports it; Deepgram/OpenAI omit the key). refiner-service reads
+it per sentence so the LLM can decide whether the context can raise a
+low-confidence sentence or whether it should keep the engine's wording.
 
 ---
 

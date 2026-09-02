@@ -8,6 +8,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 SLUG_PATTERN = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
 ROLE_PATTERN = "^(dm|player)$"
+# Session languages the DM may choose when creating a campaign (BCP-47-ish
+# codes, matching what the transcription backends accept). The web UI offers
+# the same list (apps/web/lib/api.ts CAMPAIGN_LANGUAGES).
+SUPPORTED_LANGUAGES = ("en", "it", "de", "fr", "es", "pt")
+LANGUAGE_PATTERN = "^(en|it|de|fr|es|pt)$"
 
 
 class CampaignMemberCreate(BaseModel):
@@ -38,6 +43,8 @@ class CampaignCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     slug: str | None = Field(default=None, min_length=1, max_length=64, pattern=SLUG_PATTERN)
     description: str | None = Field(default=None, max_length=2000)
+    # REQUIRED: the DM chooses the language in which all sessions will be.
+    language: str = Field(min_length=2, max_length=35, pattern=LANGUAGE_PATTERN)
     settings: dict[str, Any] = Field(default_factory=dict)
     members: list[CampaignMemberCreate] = Field(min_length=1)
 
@@ -48,6 +55,7 @@ class CampaignUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     slug: str | None = Field(default=None, min_length=1, max_length=64, pattern=SLUG_PATTERN)
     description: str | None = Field(default=None, max_length=2000)
+    language: str | None = Field(default=None, min_length=2, max_length=35, pattern=LANGUAGE_PATTERN)
     settings: dict[str, Any] | None = None
 
 
@@ -65,6 +73,7 @@ class CampaignOut(BaseModel):
     name: str
     slug: str
     description: str | None
+    language: str
     dm_user_id: UUID
     status: str
     settings: dict[str, Any]
@@ -149,12 +158,16 @@ class MembershipOut(BaseModel):
 
 
 class CampaignInternalOut(BaseModel):
-    """Minimal campaign record for internal consumers (service-to-service).
+    """Campaign record for internal consumers (service-to-service).
 
     content-service uses dm_user_id to tell the DM's speaker (the narrator)
-    apart from the players' characters during wiki generation.
+    apart from the players' characters during wiki generation; the
+    transcription workers use language (BCP-47-ish code, e.g. "it") for the
+    speech-to-text engine and name/description to build a contextual prompt.
     """
 
     id: UUID
     name: str
+    description: str | None = None
+    language: str = "en"
     dm_user_id: UUID

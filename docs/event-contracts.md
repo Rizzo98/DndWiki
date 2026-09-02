@@ -55,22 +55,29 @@ Messages are JSON with a `schema_version`, `event_id`, `occurred_at`, and a type
     "transcript_uri": "transcripts/<session_id>/transcript.json",
     "diarization_uri": "transcripts/<session_id>/diarization.json",
     "segments": [
-      {"start": 0.0, "end": 4.2, "chunk": 0, "speaker": "SPEAKER_00", "text": "Welcome back."}
+      {"start": 0.0, "end": 4.2, "chunk": 0, "speaker": "SPEAKER_00", "speaker_confidence": 0.97, "confidence": 0.97, "text": "Welcome back."}
     ]
   }
 }
 ```
 
 > `segments` is included for immediate processing; the full payload (with word
-> timings) lives in MinIO.
+> timings) lives in MinIO. `speaker_confidence` (optional) is the diarization
+> confidence reported by the transcription backend (Deepgram Nova 3); the web
+> UI highlights labels whose confidence is low so the DM re-checks them.
+>
+> `confidence` (optional, 0..1) is the ASR text probability per utterance
+> (AssemblyAI reports it; other backends omit the key). refiner-service reads
+> it so the LLM can decide whether context can raise a sentence's confidence.
 
 ## transcription.progress
 
-Emitted after every transcription chunk (default 5 minutes), so consumers/UI
-can show partial results before the session completes. The `transcript_uri` /
-`diarization_uri` point at the *same* objects as the final artifacts — they
-are overwritten as the job progresses, so polling the session's artifact URI
-always yields the latest content.
+Emitted after every transcription chunk (default 5 minutes) so consumers can
+track progress. The `transcript_uri` / `diarization_uri` point at the *same*
+objects as the final artifacts — they are overwritten as the job progresses.
+The web session page deliberately does NOT render these partial/raw objects:
+it waits for the refiner's in-place rewrite (status `refined`) so only the
+refined transcript is ever shown to the DM/players.
 
 ```json
 {
@@ -130,8 +137,8 @@ and `chunk` are unchanged), and the artifacts at `transcript_uri` /
     "refiner": {
       "provider": "deepseek",
       "model": "deepseek/deepseek-chat",
-      "prompt_version": "v2",
-      "cast": {"injected": true, "members": 4, "with_description": 3}
+      "prompt_version": "v3",
+      "cast": {"injected": true, "members": 4, "with_description": 3, "table_size": 5}
     }
   }
 }
@@ -140,6 +147,8 @@ and `chunk` are unchanged), and the artifacts at `transcript_uri` /
 > The `refiner.cast` object records how much campaign context (character names
 > + physical descriptions, fetched from campaign-service) was injected into
 > the LLM prompt; `injected` is false when no cast was available.
+> `table_size` is the campaign roster count (DM + players) used as the
+> MAXIMUM number of distinct speakers in the prompt.
 
 > speaker-service binds both `transcription.completed` and
 > `transcription.refined` on `speakers.identify`; when `REFINER_ENABLED` is

@@ -115,6 +115,7 @@ async def create_campaign(
     *,
     name: str,
     dm_user_id: UUID,
+    language: str,
     slug: str | None = None,
     description: str | None = None,
     settings: dict | None = None,
@@ -122,6 +123,9 @@ async def create_campaign(
     members: list[dict] | None = None,
 ) -> Campaign:
     """Persist a campaign, make the creator its DM, and add its players.
+
+    language is REQUIRED: the DM chooses the language in which all sessions
+    will be (the API schema restricts it to SUPPORTED_LANGUAGES).
 
     The DM member row carries player_name (claim-derived when available,
     "Dungeon Master" otherwise) and character_name "Dungeon Master"; the DM
@@ -138,6 +142,7 @@ async def create_campaign(
         name=name,
         slug=final_slug,
         description=description,
+        language=language,
         dm_user_id=dm_user_id,
         settings=settings or {},
     )
@@ -206,6 +211,7 @@ async def update_campaign(
     name: str | None = None,
     slug: str | None = None,
     description: str | None = None,
+    language: str | None = None,
     settings: dict | None = None,
 ) -> Campaign:
     """DM edits campaign metadata (None fields are left untouched)."""
@@ -216,6 +222,8 @@ async def update_campaign(
         campaign.slug = await unique_slug(db, slug, exclude_id=campaign.id)
     if description is not None:
         campaign.description = description
+    if language is not None:
+        campaign.language = language
     if settings is not None:
         campaign.settings = settings
     await db.commit()

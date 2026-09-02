@@ -22,6 +22,10 @@
 # override (docker-compose.gpu.yml) and this API override are mutually
 # exclusive — use one or the other.
 #
+# NOTE: this file remains as the OpenAI-only form. The preferred way is the
+# unified docker-compose.transcription.yml, which switches between Deepgram
+# Nova 3 and OpenAI with a single TRANSCRIPTION_PROVIDER variable.
+#
 # NOTE: environment maps are merged per-key, so this override only adds the
 # OpenAI settings; the base WhisperX env vars are ignored by this worker
 # (pydantic-settings extra="ignore"). The base models_cache volume mount is

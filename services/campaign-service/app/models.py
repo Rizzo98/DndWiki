@@ -26,6 +26,12 @@ class Campaign(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     description: Mapped[str | None] = mapped_column(Text)
+    # Language of the campaign's sessions (BCP-47-ish code, e.g. "en", "it"),
+    # chosen by the DM at creation and used for transcription/summaries.
+    # The API makes it required; the default covers existing rows (migration).
+    language: Mapped[str] = mapped_column(
+        String(35), nullable=False, default="en", server_default="en"
+    )
     dm_user_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
     # active | archived
     status: Mapped[str] = mapped_column(

@@ -99,10 +99,11 @@ class OpenAITranscriber:
         if not settings.openai_api_key:
             raise TranscriptionError(
                 "OPENAI_API_KEY is not configured — set OPENAI_API_KEY in .env and "
-                "start the stack with the API transcription variant: "
-                "docker compose -f docker-compose.yml -f docker-compose.api.yml up -d --build "
-                "(a container started without -f docker-compose.api.yml never receives the key, "
-                "even if .env has it)"
+                "start the stack with the OpenAI transcription variant: "
+                "TRANSCRIPTION_PROVIDER=openai docker compose -f docker-compose.yml "
+                "-f docker-compose.transcription.yml up -d --build "
+                "(or the OpenAI-only docker-compose.api.yml; a container started "
+                "without either override never receives the key, even if .env has it)"
             )
 
         filename = Path(wav_path).name

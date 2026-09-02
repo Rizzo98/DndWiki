@@ -74,6 +74,58 @@ async def test_refine_window_injects_cast_context(monkeypatch):
     assert "SPEAKER_XX" in user_msg  # labels stay canonical
 
 
+async def test_refine_window_injects_max_speaker_hint(monkeypatch):
+    fake = install_fake_litellm(monkeypatch, [good_json()])
+    llm = RefinerLLM(make_settings())
+    await llm.refine_window(
+        [{"index": 0, "text": "raw"}],
+        context_blocks=[],
+        fixed_count=0,
+        window_index=0,
+        total_windows=1,
+        member_count=5,
+    )
+    user_msg = next(
+        m["content"] for m in fake._calls[0]["messages"] if m["role"] == "user"
+    )
+    assert "People at the table: 5" in user_msg
+    assert "MAXIMUM number of distinct speakers" in user_msg
+    assert "never use more than 5 canonical SPEAKER_XX labels" in user_msg
+
+
+async def test_refine_window_omits_max_speaker_hint_when_unknown(monkeypatch):
+    fake = install_fake_litellm(monkeypatch, [good_json()])
+    llm = RefinerLLM(make_settings())
+    await llm.refine_window(
+        [{"index": 0, "text": "raw"}],
+        context_blocks=[],
+        fixed_count=0,
+        window_index=0,
+        total_windows=1,
+    )
+    user_msg = next(
+        m["content"] for m in fake._calls[0]["messages"] if m["role"] == "user"
+    )
+    assert "People at the table" not in user_msg
+
+
+async def test_refine_window_system_prompt_has_confidence_guidance(monkeypatch):
+    fake = install_fake_litellm(monkeypatch, [good_json()])
+    llm = RefinerLLM(make_settings())
+    await llm.refine_window(
+        [{"index": 0, "text": "raw", "confidence": 0.9}],
+        context_blocks=[],
+        fixed_count=0,
+        window_index=0,
+        total_windows=1,
+    )
+    sys_msg = next(
+        m["content"] for m in fake._calls[0]["messages"] if m["role"] == "system"
+    )
+    assert "CONFIDENCE-AWARE EDITING" in sys_msg
+    assert "confidence" in sys_msg and "context" in sys_msg
+
+
 async def test_refine_window_without_cast_context(monkeypatch):
     fake = install_fake_litellm(monkeypatch, [good_json()])
     llm = RefinerLLM(make_settings())

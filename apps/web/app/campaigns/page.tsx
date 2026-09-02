@@ -4,10 +4,10 @@
 
 import Link from "next/link";
 import { FormEvent, useState } from "react";
-import { Badge, Button, Card, EmptyState, Field, TextInput, TextArea, Alert, fmtDate } from "@/components/ui";
+import { Alert, Badge, Button, Card, EmptyState, Field, Select, TextArea, TextInput, fmtDate } from "@/components/ui";
 import { UserPicker } from "@/components/campaign/members";
 import { AuthGate, useAuth } from "@/lib/auth";
-import { campaignsApi, type Campaign } from "@/lib/api";
+import { CAMPAIGN_LANGUAGES, campaignLanguageLabel, campaignsApi, type Campaign } from "@/lib/api";
 import { useAsyncData, errMessage } from "@/lib/use-async";
 
 interface MemberDraft {
@@ -31,7 +31,7 @@ function emptyDraft() {
 export default function CampaignsPage() {
   const { token, isDm } = useAuth();
   const { data: campaigns, error, loading, reload } = useAsyncData<Campaign[]>((t) => campaignsApi.list(t));
-  const [form, setForm] = useState({ name: "", slug: "", description: "" });
+  const [form, setForm] = useState({ name: "", slug: "", description: "", language: "" });
   const [members, setMembers] = useState<MemberDraft[]>([emptyDraft()]);
   const [inviteToken, setInviteToken] = useState("");
   const [busy, setBusy] = useState(false);
@@ -56,6 +56,12 @@ export default function CampaignsPage() {
         setBusy(false);
         return;
       }
+      // The DM must choose the language the sessions will be in.
+      if (!CAMPAIGN_LANGUAGES.some((l) => l.code === form.language)) {
+        setFormError("Choose the language in which the sessions will be played.");
+        setBusy(false);
+        return;
+      }
       // Every non-empty row must be complete (player, character, description).
       const roster = members.filter(
         (m) => m.player_name.trim() || m.character_name.trim() || m.character_description.trim(),
@@ -77,6 +83,7 @@ export default function CampaignsPage() {
         name: form.name.trim(),
         ...(slug ? { slug } : {}),
         ...(form.description.trim() ? { description: form.description.trim() } : {}),
+        language: form.language,
         members: roster.map((m) => ({
           player_name: m.player_name.trim(),
           character_name: m.character_name.trim(),
@@ -84,7 +91,7 @@ export default function CampaignsPage() {
           ...(m.user_id ? { user_id: m.user_id } : {}),
         })),
       });
-      setForm({ name: "", slug: "", description: "" });
+      setForm({ name: "", slug: "", description: "", language: "" });
       setMembers([emptyDraft()]);
       reload();
     } catch (err) {
@@ -147,6 +154,7 @@ export default function CampaignsPage() {
                     {c.description ? <p className="mt-2 line-clamp-2 text-sm text-slate-400">{c.description}</p> : null}
                     <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
                       <Badge tone={c.status === "active" ? "green" : "slate"}>{c.status}</Badge>
+                      <Badge tone="slate">{campaignLanguageLabel(c.language)}</Badge>
                       <span>created {fmtDate(c.created_at)}</span>
                     </div>
                   </Card>
@@ -168,6 +176,14 @@ export default function CampaignsPage() {
               </Field>
               <Field label="Description">
                 <TextArea rows={3} maxLength={2000} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="A sandbox campaign in the Emerald Expanse…" />
+              </Field>
+              <Field label="Language" hint="The language all sessions will be played in (required).">
+                <Select required value={form.language} onChange={(e) => setForm({ ...form, language: e.target.value })}>
+                  <option value="" disabled>Choose the session language…</option>
+                  {CAMPAIGN_LANGUAGES.map((l) => (
+                    <option key={l.code} value={l.code}>{l.label}</option>
+                  ))}
+                </Select>
               </Field>
 
               <div className="border-t border-slate-800 pt-3">

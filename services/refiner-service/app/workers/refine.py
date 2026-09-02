@@ -162,15 +162,22 @@ async def process_job(
         # deleted campaign never fails refinement - the pass just runs
         # without the cast.
         cast_lines: list[str] = []
+        member_count: int | None = None
         if campaign_client is not None and campaign_id:
             try:
                 members = await campaign_client.list_members(campaign_id)
                 cast_lines = build_cast_block(members)
+                # The roster size (DM + players at the table) is the maximum
+                # number of distinct speakers; mirror the speakers_expected
+                # hint the transcription stage sent to the ASR backend.
+                member_count = len(members) if members else None
                 logger.info(
-                    "session %s: %d cast member(s) injected (%d with description)",
+                    "session %s: %d cast member(s) injected (%d with description); "
+                    "table size %s",
                     session_id,
                     len(cast_lines),
                     sum(1 for m in members if (m.get("character_description") or "").strip()),
+                    member_count,
                 )
             except Exception:  # cast context is best-effort
                 logger.warning(
@@ -193,6 +200,7 @@ async def process_job(
                 window_index=w_index,
                 total_windows=len(windows),
                 cast_lines=cast_lines,
+                member_count=member_count,
             )
             for index, item in raw.items():
                 if start <= index < end and index >= start + fixed:
@@ -217,6 +225,7 @@ async def process_job(
                 "injected": bool(cast_lines),
                 "members": len(cast_lines),
                 "with_description": sum(1 for line in cast_lines if "—" in line),
+                "table_size": member_count,
             },
         }
         await _rewrite_artifacts(

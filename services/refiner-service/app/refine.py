@@ -35,10 +35,26 @@ def turn_text(segments: list[dict[str, Any]], turn: Turn) -> str:
     return " ".join((segments[i].get("text") or "").strip() for i in turn.indices).strip()
 
 
+def _numeric_confidence(value: Any) -> bool:
+    """True for a usable 0..1 confidence (int/float, not bool)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def turn_view(turns: list[Turn], segments: list[dict[str, Any]], index: int) -> dict[str, Any]:
-    """The LLM-facing view of one turn (index, time span, chunk, raw label, text)."""
+    """The LLM-facing view of one turn (index, time span, chunk, raw label, text).
+
+    The source segments may carry an optional per-sentence ASR probability
+    ("confidence", 0..1) when the transcription backend provides one (e.g.
+    AssemblyAI per-utterance confidence). When present it is surfaced as:
+      - "confidence": the turn-level mean, so the LLM knows how sure the
+        speech engine was about this utterance as a whole;
+      - "sentences": the per-segment text + confidence breakdown (only when
+        the turn groups several segments), so the LLM can judge, sentence
+        by sentence, whether the context can raise that probability.
+    Backends without confidence data simply omit both keys.
+    """
     turn = turns[index]
-    return {
+    view = {
         "index": index,
         "start": round(turn.start, 3),
         "end": round(turn.end, 3),
@@ -46,6 +62,24 @@ def turn_view(turns: list[Turn], segments: list[dict[str, Any]], index: int) -> 
         "speaker": turn.label,
         "text": turn_text(segments, turn),
     }
+    confidences = [
+        float(segments[i].get("confidence"))
+        for i in turn.indices
+        if _numeric_confidence(segments[i].get("confidence"))
+    ]
+    if confidences:
+        view["confidence"] = round(sum(confidences) / len(confidences), 3)
+        if len(turn.indices) > 1:
+            view["sentences"] = [
+                {
+                    "text": (segments[i].get("text") or "").strip(),
+                    "confidence": segments[i].get("confidence")
+                    if _numeric_confidence(segments[i].get("confidence"))
+                    else None,
+                }
+                for i in turn.indices
+            ]
+    return view
 
 
 def build_cast_block(members: list[dict[str, Any]]) -> list[str]:

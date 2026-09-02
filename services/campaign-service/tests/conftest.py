@@ -67,6 +67,7 @@ def seed_campaign(session_factory):
         slug: str = "the-fellowship",
         status: str = "active",
         settings: dict | None = None,
+        language: str = "en",
     ) -> Campaign:
         async with session_factory() as db:
             campaign = Campaign(
@@ -75,6 +76,7 @@ def seed_campaign(session_factory):
                 dm_user_id=dm_id,
                 status=status,
                 settings=settings or {},
+                language=language,
             )
             db.add(campaign)
             await db.flush()

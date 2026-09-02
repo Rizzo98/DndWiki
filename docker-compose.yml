@@ -3,6 +3,8 @@
 #
 #   Start:              docker compose up -d --build
 #   With GPU (transcr): docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#   Cloud API transcr:  docker compose -f docker-compose.yml -f docker-compose.transcription.yml up -d
+#                       (Deepgram Nova 3 by default; TRANSCRIPTION_PROVIDER=openai for OpenAI)
 #   Monitoring:         docker compose --profile monitoring up -d
 # ============================================================================
 

@@ -15,6 +15,27 @@ interface Segment {
   text?: string;
   speaker?: string;
   words?: unknown[];
+  /** Diarization confidence (0..1) reported by the transcription backend
+   *  (Deepgram Nova 3). Below LOW_SPEAKER_CONFIDENCE the label is flagged. */
+  speaker_confidence?: number | null;
+}
+
+/** Below this speaker_confidence a label is treated as "likely mis-attributed"
+ *  and highlighted so the DM re-checks/re-assigns it (see speakerConfidenceByLabel). */
+export const LOW_SPEAKER_CONFIDENCE = 0.8;
+
+/** speaker_label -> lowest segment confidence for that label (min, so a label
+ *  pops as soon as ANY of its parts is uncertain). Labels without confidence
+ *  data are omitted. */
+export function speakerConfidenceByLabel(segments: Segment[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const seg of segments) {
+    const label = seg.speaker;
+    const c = seg.speaker_confidence;
+    if (!label || c === null || c === undefined) continue;
+    out[label] = out[label] === undefined ? c : Math.min(out[label], c);
+  }
+  return out;
 }
 
 interface TranscriptDoc {
@@ -53,11 +74,15 @@ export function TranscriptViewer({
   transcriptUrl,
   speakerNames = {},
   onSeek,
+  pendingHint,
 }: {
   transcriptUrl: string | null;
   /** speaker_label -> display name (from session speaker assignments). */
   speakerNames?: Record<string, string>;
   onSeek?: (seconds: number) => void;
+  /** Shown while the URL is withheld because only the refined transcript
+   *  should be displayed (raw ASR output is never surfaced). */
+  pendingHint?: string | null;
 }) {
   const [transcript, setTranscript] = useState<TranscriptDoc | null>(null);
   const [loading, setLoading] = useState(false);
@@ -65,11 +90,13 @@ export function TranscriptViewer({
   const [retryNonce, setRetryNonce] = useState(0);
 
   // The session page polls the session while the pipeline runs and passes a
-  // freshly signed presigned URL every time. The transcript object is
-  // OVERWRITTEN IN PLACE as the pipeline progresses (progressive chunks, and
-  // speaker-service re-clustering which re-labels the segments), so we must
-  // refetch whenever a fresh URL arrives — the object path alone is not a
-  // content fingerprint. `retryNonce` still forces a refetch on Retry.
+  // freshly signed presigned URL every time. The page only forwards the URL
+  // once the refiner has rewritten the artifact (status 'refined' or later),
+  // so the RAW transcription is never rendered — only the refined result.
+  // After that the artifact can still change in place (speaker relabeling in
+  // the refiner-disabled flow), so we refetch whenever a fresh URL arrives;
+  // the object path alone is not a content fingerprint. `retryNonce` still
+  // forces a refetch on Retry.
   useEffect(() => {
     if (!transcriptUrl) {
       setTranscript(null);
@@ -104,7 +131,8 @@ export function TranscriptViewer({
   if (!transcriptUrl) {
     return (
       <div className="rounded-lg border border-dashed border-slate-800 px-4 py-10 text-center text-sm text-slate-500">
-        The transcript appears here once the transcription pipeline finishes.
+        {pendingHint ??
+          'The refined transcript appears here once the transcription pipeline finishes.'}
       </div>
     );
   }
@@ -135,6 +163,12 @@ export function TranscriptViewer({
     if (label && !speakerOrder.includes(label)) speakerOrder.push(label);
   }
 
+  // Segments whose diarization confidence is below the threshold: the label
+  // is likely mis-attributed and should be re-checked/re-assigned.
+  const lowConfidenceSegments = segments.filter(
+    (seg) => seg.speaker_confidence !== null && seg.speaker_confidence !== undefined && seg.speaker_confidence < LOW_SPEAKER_CONFIDENCE,
+  );
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
@@ -142,6 +176,11 @@ export function TranscriptViewer({
         {transcript?.model ? <Badge tone="slate">model {transcript.model}</Badge> : null}
         <span>{segments.length} segment{segments.length === 1 ? "" : "s"}</span>
         <span>· {fmtClock(totalDuration)}</span>
+        {lowConfidenceSegments.length > 0 ? (
+          <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-red-300" title="Diarization confidence below the threshold — these labels may be mis-attributed. Re-assign them in the Speakers panel.">
+            ⚠ {lowConfidenceSegments.length} low-confidence {lowConfidenceSegments.length === 1 ? "label" : "labels"}
+          </span>
+        ) : null}
         <div className="ml-auto flex gap-2">
           {transcriptUrl ? (
             <a href={objectUrl(transcriptUrl)!} target="_blank" rel="noreferrer" className="text-ember-400 hover:underline">
@@ -161,17 +200,29 @@ export function TranscriptViewer({
               const label = seg.speaker ?? "speaker";
               const labelIdx = speakerOrder.indexOf(label);
               const name = speakerNames[label] ?? label;
+              const confidence = seg.speaker_confidence;
+              // Low diarization confidence -> the label pops red so the DM
+              // re-checks the attribution (reassign in the Speakers panel).
+              const lowConfidence =
+                confidence !== null && confidence !== undefined && confidence < LOW_SPEAKER_CONFIDENCE;
+              const chipClass = lowConfidence
+                ? "bg-red-500/20 text-red-300 ring-1 ring-red-500/70"
+                : chipStyle(labelIdx);
               return (
                 <li key={i}>
                   <button
                     onClick={() => onSeek?.(seg.start ?? 0)}
-                    title="Jump to this moment in the recording"
+                    title={
+                      lowConfidence
+                        ? `${name} — low diarization confidence (${Math.round(confidence * 100)}%); reassign in the Speakers panel`
+                        : "Jump to this moment in the recording"
+                    }
                     className="group flex w-full items-start gap-3 rounded-lg px-2 py-1.5 text-left transition hover:bg-slate-800/60"
                   >
                     <span className="mt-0.5 shrink-0 font-mono text-xs text-slate-500 tabular-nums">
                       {fmtClock(seg.start ?? 0)}
                     </span>
-                    <span className={`mt-0.5 inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-semibold ${chipStyle(labelIdx)}`}>
+                    <span className={`mt-0.5 inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-semibold ${chipClass}`}>
                       {name}
                     </span>
                     <span className="text-sm leading-relaxed text-slate-200">

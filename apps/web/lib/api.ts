@@ -235,13 +235,15 @@ export const campaignsApi = {
       name: string;
       slug?: string;
       description?: string;
+      /** Session language - required; the DM picks it at creation. */
+      language: string;
       settings?: Record<string, unknown>;
       /** Players added at creation (required, at least one). */
       members: { player_name: string; character_name: string; character_description: string; user_id?: string | null }[];
     },
   ) => request<Campaign>(token, "/api/campaigns", jsonInit("POST", body)),
   get: (token: string, id: string) => request<Campaign>(token, `/api/campaigns/${id}`),
-  update: (token: string, id: string, body: { name?: string; slug?: string; description?: string; settings?: Record<string, unknown> }) =>
+  update: (token: string, id: string, body: { name?: string; slug?: string; description?: string; language?: string; settings?: Record<string, unknown> }) =>
     request<Campaign>(token, `/api/campaigns/${id}`, jsonInit("PATCH", body)),
   archive: (token: string, id: string) => request<Campaign>(token, `/api/campaigns/${id}/archive`, jsonInit("POST")),
   restore: (token: string, id: string) => request<Campaign>(token, `/api/campaigns/${id}/restore`, jsonInit("POST")),
@@ -262,6 +264,27 @@ export const campaignsApi = {
   acceptInvite: (token: string, inviteToken: string) =>
     request<Campaign>(token, `/api/campaigns/invites/${inviteToken}/accept`, jsonInit("POST")),
 };
+
+// ---------------------------------------------------------------------------
+// campaign session languages
+// ---------------------------------------------------------------------------
+
+/** Session languages the DM may pick at creation (mirrors campaign-service
+ * SUPPORTED_LANGUAGES / LANGUAGE_PATTERN). */
+export const CAMPAIGN_LANGUAGES: { code: string; label: string }[] = [
+  { code: "en", label: "English" },
+  { code: "it", label: "Italiano" },
+  { code: "de", label: "Deutsch" },
+  { code: "fr", label: "Français" },
+  { code: "es", label: "Español" },
+  { code: "pt", label: "Português" },
+];
+
+/** Human label for a campaign language code (falls back to the code). */
+export function campaignLanguageLabel(code: string | null | undefined): string {
+  if (!code) return "—";
+  return CAMPAIGN_LANGUAGES.find((l) => l.code === code)?.label ?? code;
+}
 
 // ---------------------------------------------------------------------------
 // user-service

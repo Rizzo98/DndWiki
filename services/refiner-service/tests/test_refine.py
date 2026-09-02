@@ -226,6 +226,41 @@ def test_turn_view_joins_text_and_keeps_metadata():
     assert view["start"] == 0.0
     assert view["chunk"] == 0
     assert view["speaker"] == "A"
+    assert "confidence" not in view  # no ASR confidence data
+
+
+def test_turn_view_surfaces_optional_confidence():
+    # Segments carry the ASR per-utterance probability (AssemblyAI); the
+    # turn view exposes the mean plus a per-sentence breakdown.
+    segments = [
+        {"start": 0.0, "end": 2.0, "speaker": "A", "chunk": 0, "text": "first part", "confidence": 0.98},
+        {"start": 2.5, "end": 4.0, "speaker": "A", "chunk": 0, "text": "second part", "confidence": 0.55},
+    ]
+    turns = speaker_turns(segments)
+    assert len(turns) == 1
+    view = turn_view(turns, segments, 0)
+    assert view["text"] == "first part second part"
+    assert view["confidence"] == 0.765  # mean(0.98, 0.55)
+    assert view["sentences"] == [
+        {"text": "first part", "confidence": 0.98},
+        {"text": "second part", "confidence": 0.55},
+    ]
+
+
+def test_turn_view_confidence_with_partial_data():
+    # Only segments that carry a numeric confidence contribute; a missing
+    # value is surfaced as None in the sentence breakdown.
+    segments = [
+        {"start": 0.0, "end": 1.0, "speaker": "A", "chunk": 0, "text": "sure", "confidence": 0.9},
+        {"start": 1.5, "end": 2.5, "speaker": "A", "chunk": 0, "text": "unsure"},
+    ]
+    turns = speaker_turns(segments)
+    view = turn_view(turns, segments, 0)
+    assert view["confidence"] == 0.9
+    assert view["sentences"] == [
+        {"text": "sure", "confidence": 0.9},
+        {"text": "unsure", "confidence": None},
+    ]
 
 
 # --- apply_refined -----------------------------------------------------------

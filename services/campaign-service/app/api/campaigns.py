@@ -83,6 +83,7 @@ async def create_campaign(
         name=body.name,
         slug=body.slug,
         description=body.description,
+        language=body.language,
         settings=body.settings,
         dm_user_id=_user_id(user),
         dm_player_name=services.display_name_from_claims(user),

@@ -5,10 +5,10 @@
 
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Badge, Button, Card, EmptyState, Field, FileInput, Select, SessionStatusBadge, TextInput, fmtDate, fmtDuration } from "@/components/ui";
+import { Alert, Badge, Button, Card, EmptyState, Field, FileInput, Select, SessionStatusBadge, TextInput, fmtDate, fmtDuration, fmtPercent } from "@/components/ui";
 import { AudioPlayer } from "@/components/session/audio-player";
 import { SessionSummaryCard } from "@/components/session/session-summary";
-import { TranscriptViewer } from "@/components/session/transcript";
+import { LOW_SPEAKER_CONFIDENCE, TranscriptViewer, speakerConfidenceByLabel } from "@/components/session/transcript";
 import { AuthGate, useAuth } from "@/lib/auth";
 import { campaignsApi, contentApi, objectUrl, sessionsApi, usersApi, wikiApi, type Campaign, type CampaignMember, type PageSummary, type SessionDetail, type SessionSummary, type SpeakerAssignment } from "@/lib/api";
 import { buildLinkIndex, type LinkIndex } from "@/components/linked-text";
@@ -25,6 +25,16 @@ const ACTIVE_STATUSES = new Set([
   "speakers_identified",
   "speaker_pending",
   "generating_wiki",
+]);
+
+// While the pipeline is still transcribing/refining, the object behind
+// transcript_url holds the RAW transcription (progressive chunks, then the
+// pre-refiner output). It is never surfaced: the page only shows the
+// transcript once the refiner has rewritten it (status 'refined' or later).
+const TRANSCRIPT_PENDING_STATUSES = new Set([
+  "transcribing",
+  "transcribed",
+  "refining",
 ]);
 
 export default function SessionDetailPage({ params }: { params: { id: string; sessionId: string } }) {
@@ -169,6 +179,41 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
     return names;
   }, [speakers, userNames, memberNames]);
 
+  // Diarization confidence per speaker label (min across the label's parts),
+  // read from diarization.json — the Deepgram worker records speaker_confidence
+  // per segment; the refiner/speaker-service preserve the field. Best-effort:
+  // a failed fetch only disables the confidence highlighting, nothing else.
+  const [diarizationSegments, setDiarizationSegments] = useState<Array<{ start: number; end: number; speaker?: string; speaker_confidence?: number | null }> | null>(null);
+  useEffect(() => {
+    if (!session?.diarization_url) {
+      setDiarizationSegments(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const url = objectUrl(session.diarization_url);
+        const r = await fetch(url!);
+        if (!r.ok) throw new Error('diarization fetch failed (' + r.status + ')');
+        const doc = (await r.json()) as { segments?: Array<{ start: number; end: number; speaker?: string; speaker_confidence?: number | null }> };
+        if (!cancelled) setDiarizationSegments(doc.segments ?? []);
+      } catch {
+        if (!cancelled) setDiarizationSegments(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Refetch when the pipeline moves (status) or the object path changes.
+    // The signed URL itself rotates every poll — strip the signature.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.id, session?.status, session?.diarization_url?.split('?')[0]]);
+
+  const labelConfidence = useMemo(
+    () => speakerConfidenceByLabel(diarizationSegments ?? []),
+    [diarizationSegments],
+  );
+
   // Poll while the pipeline is still moving. Keyed on the status string only
   // (not the whole session object), so steady-state refreshes do not restart
   // the interval and background reloads never flicker the page to "Loading".
@@ -254,7 +299,9 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
       await sessionsApi.assignSpeaker(token, params.sessionId, speakerLabel, f.member_id);
       const name = memberNames[f.member_id] ?? f.member_id;
       setNotice(`Speaker ${speakerLabel} named "${name}".`);
-      setAssignForm((prev) => ({ ...prev, [speakerLabel]: { member_id: "" } }));
+      // keep the dropdown on the saved choice (the reload below makes the
+      // unchanged-check disable the button) — no need to clear it
+      setAssignForm((prev) => ({ ...prev, [speakerLabel]: { member_id: f.member_id } }));
       reloadSpeakers();
     } catch (err) {
       setFormError(errMessage(err));
@@ -269,9 +316,13 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
   const isDm = campaign?.my_role === "dm";
 
   // Once every diarized speaker has been named, the Speakers section adds no
-  // information — hide it entirely (it only exists to drive the assignment).
+  // information for players — hide it. The DM always keeps it: assignments can
+  // be corrected later (especially the low-confidence labels highlighted
+  // below), so the panel must stay reachable after every speaker has a name.
   const allSpeakersAssigned =
     (speakers?.length ?? 0) > 0 && (speakers ?? []).every((s) => s.member_id || s.user_id);
+  const showSpeakersCard =
+    (speakers?.length ?? 0) > 0 && (isDm || !allSpeakersAssigned);
 
   return (
     <AuthGate>
@@ -379,7 +430,10 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
       <Card>
         <h2 className="mb-4 text-lg font-semibold">Transcript</h2>
         <TranscriptViewer
-          transcriptUrl={session.transcript_url}
+          transcriptUrl={TRANSCRIPT_PENDING_STATUSES.has(session.status) ? null : session.transcript_url}
+          pendingHint={TRANSCRIPT_PENDING_STATUSES.has(session.status)
+            ? "Transcription and refinement in progress — the refined transcript will appear here once it is ready."
+            : null}
           speakerNames={speakerNames}
           onSeek={(seconds) => {
             const audio = audioRef.current;
@@ -390,12 +444,12 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
         />
       </Card>
 
-      {!allSpeakersAssigned ? (
+      {showSpeakersCard ? (
         <Card>
           <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-lg font-semibold">Speakers</h2>
             <span className="text-xs text-slate-500">
-              Naming a user-linked speaker enrolls their voice — future sessions are named automatically.
+              Red labels have low diarization confidence — double-check them. The DM can change any assignment; naming a user-linked speaker also enrolls their voice.
             </span>
           </div>
           {speakers && speakers.length === 0 ? (
@@ -404,7 +458,10 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
             <div className="divide-y divide-slate-800">
               {speakers?.map((s) => {
                 const unassigned = !s.member_id && !s.user_id;
-                const f = assignForm[s.speaker_label] ?? { member_id: "" };
+                const currentMember = s.member_id ?? "";
+                const f = assignForm[s.speaker_label] ?? { member_id: currentMember };
+                const labelConf = labelConfidence[s.speaker_label];
+                const lowConfidence = labelConf !== undefined && labelConf < LOW_SPEAKER_CONFIDENCE;
                 const assignedName = s.user_id
                   ? userNames[s.user_id] ?? s.user_id
                   : s.member_id
@@ -414,8 +471,13 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
                   <div key={s.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
                     <div>
                       <div className="flex items-center gap-2 text-sm font-medium text-slate-100">
-                        <span className="font-mono">{s.speaker_label}</span>
+                        <span className={lowConfidence ? "font-mono text-red-300" : "font-mono"}>{s.speaker_label}</span>
                         <Badge tone={s.status === "confirmed" ? "green" : s.status === "auto" ? "blue" : "amber"}>{s.status}</Badge>
+                        {lowConfidence ? (
+                          <span title={`Diarization confidence ${fmtPercent(labelConf)} is below the ${Math.round(LOW_SPEAKER_CONFIDENCE * 100)}% threshold — the attribution may be wrong`}>
+                            <Badge tone="red">⚠ low confidence</Badge>
+                          </span>
+                        ) : null}
                       </div>
                       <div className="mt-0.5 text-xs text-slate-500">
                         {assignedName ? (
@@ -424,9 +486,10 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
                           "not assigned — needs a name"
                         )}
                         {s.confidence !== null && s.confidence !== undefined ? ` · match ${Math.round(s.confidence * 100)}%` : ""}
+                        {labelConf !== undefined ? ` · diarization ${fmtPercent(labelConf)}` : ""}
                       </div>
                     </div>
-                    {unassigned && isDm ? (
+                    {isDm ? (
                       <div className="flex flex-wrap items-end gap-2">
                         <Select
                           className="w-72"
@@ -444,7 +507,12 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
                             </option>
                           ))}
                         </Select>
-                        <Button onClick={() => assign(s.speaker_label)} disabled={busy || !f.member_id}>Name speaker</Button>
+                        <Button
+                          onClick={() => assign(s.speaker_label)}
+                          disabled={busy || !f.member_id || f.member_id === currentMember}
+                        >
+                          {unassigned ? "Name speaker" : "Save assignment"}
+                        </Button>
                       </div>
                     ) : unassigned ? (
                       <span className="text-xs text-slate-500">awaiting DM assignment</span>

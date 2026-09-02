@@ -53,7 +53,13 @@ async def get_campaign_internal(
     campaign = await services.get_campaign(db, campaign_id)
     if campaign is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found")
-    return CampaignInternalOut(id=campaign.id, name=campaign.name, dm_user_id=campaign.dm_user_id)
+    return CampaignInternalOut(
+        id=campaign.id,
+        name=campaign.name,
+        description=campaign.description,
+        language=campaign.language,
+        dm_user_id=campaign.dm_user_id,
+    )
 
 
 @router.get("/campaigns/{campaign_id}/members", response_model=list[CampaignMemberOut])

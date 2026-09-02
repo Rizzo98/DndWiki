@@ -1,0 +1,115 @@
+# ============================================================================
+# DnD Wiki — API transcription variants (OpenAI | Deepgram Nova 3 | AssemblyAI).
+#
+# One override file, three interchangeable cloud backends for the transcription
+# service. The engine is selected with TRANSCRIPTION_PROVIDER:
+#
+#   Deepgram (default): docker compose -f docker-compose.yml -f docker-compose.transcription.yml up -d --build
+#   OpenAI:             TRANSCRIPTION_PROVIDER=openai docker compose -f docker-compose.yml -f docker-compose.transcription.yml up -d --build
+#   AssemblyAI:         TRANSCRIPTION_PROVIDER=assemblyai docker compose -f docker-compose.yml -f docker-compose.transcription.yml up -d --build
+#
+# The variable is interpolated into the Dockerfile path, so the same compose
+# command builds whichever worker is selected. Environment maps are merged
+# per-key, so all providers' settings are injected into the container and
+# each worker reads only its own (pydantic-settings extra="ignore"); the
+# WhisperX env vars from the base file are ignored by all API workers.
+#
+# All three variants replace the on-prem WhisperX worker (ASR + pyannote
+# diarization + wav2vec2 alignment, multi-GB local models, GPU recommended)
+# with a thin HTTP worker that calls a cloud API — ASR + speaker diarization
+# in one request. No local ML models, no GPU, no model downloads.
+#
+# Deepgram:  POST /v1/listen?model=nova-3&diarize=true&utterances=true...
+#            (Nova 3 = Deepgram's most accurate model; built-in diarization)
+# OpenAI:    POST /v1/audio/transcriptions (gpt-4o-transcribe-diarize,
+#            diarized_json)
+# AssemblyAI: POST /v2/upload + /v2/transcript (Universal-3.5 Pro with
+#            speaker diarization; campaign language / member count /
+#            contextual prompt read from campaign-service at job time)
+#
+# Speaker identification is NOT touched: speaker-service still matches the
+# diarized labels against the campaign voiceprints in Qdrant (ECAPA-TDNN
+# embeddings), so the voiceprint naming system is fully preserved.
+#
+# Requirements:
+#   - DEEPGRAM_API_KEY / OPENAI_API_KEY / ASSEMBLYAI_API_KEY in .env
+#     (see .env.example — placeholders below).
+#   - Internet egress from the transcription worker to the provider.
+#   - AssemblyAI reads the campaign language + roster from campaign-service
+#     (CAMPAIGN_SERVICE_URL below; best-effort — an outage falls back to
+#     auto-detection).
+#
+# The on-prem GPU override (docker-compose.gpu.yml) and this API override are
+# mutually exclusive — use one or the other. docker-compose.api.yml remains
+# available as the single-backend (OpenAI-only) form of the same thing.
+# ============================================================================
+
+services:
+  transcription-service:
+    build:
+      context: .
+      dockerfile: services/transcription-${TRANSCRIPTION_PROVIDER:-deepgram}-service/Dockerfile
+    environment:
+      SERVICE_NAME: transcription-service
+      SERVICE_DB_NAME: dnd_sessions
+      SESSION_SERVICE_URL: http://session-service:8000
+      # AssemblyAI reads the campaign language/roster/prompt context per job;
+      # best-effort (auto-detection when campaign-service is unreachable).
+      CAMPAIGN_SERVICE_URL: http://campaign-service:8000
+
+      # --- Deepgram Speech-to-Text (used when TRANSCRIPTION_PROVIDER=deepgram) ---
+      # Placeholders — fill .env before processing jobs.
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
+      DEEPGRAM_TRANSCRIPTION_MODEL: ${DEEPGRAM_TRANSCRIPTION_MODEL:-nova-3}
+      # BCP-47 hint (e.g. it, en); empty = language=multi (Nova auto-detects —
+      # Deepgram's default when omitted is English, so auto-detect is explicit)
+      DEEPGRAM_LANGUAGE: ${DEEPGRAM_LANGUAGE:-}
+      DEEPGRAM_SMART_FORMAT: ${DEEPGRAM_SMART_FORMAT:-true}
+      DEEPGRAM_PUNCTUATE: ${DEEPGRAM_PUNCTUATE:-true}
+      # Long recordings are decoded locally (ffmpeg) and sliced into
+      # fixed-length chunks; bounded payloads keep latency low and side-step
+      # Deepgram's plan-dependent per-request size limits.
+      DEEPGRAM_CHUNK_SECONDS: ${DEEPGRAM_CHUNK_SECONDS:-300}
+      DEEPGRAM_MAX_UPLOAD_MB: ${DEEPGRAM_MAX_UPLOAD_MB:-24}
+      DEEPGRAM_API_BASE: ${DEEPGRAM_API_BASE:-https://api.deepgram.com/v1}
+      DEEPGRAM_REQUEST_TIMEOUT_SEC: ${DEEPGRAM_REQUEST_TIMEOUT_SEC:-900}
+      DEEPGRAM_MAX_RETRIES: ${DEEPGRAM_MAX_RETRIES:-3}
+
+      # --- OpenAI Speech-to-Text (used when TRANSCRIPTION_PROVIDER=openai) ---
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_TRANSCRIPTION_MODEL: ${OPENAI_TRANSCRIPTION_MODEL:-gpt-4o-transcribe-diarize}
+      OPENAI_RESPONSE_FORMAT: ${OPENAI_RESPONSE_FORMAT:-diarized_json}
+      OPENAI_CHUNKING_STRATEGY: ${OPENAI_CHUNKING_STRATEGY:-auto}
+      OPENAI_TRANSCRIPTION_LANGUAGE: ${OPENAI_TRANSCRIPTION_LANGUAGE:-}
+      OPENAI_CHUNK_SECONDS: ${OPENAI_CHUNK_SECONDS:-300}
+      OPENAI_MAX_UPLOAD_MB: ${OPENAI_MAX_UPLOAD_MB:-24}
+      OPENAI_API_BASE: ${OPENAI_API_BASE:-https://api.openai.com/v1}
+      OPENAI_REQUEST_TIMEOUT_SEC: ${OPENAI_REQUEST_TIMEOUT_SEC:-900}
+      OPENAI_MAX_RETRIES: ${OPENAI_MAX_RETRIES:-3}
+
+      # --- AssemblyAI Speech-to-Text (used when TRANSCRIPTION_PROVIDER=assemblyai) ---
+      ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY:-}
+      ASSEMBLYAI_TRANSCRIPTION_MODEL: ${ASSEMBLYAI_TRANSCRIPTION_MODEL:-universal-3-5-pro}
+      # Optional override; empty = use the campaign's language at job time
+      # (campaign-service), falling back to AssemblyAI auto-detection.
+      ASSEMBLYAI_LANGUAGE: ${ASSEMBLYAI_LANGUAGE:-}
+      # Contextual prompt for Universal-3.5 Pro (what the audio is about);
+      # empty = built-in D&D-session prompt enriched with the campaign name/
+      # description at job time.
+      ASSEMBLYAI_PROMPT: ${ASSEMBLYAI_PROMPT:-}
+      # Inject the campaign roster names as keyterms_prompt so fantasy names
+      # are transcribed accurately (true by default).
+      ASSEMBLYAI_KEYTERMS_ENABLED: ${ASSEMBLYAI_KEYTERMS_ENABLED:-true}
+      # Long recordings are decoded locally (ffmpeg) and sliced into
+      # fixed-length chunks; bounded jobs keep latency low and produce
+      # transcription.progress after every chunk.
+      ASSEMBLYAI_CHUNK_SECONDS: ${ASSEMBLYAI_CHUNK_SECONDS:-300}
+      ASSEMBLYAI_MAX_UPLOAD_MB: ${ASSEMBLYAI_MAX_UPLOAD_MB:-24}
+      ASSEMBLYAI_API_BASE: ${ASSEMBLYAI_API_BASE:-https://api.assemblyai.com}
+      ASSEMBLYAI_REQUEST_TIMEOUT_SEC: ${ASSEMBLYAI_REQUEST_TIMEOUT_SEC:-900}
+      ASSEMBLYAI_MAX_RETRIES: ${ASSEMBLYAI_MAX_RETRIES:-3}
+      ASSEMBLYAI_POLL_INTERVAL_SEC: ${ASSEMBLYAI_POLL_INTERVAL_SEC:-3}
+      ASSEMBLYAI_POLL_TIMEOUT_SEC: ${ASSEMBLYAI_POLL_TIMEOUT_SEC:-1800}
+    depends_on:
+      # The AssemblyAI worker reads the campaign language/roster per job.
+      campaign-service: { condition: service_started }

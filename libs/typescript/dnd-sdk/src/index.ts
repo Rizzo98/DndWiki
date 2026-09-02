@@ -22,6 +22,8 @@ export interface Campaign {
   name: string;
   slug: string;
   description: string | null;
+  /** Session language chosen by the DM at creation (e.g. "en", "it"). */
+  language: string;
   dm_user_id: string;
   status: "active" | "archived";
   settings: Record<string, unknown>;
