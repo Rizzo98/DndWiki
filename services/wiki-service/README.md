@@ -13,12 +13,16 @@ caller's role (checked against campaign-service).
   `app/page_attributes.py` (e.g. character `npc|player`, location geospatial
   fields); unknown attribute keys are rejected with a 422.
 - Draft review loop: `draft → pending_review → published | archived` (DM only).
+  Pages the pipeline generates do NOT go through it: they are written by the
+  internal apply endpoint of a change set the DM already confirmed, and land
+  **published** (see below).
 - Visibility: `public` (players see it) / `dm_only` / `hidden` (nobody but DM).
 - Versioning (`page_versions`, per-page 1-based `version_no`) and proposed
   relations (`page_relations`).
 - Timelines (`timeline_events`) with in-world dates.
 - Publishes `wiki.published` / `wiki.updated` / `wiki.archived` → search +
-  notifications, and `wiki.draft_ready` when content-service creates drafts.
+  notifications, and `wiki.draft_ready` when a draft page is created through
+  the public API.
 
 ## Permission rules
 
@@ -42,6 +46,24 @@ caller's role (checked against campaign-service).
 | GET/POST/DELETE | `/api/wiki/pages/{id}/relations` | read: members, write: DM | |
 | GET/POST | `/api/wiki/timeline` | GET: members, POST: DM | players see approved events only |
 | PATCH | `/api/wiki/timeline/{id}` | DM | edit/approve |
+
+## Internal API (`/internal/wiki`, dnd-services token)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/internal/wiki/pages?campaign_id=` | flat page listing (content-service dedupe input) |
+| GET | `/internal/wiki/timeline?campaign_id=` | every timeline entry, approved or not |
+| POST | `/internal/wiki/timeline/upsert` | create/refresh the entry of an event page (created pending) |
+| POST | `/internal/wiki/changes/apply` | **write a DM-confirmed change set** |
+
+`POST /internal/wiki/changes/apply` is the single path that publishes
+pipeline-generated content: content-service calls it after the DM confirmed
+the proposed changes on the session page, so the new pages are created
+`published` (the confirmation IS the approval — no "pending review" step) and
+new timeline entries `approved`, while an existing entry keeps whatever
+approval state the DM gave it. It is idempotent: a create whose page the
+campaign already documents (same kind + title) or that this session already
+wrote is skipped and reported, so a retried message never duplicates a page.
 
 ## Events published
 

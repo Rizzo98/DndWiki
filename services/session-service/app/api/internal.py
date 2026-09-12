@@ -1,9 +1,8 @@
 """Internal worker API (service-to-service, dnd-services client token).
 
 transcription/speaker/content workers never touch session-service tables
-directly; they update pipeline state through these endpoints. Read endpoints
-back the debug regenerate flow (content-service needs the session plus its
-speaker map to re-publish content.generate).
+directly; they update pipeline state through these endpoints. The read
+endpoints expose the session record and the speaker map to the other services.
 """
 
 from __future__ import annotations

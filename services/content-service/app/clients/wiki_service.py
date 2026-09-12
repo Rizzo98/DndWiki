@@ -1,8 +1,12 @@
 """Client for the wiki-service API (service-to-service, dnd-services token).
 
-Creates pending_review draft pages and proposes cross-references. wiki-service
-restricts service tokens to draft|pending_review statuses (publishing requires
-DM approval) — exactly what the content worker needs.
+Reads the campaign's page listing (cross-session dedupe input) and APPLIES the
+change set the DM confirmed: POST /internal/wiki/changes/apply creates the
+confirmed pages as published, updates the ones the campaign already has and
+writes the timeline entries. Regular page creation through the public API
+stays restricted to draft|pending_review for service tokens — the internal
+apply endpoint is the only publishing path, and it is reached only after the
+DM confirmed the proposed changes on the session page.
 """
 
 from __future__ import annotations
@@ -23,45 +27,27 @@ class WikiServiceError(Exception):
 
 
 class WikiServiceClient:
-    """Async HTTP client for the wiki draft endpoints."""
+    """Async HTTP client for the wiki endpoints used by the content pipeline."""
 
     def __init__(self, settings: ServiceSettings) -> None:
         self._settings = settings
         self._base_url = settings.wiki_service_url.rstrip("/")
 
-    async def create_page(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """POST /api/wiki/pages with a PageCreate payload; returns the page."""
-        return await self._post("/api/wiki/pages", payload)
-
     async def list_campaign_pages(self, campaign_id: str) -> list[dict[str, Any]]:
         """GET /internal/wiki/pages — flat listing used for cross-run dedupe."""
         return await self._get(f"/internal/wiki/pages?campaign_id={campaign_id}")
 
-    async def create_relation(
-        self, page_id: str, related_page_id: str, relation_type: str
-    ) -> dict[str, Any]:
-        """POST /api/wiki/pages/{id}/relations (propose a cross-reference)."""
-        return await self._post(
-            f"/api/wiki/pages/{page_id}/relations",
-            {"related_page_id": related_page_id, "relation_type": relation_type},
-        )
+    async def apply_changes(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """POST /internal/wiki/changes/apply — write a DM-confirmed change set.
+
+        Returns the created/updated page ids, the timeline entries written and
+        the changes that were skipped (a page the campaign already has).
+        """
+        return await self._post("/internal/wiki/changes/apply", payload)
 
     async def list_timeline_events(self, campaign_id: str) -> list[dict[str, Any]]:
         """GET /internal/wiki/timeline — every entry (approved or not)."""
         return await self._get(f"/internal/wiki/timeline?campaign_id={campaign_id}")
-
-    async def upsert_timeline_event(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """POST /internal/wiki/timeline/upsert — create/refresh the entry of an
-        event page (approved stays pending until the DM approves)."""
-        return await self._post("/internal/wiki/timeline/upsert", payload)
-
-    async def update_page(
-        self, page_id: str, payload: dict[str, Any]
-    ) -> dict[str, Any]:
-        """PATCH /api/wiki/pages/{id} — refresh an existing event page's
-        content with newly extracted information (service tokens may only
-        touch content, never status/visibility)."""
-        return await self._patch(f"/api/wiki/pages/{page_id}", payload)
 
     async def _get(self, path: str) -> Any:
         token = service_token(self._settings)
@@ -77,20 +63,12 @@ class WikiServiceClient:
         return resp.json()
 
     async def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        return await self._send("POST", path, body=body)
-
-    async def _patch(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        return await self._send("PATCH", path, body=body)
-
-    async def _send(
-        self, method: str, path: str, body: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
         token = service_token(self._settings)
         headers = {"Authorization": f"Bearer {token}"}
         try:
             async with httpx.AsyncClient(timeout=self._settings.service_timeout_sec) as client:
-                resp = await client.request(
-                    method, f"{self._base_url}{path}", json=body, headers=headers
+                resp = await client.post(
+                    f"{self._base_url}{path}", json=body, headers=headers
                 )
         except httpx.HTTPError as exc:
             logger.warning("wiki-service request failed: %s", exc)

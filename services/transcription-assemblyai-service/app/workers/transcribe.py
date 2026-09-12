@@ -26,7 +26,8 @@ Per-campaign parameters are read from campaign-service at job time
 - speakers_expected: the campaign's member count (dm + players at the table);
 - prompt: contextual prompt (campaign name/description + built-in D&D
   domain description) -> prompt;
-- keyterms: the roster's character/player names -> keyterms_prompt.
+- keyterms: the roster's names, expanded (full name + each single word of
+  multi-word names) -> keyterms_prompt.
 When campaign-service is unreachable the job still runs with AssemblyAI
 auto-detection and the built-in prompt.
 

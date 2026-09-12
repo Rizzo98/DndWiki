@@ -1,9 +1,10 @@
 """Internal pipeline API (service-to-service, dnd-services client token).
 
-content-service fetches the flat page listing of a campaign before drafting
-so it can dedupe against what the wiki already documents (no more duplicate
-pages for entities that exist under a different name). Nothing here is for
-end users - the public API stays under /api/wiki behind membership checks.
+content-service fetches the flat page listing of a campaign before proposing
+changes, so it can dedupe against what the wiki already documents (no
+duplicate pages for entities that exist under another name), and APPLIES the
+change set the DM confirmed on the session page. Nothing here is for end
+users - the public API stays under /api/wiki behind membership checks.
 """
 
 from __future__ import annotations
@@ -15,9 +16,17 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import services
-from app.deps import require_service
+from app.broker import EventPublisher
+from app.deps import get_publisher, require_service
 from app.models import TimelineEvent, WikiPage
-from app.schemas import ExistingPageOut, TimelineEventOut, TimelineUpsert, TimelineUpsertOut
+from app.schemas import (
+    ChangeSetApply,
+    ChangeSetApplyOut,
+    ExistingPageOut,
+    TimelineEventOut,
+    TimelineUpsert,
+    TimelineUpsertOut,
+)
 
 router = APIRouter(
     prefix="/internal/wiki",
@@ -101,3 +110,20 @@ async def upsert_timeline(
         source_session_id=body.source_session_id,
     )
     return TimelineUpsertOut(event=_timeline_out(event), created=created)
+
+@router.post("/changes/apply", response_model=ChangeSetApplyOut)
+async def apply_changes(
+    body: ChangeSetApply,
+    db: AsyncSession = Depends(get_session),
+    publisher: EventPublisher = Depends(get_publisher),
+):
+    """Write a DM-confirmed change set into the wiki.
+
+    Called by content-service once the DM confirmed the proposed pages,
+    updates and timeline entries of a session. The pages are created
+    PUBLISHED (the confirmation IS the approval) and new timeline entries are
+    created approved, so nothing pipeline-generated ever sits in 'pending
+    review'. Applied changes are reported back per change id; a create the
+    campaign already documents is skipped rather than duplicated.
+    """
+    return await services.apply_change_set(db, body, publisher=publisher)

@@ -1,5 +1,6 @@
-"""Business logic for wiki-service (pages, relations, timeline)."""
+"""Business logic for wiki-service (pages, relations, timeline, change sets)."""
 
+from app.services.changes import apply_change_set
 from app.services.pages import (
     ARCHIVED,
     DM_ONLY,
@@ -46,6 +47,7 @@ __all__ = [
     "PUBLIC",
     "PUBLISHED",
     "SERVICE_CREATE_STATUSES",
+    "apply_change_set",
     "approve_page",
     "archive_page",
     "create_page",

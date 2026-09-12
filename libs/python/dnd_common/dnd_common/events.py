@@ -42,7 +42,18 @@ TOPOLOGY: dict[str, list[str]] = {
         "transcription.refined",
         "speakers.assigned",
     ],
-    "content.generate": ["speakers.identified", "speakers.assigned"],
+    # content.generate drives the whole content pipeline: the summary phase
+    # (speakers.identified / speakers.assigned -> draft summary), the DM's
+    # summary review loop (summary.regenerate), the change-set proposal built
+    # from the confirmed summary (summary.confirmed) and the write of the
+    # change set the DM confirmed (plan.confirmed)
+    "content.generate": [
+        "speakers.identified",
+        "speakers.assigned",
+        "summary.regenerate",
+        "summary.confirmed",
+        "plan.confirmed",
+    ],
     "search.events": ["wiki.published", "wiki.updated", "wiki.archived"],
     "notification.events": [
         "wiki.draft_ready",

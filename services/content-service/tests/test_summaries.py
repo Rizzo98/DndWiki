@@ -70,3 +70,91 @@ async def test_latest_unknown_session(session_factory):
         assert await summary_services.latest_summary_for_session(
             db, UUID("99999999-9999-9999-9999-999999999999")
         ) is None
+
+# ------------------------------------------------- the review layer contract
+
+
+async def test_save_writes_a_draft_and_resets_a_previous_confirmation(session_factory):
+    """Regenerating always sends the session back to the DM for review."""
+    async with session_factory() as db:
+        await summary_services.save_summary(
+            db, SESSION_ID, generation_job_id=JOB_ID, merged=_merged(),
+            llm_provider="deepseek", llm_model="m1", prompt_version="v1",
+            party_characters=["Aragorn"],
+        )
+        confirmed = await summary_services.confirm_summary(db, SESSION_ID, confirmed_by=JOB_ID)
+        assert confirmed is not None
+        assert confirmed.review_status == "confirmed"
+        assert confirmed.confirmed_at is not None
+
+        fresh = await summary_services.save_summary(
+            db, SESSION_ID, generation_job_id=JOB_ID, merged=_merged(session_summary="New draft."),
+            llm_provider="deepseek", llm_model="m1", prompt_version="v1",
+        )
+    assert fresh.review_status == "draft"
+    assert fresh.revision == 1
+    assert fresh.confirmed_at is None
+    assert fresh.confirmed_by is None
+    assert fresh.edit_history == []
+
+
+async def test_apply_revision_bumps_the_revision_and_keeps_the_draft(session_factory):
+    async with session_factory() as db:
+        await summary_services.save_summary(
+            db, SESSION_ID, generation_job_id=JOB_ID,
+            merged=_merged(language="it", confidence=0.8),
+            llm_provider="deepseek", llm_model="m1", prompt_version="v1",
+            party_characters=["Aragorn"],
+        )
+        row = await summary_services.apply_revision(
+            db,
+            SESSION_ID,
+            generation_job_id=JOB_ID,
+            merged={"session_summary": "Rewritten line.", "confidence": 0.8},
+            llm_provider="deepseek",
+            llm_model="m1",
+            prompt_version="v1",
+            edits=[{"instruction": "fix it", "targets": ["old line"]}],
+        )
+    assert row.revision == 2
+    assert row.review_status == "draft"
+    assert row.summary == "Rewritten line."
+    assert row.language == "it"  # untouched by a text-only rewrite
+    assert row.party_characters == ["Aragorn"]
+    assert row.edit_history[0]["instruction"] == "fix it"
+
+
+async def test_apply_revision_without_a_summary_raises(session_factory):
+    import pytest
+
+    async with session_factory() as db:
+        with pytest.raises(ValueError, match="no summary to revise"):
+            await summary_services.apply_revision(
+                db, SESSION_ID, generation_job_id=JOB_ID,
+                merged={"session_summary": "x"},
+                llm_provider="deepseek", llm_model="m1", prompt_version="v1",
+            )
+
+
+async def test_summary_to_merged_rebuilds_the_extraction(session_factory):
+    """Phase 2 consumes the confirmed summary, not the transcript."""
+    async with session_factory() as db:
+        await summary_services.save_summary(
+            db, SESSION_ID, generation_job_id=JOB_ID,
+            merged=_merged(language="it", confidence=0.8),
+            llm_provider="deepseek", llm_model="m1", prompt_version="v1",
+            party_characters=["Aragorn"],
+        )
+        row = await summary_services.latest_summary_for_session(db, SESSION_ID)
+    merged = summary_services.summary_to_merged(row)
+    assert merged["language"] == "it"
+    assert merged["session_summary"] == "The party reaches the gates of Moria."
+    assert merged["characters"][0]["name"] == "Aragorn"
+    assert merged["events"][0]["title"] == "Entering Moria"
+    assert merged["confidence"] == 0.8
+    assert merged["party_characters"] == ["Aragorn"]
+
+
+def test_summary_lines_splits_and_trims():
+    assert summary_services.summary_lines("a\n  b  \n\nc") == ["a", "b", "c"]
+    assert summary_services.summary_lines("") == []

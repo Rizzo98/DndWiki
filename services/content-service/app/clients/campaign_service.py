@@ -1,8 +1,8 @@
-"""campaign-service client: DM authorization for the debug regenerate API.
+"""campaign-service client: DM authorization for the summary review API.
 
-content-service never reads dnd_campaigns tables directly; destructive /
-re-triggering endpoints ask campaign-service GET /internal/membership with a
-service token before doing anything (same pattern as wiki-service).
+content-service never reads dnd_campaigns tables directly; the endpoints that
+write to the wiki ask campaign-service GET /internal/membership with a service
+token before doing anything (same pattern as wiki-service).
 """
 
 from __future__ import annotations

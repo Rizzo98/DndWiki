@@ -6,7 +6,8 @@ accidentally jump the pipeline forward or backward.
 
     uploaded -> recorded -> transcribing -> transcribed -> refining -> refined
         -> identifying_speakers -> speakers_identified
-        -> (speaker_pending: DM assigns) -> generating_wiki -> content_ready
+        -> (speaker_pending: DM assigns) -> summarizing -> summary_ready
+        -> generating_wiki -> wiki_plan_ready -> applying_wiki -> content_ready
         -> reviewed -> published
 
 'refining'/'refined' is the LLM contextual-diarization stage (refiner-service,
@@ -14,14 +15,29 @@ between transcription and speaker identification). When the refiner is
 disabled, transcription.completed goes straight from 'transcribed' to
 'identifying_speakers' as before.
 
-Failures land on 'failed'; 'published' may be pulled back to 'reviewed'
-when the DM unpublishes. 'failed' -> 'generating_wiki' is the debug
-regenerate retry (same transcript, content-service); all other forward
-progress from 'failed' stays blocked.
+'summarizing'/'summary_ready' is the session-summary REVIEW LAYER: the
+transcript is distilled into a DRAFT session summary the DM reviews on the
+session page. The session parks on 'summary_ready' until the DM either asks
+for a rewrite with feedback ('summarizing' again) or confirms the summary
+('generating_wiki').
 
-'generating_wiki' is reachable again from 'content_ready'/'reviewed': the
-debug regenerate flow re-runs wiki generation from the same transcript
-(content-service POST /api/content/sessions/{id}/regenerate).
+'generating_wiki' -> 'wiki_plan_ready' -> 'applying_wiki' is the CHANGE-SET
+REVIEW LAYER: the confirmed summary is turned into a PROPOSED change set (the
+pages and timeline entries that WOULD be written, with a per-field diff
+against what the wiki already documents), nothing is written yet. The DM
+inspects, edits or drops single changes and confirms the set, and only then
+does 'applying_wiki' write the pages and timeline entries.
+
+Failures land on 'failed'; 'published' may be pulled back to 'reviewed'
+when the DM unpublishes. 'failed' -> 'summarizing'/'generating_wiki' is the
+RETRY edge: the worker marks the session failed, the message is redelivered
+and the same phase runs again. All other forward progress from 'failed' stays
+blocked, so a failed session never silently restarts.
+
+The pipeline never goes backwards: a session that reached 'content_ready' or
+'published' can only move forward (or be unpublished back to 'reviewed').
+Re-generating a session's wiki content would duplicate what the campaign
+already documents, so it is not reachable through this machine at all.
 """
 
 from enum import Enum
@@ -39,7 +55,11 @@ class SessionStatus(str, Enum):
     IDENTIFYING_SPEAKERS = "identifying_speakers"
     SPEAKERS_IDENTIFIED = "speakers_identified"
     SPEAKER_PENDING = "speaker_pending"
+    SUMMARIZING = "summarizing"
+    SUMMARY_READY = "summary_ready"
     GENERATING_WIKI = "generating_wiki"
+    WIKI_PLAN_READY = "wiki_plan_ready"
+    APPLYING_WIKI = "applying_wiki"
     CONTENT_READY = "content_ready"
     REVIEWED = "reviewed"
     PUBLISHED = "published"
@@ -64,19 +84,43 @@ ALLOWED_TRANSITIONS: dict[SessionStatus, set[SessionStatus]] = {
     },
     SessionStatus.SPEAKER_PENDING: {SessionStatus.SPEAKERS_IDENTIFIED, SessionStatus.FAILED},
     SessionStatus.SPEAKERS_IDENTIFIED: {
-        SessionStatus.GENERATING_WIKI,
+        SessionStatus.SUMMARIZING,
         SessionStatus.SPEAKER_PENDING,
         SessionStatus.FAILED,
     },
-    SessionStatus.GENERATING_WIKI: {SessionStatus.CONTENT_READY, SessionStatus.FAILED},
-    # content_ready/reviewed/failed -> generating_wiki: debug regenerate (same transcript)
-    SessionStatus.CONTENT_READY: {SessionStatus.REVIEWED, SessionStatus.GENERATING_WIKI, SessionStatus.FAILED},
-    SessionStatus.REVIEWED: {SessionStatus.PUBLISHED, SessionStatus.CONTENT_READY, SessionStatus.GENERATING_WIKI, SessionStatus.FAILED},
+    # The session summary is the reviewable intermediate layer: 'summarizing'
+    # is the first draft (or a rewrite the DM asked for) and 'summary_ready'
+    # waits for the DM to confirm it before any page/event is created.
+    SessionStatus.SUMMARIZING: {SessionStatus.SUMMARY_READY, SessionStatus.FAILED},
+    SessionStatus.SUMMARY_READY: {
+        SessionStatus.GENERATING_WIKI,  # DM confirmed the summary
+        SessionStatus.SUMMARIZING,  # DM asked for a rewrite (with feedback)
+        SessionStatus.FAILED,
+    },
+    # The confirmed summary is turned into a PROPOSED CHANGE SET first:
+    # 'generating_wiki' computes it, 'wiki_plan_ready' waits for the DM to
+    # review/edit/confirm it, and only 'applying_wiki' writes to the wiki.
+    SessionStatus.GENERATING_WIKI: {SessionStatus.WIKI_PLAN_READY, SessionStatus.FAILED},
+    SessionStatus.WIKI_PLAN_READY: {
+        SessionStatus.APPLYING_WIKI,  # DM confirmed the proposed changes
+        SessionStatus.FAILED,
+    },
+    SessionStatus.APPLYING_WIKI: {SessionStatus.CONTENT_READY, SessionStatus.FAILED},
+    SessionStatus.CONTENT_READY: {SessionStatus.REVIEWED, SessionStatus.FAILED},
+    SessionStatus.REVIEWED: {
+        SessionStatus.PUBLISHED,
+        SessionStatus.CONTENT_READY,
+        SessionStatus.FAILED,
+    },
     SessionStatus.PUBLISHED: {SessionStatus.REVIEWED, SessionStatus.FAILED},
-    # failed is terminal for forward progress; the debug regenerate flow
-    # may retry wiki generation from the same transcript (content-service
-    # POST /api/content/sessions/{id}/regenerate)
-    SessionStatus.FAILED: {SessionStatus.GENERATING_WIKI},
+    # failed is terminal for forward progress; a redelivered message may retry
+    # the phase it failed in (summary draft/rewrite -> summarizing, change-set
+    # computation -> generating_wiki, change-set application -> applying_wiki)
+    SessionStatus.FAILED: {
+        SessionStatus.SUMMARIZING,
+        SessionStatus.GENERATING_WIKI,
+        SessionStatus.APPLYING_WIKI,
+    },
 }
 
 

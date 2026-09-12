@@ -60,7 +60,7 @@ worker reads the campaign configuration from campaign-service at job time:
 | language_code | campaign.language | The language the DM chose at campaign creation (it, en, de, fr, es, pt — all supported by AssemblyAI). Falls back to ASSEMBLYAI_LANGUAGE, then auto-detection. |
 | speakers_expected | number of campaign members | The people at the table (DM + players) — a hard boundary on diarization labels. |
 | prompt | campaign name/description + built-in prompt | Contextual prompting ([docs](https://www.assemblyai.com/docs/pre-recorded-audio/universal-3-5-pro/prompting)): plain-language description of what the audio is (a D&D session), enriched with the campaign name and description. Override with ASSEMBLYAI_PROMPT. |
-| keyterms_prompt | roster names | Character names (player names when a member has no character) so fantasy names are transcribed accurately. Disable with ASSEMBLYAI_KEYTERMS_ENABLED=false. |
+| keyterms_prompt | roster names (expanded) | Character names — full name AND each single word of multi-word names (the short forms players use at the table) — so fantasy names are transcribed accurately. Player names used when a member has no character. Disable with ASSEMBLYAI_KEYTERMS_ENABLED=false. |
 
 The campaign fetch is **best-effort**: if campaign-service is unreachable
 or the campaign is gone, the job still runs with AssemblyAI auto-detection,
@@ -75,7 +75,7 @@ policy as the refiner's cast fetch.
 | ASSEMBLYAI_TRANSCRIPTION_MODEL | universal-3-5-pro | ASR + diarization model. |
 | ASSEMBLYAI_LANGUAGE | *(empty)* | Optional override; empty = campaign language, then auto-detect. |
 | ASSEMBLYAI_PROMPT | *(built-in)* | Contextual prompt override; empty = built-in D&D-session prompt + campaign context. |
-| ASSEMBLYAI_KEYTERMS_ENABLED | true | Inject roster names as keyterms_prompt. |
+| ASSEMBLYAI_KEYTERMS_ENABLED | true | Inject roster names (full + single words) as keyterms_prompt. |
 | ASSEMBLYAI_CHUNK_SECONDS | 300 | Chunk length for the local split (same default as the other workers). |
 | ASSEMBLYAI_MAX_UPLOAD_MB | 24 | Safety cap per uploaded WAV chunk. |
 | ASSEMBLYAI_API_BASE | https://api.assemblyai.com | Override for a gateway/proxy. |

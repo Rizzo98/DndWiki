@@ -19,7 +19,8 @@ Per-chunk request parameters (built from the campaign config by the worker):
 - prompt             contextual prompt: plain-language description of what the
                      audio is (domain/scenario/details) — steers the model
                      toward the D&D-session domain (see app.prompts)
-- keyterms_prompt    character/player names the model should recognize exactly
+- keyterms_prompt    roster names (full + single words of multi-word names)
+                     the model should recognize exactly
 
 Chunk timestamps are in milliseconds and relative to the chunk; the worker
 offsets them back into the session timeline (app.artifacts.offset_segments)

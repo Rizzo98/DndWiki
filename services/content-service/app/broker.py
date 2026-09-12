@@ -1,10 +1,11 @@
 """RabbitMQ event publisher for content-service.
 
 Uses a single robust connection for the process lifetime (FastAPI lifespan)
-and reuses dnd_common.events for the envelope + topic topology. The debug
-regenerate endpoint publishes a synthetic 'speakers.identified' event so the
-existing content.generate queue binding does the routing (that routing key is
-consumed by content.generate ONLY — no side effects on other services).
+and reuses dnd_common.events for the envelope + topic topology. The summary
+review endpoints publish summary.regenerate / summary.confirmed, which the
+existing content.generate queue binds — those routing keys are consumed by
+content.generate ONLY, so publishing them has no side effects on other
+services.
 """
 
 from __future__ import annotations

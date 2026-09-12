@@ -70,7 +70,7 @@ flowchart LR
 | 5 | `speaker-service` | Python + SpeechBrain | Consumes `speakers.identify`; re-clusters raw diarizer labels from its own ECAPA-TDNN embeddings (overrides unreliable per-chunk labels), then matches each cluster against campaign voiceprints in Qdrant; auto-assigns or flags for DM | `speaker_assignments` (in `dnd_sessions`), `voiceprints` (Qdrant) |
 | 5 | `speaker-service` | Python + SpeechBrain | Consumes `speakers.identify`; re-clusters raw diarizer labels from its own ECAPA-TDNN embeddings (overrides unreliable per-chunk labels), then matches each cluster against campaign voiceprints in Qdrant; auto-assigns or flags for DM | `speaker_assignments` (in `dnd_sessions`), `voiceprints` (Qdrant) |
 | 5b | `refiner-service` | Python + LiteLLM | Consumes `transcription.completed`; LLM contextual diarization — fixes transcription errors and speaker attribution (turn-level, preserving timings) using the campaign cast (character names + physical descriptions from campaign-service), rewrites transcript/diarization.json, emits `transcription.refined` | `transcripts` bucket (rewrites in place) |
-| 6 | `content-service` | Python + LiteLLM | Consumes `content.generate`; chunks named transcript, LLM structured extraction (characters/locations/events/timeline), creates wiki drafts via wiki-service | `generation_jobs` (in `dnd_content`), `drafts` bucket |
+| 6 | `content-service` | Python + LiteLLM | Consumes `content.generate`; chunks the named transcript and LLM-extracts it into a **draft session summary** the DM reviews (rewrite-with-feedback loop), then — only once the DM confirms it — creates the wiki drafts and events via wiki-service | `generation_jobs`, `session_summaries` (in `dnd_content`) |
 | 7 | `wiki-service` | Python/FastAPI | Wiki CRUD, page versions, cross-references, visibility rules (`public`/`dm_only`/`hidden`), DM approval, timelines | `dnd_wiki` (PG), `wiki-assets` bucket |
 | 8 | `search-service` | Python + Meilisearch | Listens to wiki events, indexes published pages, serves search | Meilisearch index `wiki_pages` |
 | 9 | `notification-service` | Python/FastAPI | Listens to domain events, delivers emails/webhooks/push (DM: "draft ready"; players: "new session") | `notifications` (in `dnd_content`) |
@@ -148,11 +148,19 @@ sequenceDiagram
     RB->>CS: content.generate
     CS->>M: fetch named transcript
     CS->>CS: chunk + LLM structured extraction
-    CS->>WS: create wiki drafts (pending_review)
+    CS->>RB: publish content.summary.drafted (DRAFT summary, no page)
+    RB->>DM: summary ready for review
+    DM->>CS: POST summary/regenerate (selected lines + what to change)
+    CS->>CS: LLM rewrite of the whole extraction (summary, entities, events)
+    CS->>RB: publish content.summary.drafted (revision n)
+    DM->>CS: POST summary/confirm
+    CS->>CS: propose the wiki changes (create/update + timeline), store them
+    CS->>RB: publish content.plan.ready
+    RB->>DM: "proposed changes await confirmation" (git-status view)
+    DM->>CS: PUT plan (edit / drop single changes)
+    DM->>CS: POST plan/confirm
+    CS->>WS: POST /internal/wiki/changes/apply (pages published, timeline approved)
     CS->>RB: publish content.generated
-    WS->>RB: publish wiki.draft_ready
-    RB->>DM: notification "3 new drafts await review"
-    DM->>WS: approve / edit / hide
     WS->>RB: publish wiki.published
     RB->>search-service: index page
 ```
@@ -162,12 +170,28 @@ sequenceDiagram
 ```
 uploaded → recorded → transcribing → transcribed → refining → refined
         → identifying_speakers → speakers_identified
-        → (speaker_pending: DM assigns) → generating_wiki → content_ready
+        → (speaker_pending: DM assigns) → summarizing → summary_ready
+        → generating_wiki → wiki_plan_ready → applying_wiki → content_ready
         → reviewed → published
 
 `refining`/`refined` is the LLM contextual-diarization stage (refiner-service,
 optional via `REFINER_ENABLED`); when disabled, `transcribed` jumps straight to
 `identifying_speakers` as before.
+
+`summarizing`/`summary_ready` is the **session-summary review layer**
+(content-service). The transcript is distilled into a DRAFT summary the DM
+reviews on the session page; `summary_ready` parks the session there until the
+DM either sends it back with feedback (`summary_ready → summarizing`) or
+confirms it (`summary_ready → generating_wiki`).
+
+`generating_wiki`/`wiki_plan_ready`/`applying_wiki` is the **change-set review
+layer**. The confirmed summary is turned into a set of PROPOSED changes (pages
+to create, pages to update and the timeline entries they back, each carrying the
+page it targets and that page's current content for a per-field diff); nothing
+is written yet. `wiki_plan_ready` waits for the DM to inspect, edit or drop
+single changes and confirm the set, and only `applying_wiki` writes it —
+creating the pages PUBLISHED and the timeline entries APPROVED, so no
+pipeline-generated page ever sits in "pending review".
 ```
 
 Stored on `sessions.status` (session-service DB). Each worker transitions the state

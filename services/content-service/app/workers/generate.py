@@ -1,36 +1,52 @@
-"""LLM wiki-draft generation worker.
+"""Content pipeline worker: two review layers, then the wiki write.
 
-Consumes content.generate (routing keys speakers.identified / speakers.assigned)
-and produces structured wiki drafts (characters, locations, events, session
-summary) via LiteLLM, creating pending_review pages through wiki-service.
+Consumes the 'content.generate' queue. Five event types are routed by
+dnd_common.events.TOPOLOGY:
+
+- speakers.identified / speakers.assigned -> PHASE 1 (process_job): download
+  the named transcript, extract structure per chunk, merge, and persist a
+  DRAFT session summary. NO page, NO event and NO timeline entry is created
+  here: the summary is the first review layer.
+- summary.regenerate -> PHASE 1b (process_summary_regeneration): apply the
+  DM's review feedback (selected summary lines + what must change) to the
+  persisted extraction with one LLM call and persist the rewritten draft.
+- summary.confirmed -> PHASE 2 (process_plan_generation): the DM accepted the
+  summary, so it is turned into a PROPOSED change set (pages to create, pages
+  to update, timeline entries, cross-references) and stored for review.
+  STILL nothing is written to the wiki.
+- plan.confirmed -> PHASE 3 (process_plan_application): the DM reviewed,
+  edited and confirmed the change set, so it is written into the wiki through
+  wiki-service: the pages land PUBLISHED and the timeline entries APPROVED.
 
 Pipeline (per session):
 
 1. Skip sessions that still have pending speaker assignments (a later
-   speakers.assigned event re-triggers).
-2. Move the session to 'generating_wiki' via the session-service internal API;
-   a 409 (already generating / already done) means an earlier delivery handled
-   it -> ack and skip (idempotency guard).
+   speakers.assigned event re-triggers) and ignore late speaker events for a
+   session that is already past the summary phase (the DM's reviewed summary
+   is never silently overwritten).
+2. Move the session to 'summarizing' via the session-service internal API; a
+   409 (already summarizing / already past it) means an earlier delivery
+   handled it -> ack and skip (idempotency guard).
 3. Download the named transcript from MinIO
-   (transcripts/<session_id>/transcript.json), resolve speaker labels to player
-   display names (user-service), and build a compact '[HH:MM:SS] NAME: text'
-   view.
+   (transcripts/<session_id>/transcript.json), resolve speaker labels to
+   player display names (user-service), and build a compact '[HH:MM:SS]
+   NAME: text' view.
 4. Split into overlapping token-bounded chunks; extract structured JSON from
    each chunk via LiteLLM (bounded concurrency).
-5. Merge across chunks (dedupe by name, longest description, summed mentions)
-   and map the result to CHARACTER/LOCATION wiki draft payloads; party
-   members' character names tag player vs NPC pages. Cross-session dedupe:
-   entities whose name/alias already exists as a campaign page are NOT
-   re-drafted (their new facts stay visible on the persisted session
-   summary); fuzzy matches still get a draft plus a 'possible_duplicate'
-   relation proposal for the DM.
-6. Create the draft pages (status=pending_review, confidence, source session),
-   propose relations, record the generation_jobs row and publish
-   content.generated (notification-service then tells the DM).
+5. Merge across chunks (dedupe by name, longest description, summed mentions,
+   summary lines concatenated in chunk order) and persist the result in
+   'session_summaries' as a draft (revision 1). The DM reviews it line by
+   line; each rewrite bumps the revision.
+6. PHASE 2 expands the confirmed summary into the change set (cross-session
+   dedupe: an entity the campaign already documents is skipped, not
+   re-proposed) and records the generation_jobs row.
+7. PHASE 3 applies the confirmed change set, records the run and publishes
+   content.generated.
 
 Failure semantics mirror transcription-service: failures mark the session
-'failed' (recorded) and re-raise; the redelivered copy is acked as a no-op via
-ConflictTransition, so a failed job is never re-run or DLQ-spammed.
+'failed' (recorded) and re-raise; the redelivered copy re-runs the phase (the
+state machine accepts failed -> summarizing/generating_wiki/applying_wiki) or
+is acked as a no-op, so a failed job is never re-run blindly or DLQ-spammed.
 """
 
 from __future__ import annotations
@@ -38,6 +54,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 import aio_pika
@@ -49,9 +67,13 @@ from app import services as job_services
 from app.chunking import chunk_transcript
 from app.clients.campaign_service import CampaignServiceClient
 from app.clients.session_service import (
+    STATUS_APPLYING_WIKI,
     STATUS_CONTENT_READY,
     STATUS_FAILED,
     STATUS_GENERATING_WIKI,
+    STATUS_SUMMARIZING,
+    STATUS_SUMMARY_READY,
+    STATUS_WIKI_PLAN_READY,
     ConflictTransition,
     SessionServiceClient,
 )
@@ -60,15 +82,32 @@ from app.clients.wiki_service import WikiServiceClient, WikiServiceError
 from app.core.config import ServiceSettings, get_settings
 from app.extraction import LLMClient
 from app.merger import (
-    build_event_drafts,
-    build_page_drafts,
     exclude_character_names,
     is_narrator_name,
     merge_extractions,
+    merge_summary_lines,
+    normalize_entity_name,
 )
+from app.models import PHASE_APPLY, PHASE_SUMMARY, PHASE_WIKI, PLAN_APPLIED
+from app.planner import build_change_set
 from app.storage import ObjectStorage
 
 logger = logging.getLogger(__name__)
+
+#: Session statuses a transcript distillation may start from: a freshly
+#: identified session, or one whose distillation failed and whose message is
+#: being redelivered. Anything else (a session the DM is reviewing, or one
+#: that already generated its wiki) ignores late speakers.* events — re-running
+#: phase 1 there would throw away the DM's corrections or duplicate pages.
+SUMMARY_SOURCE_STATUSES = frozenset({"speakers_identified", "failed"})
+
+#: Correlated event type published whenever a (new or rewritten) draft summary
+#: is ready for the DM to review.
+SUMMARY_DRAFTED = "content.summary.drafted"
+
+#: Correlated event type published when the proposed change set of a session
+#: is stored and waiting for the DM's review.
+PLAN_READY = "content.plan.ready"
 
 _settings: ServiceSettings | None = None
 _storage: ObjectStorage | None = None
@@ -126,11 +165,6 @@ def get_llm(settings: ServiceSettings) -> LLMClient:
     if _llm is None:
         _llm = LLMClient(settings)
     return _llm
-
-
-def _title_key(title: str) -> str:
-    """Case/whitespace-insensitive page-title key for relation resolution."""
-    return " ".join(title.lower().split())
 
 
 def build_speaker_map(event: Event) -> dict[str, dict[str, str | None]]:
@@ -243,6 +277,75 @@ async def _dm_speaker_names(
     return sorted({n.strip() for n in names if n.strip()})
 
 
+async def _build_chunk_views(
+    event: Event,
+    session_id: str,
+    campaign_id: str,
+    settings: ServiceSettings,
+    storage: ObjectStorage,
+    user_client: UserServiceClient,
+    campaign_client: CampaignServiceClient | None,
+) -> tuple[list[str], list[str], list[str]]:
+    """Named transcript view ready for the LLM: (views, party, dm_names)."""
+    transcript = await storage.read_json(
+        settings.minio_transcripts_bucket, f"transcripts/{session_id}/transcript.json"
+    )
+    speaker_map = build_speaker_map(event)
+    speaker_names = await resolve_speaker_names(speaker_map, user_client)
+    # The DM narrates the world but is not part of it: resolve the DM's
+    # speaker from the campaign (best-effort) and keep its name out of the
+    # party line, out of the prompt's character candidates and out of the
+    # drafted pages. Falls back to the hardcoded narrator net in the merger.
+    dm_names = await _dm_speaker_names(
+        speaker_map, speaker_names, campaign_client, campaign_id
+    )
+    # Party CHARACTER names power the player-vs-NPC tagging and are shown
+    # to the model so it never confuses a player with their character.
+    # Raw casing is kept for the prompt; the merger normalizes for matching.
+    party = [
+        name
+        for name in party_character_names(speaker_map)
+        if name not in dm_names and not is_narrator_name(name)
+    ]
+    chunks = chunk_transcript(
+        transcript.get("segments", []),
+        speaker_names,
+        max_tokens=settings.chunk_tokens,
+        overlap=settings.chunk_overlap,
+    )
+    if not chunks:
+        raise ValueError(f"session {session_id} transcript has no segments to generate from")
+    if len(chunks) > settings.max_chunks_per_session:
+        raise ValueError(
+            f"session {session_id} yields {len(chunks)} chunks "
+            f"(cap {settings.max_chunks_per_session}); refusing to generate"
+        )
+    party_note = (
+        "Party (player characters): " + ", ".join(sorted(party)) + "\n\n"
+        if party
+        else ""
+    )
+    return [party_note + "\n".join(chunk) for chunk in chunks], party, dm_names
+
+
+async def _record_failure(
+    db: AsyncSession,
+    session_client: SessionServiceClient,
+    session_id: str,
+    job_id: UUID,
+    exc: Exception,
+) -> None:
+    """Mark the job and the session failed (never raise from here)."""
+    try:
+        await job_services.fail_job(db, job_id, str(exc))
+    except Exception:
+        logger.exception("could not record job failure for session %s", session_id)
+    try:
+        await session_client.update_status(session_id, STATUS_FAILED, error=str(exc)[:2000])
+    except Exception:
+        logger.exception("could not mark session %s failed", session_id)
+
+
 async def process_job(
     event: Event,
     settings: ServiceSettings,
@@ -255,7 +358,13 @@ async def process_job(
     db: AsyncSession,
     campaign_client: CampaignServiceClient | None = None,
 ) -> None:
-    """Generate wiki drafts for one session end-to-end; raises on failure."""
+    """PHASE 1: distill one session transcript into a DRAFT session summary.
+
+    No wiki page, event page or timeline entry is created here — the summary
+    is the reviewable intermediate layer. 'wiki_client' is part of the
+    signature for symmetry with the other phases and is unused.
+    """
+    del wiki_client  # phase 1 writes nothing to the wiki
     payload = event.payload
     session_id = str(payload["session_id"])
     campaign_id = str(payload.get("campaign_id", ""))
@@ -267,12 +376,24 @@ async def process_job(
         )
         return
 
-    # Enter the pipeline; a 409 means another delivery already moved the
-    # session (idempotency guard) -> nothing to do, ack and skip.
+    # Late speakers.assigned events must not restart the summary of a session
+    # the DM is already reviewing (or that already generated): only a session
+    # that has not been distilled yet enters the summary phase.
+    session = await session_client.get_session(session_id)
+    status = str(session.get("status") or "")
+    if status not in SUMMARY_SOURCE_STATUSES:
+        logger.info(
+            "session %s is '%s'; skipping %s (the summary phase only starts from %s)",
+            session_id, status, event.type, " or ".join(sorted(SUMMARY_SOURCE_STATUSES)),
+        )
+        return
+
+    # Enter the phase; a 409 means another delivery already moved the session
+    # (idempotency guard) -> nothing to do, ack and skip.
     try:
-        await session_client.update_status(session_id, STATUS_GENERATING_WIKI)
+        await session_client.update_status(session_id, STATUS_SUMMARIZING)
     except ConflictTransition:
-        logger.info("session %s already past %s; skipping", session_id, STATUS_GENERATING_WIKI)
+        logger.info("session %s already past %s; skipping", session_id, STATUS_SUMMARIZING)
         return
 
     job = await job_services.create_job(
@@ -281,49 +402,13 @@ async def process_job(
         provider=settings.llm_provider,
         model=settings.llm_model,
         prompt_version=settings.prompt_version,
+        phase=PHASE_SUMMARY,
     )
 
     try:
-        transcript = await storage.read_json(
-            settings.minio_transcripts_bucket, f"transcripts/{session_id}/transcript.json"
+        views, party, dm_names = await _build_chunk_views(
+            event, session_id, campaign_id, settings, storage, user_client, campaign_client
         )
-        speaker_map = build_speaker_map(event)
-        speaker_names = await resolve_speaker_names(speaker_map, user_client)
-        # The DM narrates the world but is not part of it: resolve the DM's
-        # speaker from the campaign (best-effort) and keep its name out of the
-        # party line, out of the prompt's character candidates and out of the
-        # drafted pages. Falls back to the hardcoded narrator net in the merger.
-        dm_names = await _dm_speaker_names(
-            speaker_map, speaker_names, campaign_client, campaign_id
-        )
-        # Party CHARACTER names power the player-vs-NPC tagging and are shown
-        # to the model so it never confuses a player with their character.
-        # Raw casing is kept for the prompt; the merger normalizes for matching.
-        party = [
-            name
-            for name in party_character_names(speaker_map)
-            if name not in dm_names and not is_narrator_name(name)
-        ]
-        chunks = chunk_transcript(
-            transcript.get("segments", []),
-            speaker_names,
-            max_tokens=settings.chunk_tokens,
-            overlap=settings.chunk_overlap,
-        )
-        if not chunks:
-            raise ValueError(f"session {session_id} transcript has no segments to generate from")
-        if len(chunks) > settings.max_chunks_per_session:
-            raise ValueError(
-                f"session {session_id} yields {len(chunks)} chunks "
-                f"(cap {settings.max_chunks_per_session}); refusing to generate"
-            )
-
-        party_note = (
-            "Party (player characters): " + ", ".join(sorted(party)) + "\n\n"
-            if party
-            else ""
-        )
-        views = [party_note + "\n".join(chunk) for chunk in chunks]
         extractions = await llm.extract_many(
             views,
             concurrency=settings.llm_chunk_concurrency,
@@ -333,13 +418,12 @@ async def process_job(
         if dm_names:
             merged = exclude_character_names(merged, dm_names)
         logger.info(
-            "session %s: extraction language=%r (%d entities)",
+            "session %s: extraction language=%r (%d entities, %d summary lines)",
             session_id, merged.get("language"),
             len(merged.get("characters", [])) + len(merged.get("locations", [])),
+            len(merged.get("session_summary", "").splitlines()),
         )
-        # Persist the merged summary first, so the session page can show it even
-        # if wiki draft creation fails (wiki-service down, etc.).
-        await job_services.save_summary(
+        summary = await job_services.save_summary(
             db,
             UUID(session_id),
             generation_job_id=job.id,
@@ -347,126 +431,396 @@ async def process_job(
             llm_provider=settings.llm_provider,
             llm_model=settings.llm_model,
             prompt_version=settings.prompt_version,
+            party_characters=party,
         )
+        await job_services.complete_job(
+            db, job.id, draft_ids=[], confidence=merged["confidence"]
+        )
+        await session_client.update_status(session_id, STATUS_SUMMARY_READY)
+        await publisher(
+            Event(
+                type=SUMMARY_DRAFTED,
+                payload={
+                    "session_id": session_id,
+                    "campaign_id": campaign_id,
+                    "generation_job_id": str(job.id),
+                    "summary_id": str(summary.id),
+                    "revision": summary.revision,
+                    "confidence": merged["confidence"],
+                    "language": merged.get("language") or None,
+                },
+            )
+        )
+        logger.info(
+            "session %s -> draft summary revision %s (confidence %s); awaiting DM review",
+            session_id, summary.revision, merged["confidence"],
+        )
+    except Exception as exc:
+        logger.exception("summary generation failed for session %s", session_id)
+        await _record_failure(db, session_client, session_id, job.id, exc)
+        raise
+
+
+async def process_summary_regeneration(
+    event: Event,
+    settings: ServiceSettings,
+    session_client: SessionServiceClient,
+    llm: LLMClient,
+    publisher: Callable[[Event], Awaitable[None]],
+    db: AsyncSession,
+) -> None:
+    """PHASE 1b: rebuild the draft summary from the DM's review feedback."""
+    payload = event.payload
+    session_id = str(payload["session_id"])
+    campaign_id = str(payload.get("campaign_id", ""))
+    edits = [e for e in (payload.get("edits") or []) if isinstance(e, dict)]
+
+    try:
+        await session_client.update_status(session_id, STATUS_SUMMARIZING)
+    except ConflictTransition:
+        logger.info(
+            "session %s is not awaiting a summary rewrite; skipping regeneration",
+            session_id,
+        )
+        return
+
+    job = await job_services.create_job(
+        db,
+        UUID(session_id),
+        provider=settings.llm_provider,
+        model=settings.llm_model,
+        prompt_version=settings.prompt_version,
+        phase=PHASE_SUMMARY,
+    )
+
+    try:
+        row = await job_services.latest_summary_for_session(db, UUID(session_id))
+        if row is None:
+            raise ValueError(f"session {session_id} has no summary to rewrite")
+        current = job_services.summary_to_merged(row)
+        revised = await llm.revise_summary(
+            current,
+            edits,
+            summary_lines_override=payload.get("summary_lines") or None,
+        )
+        revised = _apply_revision_guards(current, revised)
+        requested_by = payload.get("requested_by")
+        history = [
+            {
+                "targets": [
+                    str(t) for t in (edit.get("targets") or []) if isinstance(t, str)
+                ],
+                "instruction": str(edit.get("instruction") or "").strip(),
+                "requested_by": str(requested_by) if requested_by else None,
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+            for edit in edits
+        ]
+        updated = await job_services.apply_revision(
+            db,
+            UUID(session_id),
+            generation_job_id=job.id,
+            merged=revised,
+            llm_provider=settings.llm_provider,
+            llm_model=settings.llm_model,
+            prompt_version=settings.prompt_version,
+            edits=history,
+        )
+        await job_services.complete_job(
+            db,
+            job.id,
+            draft_ids=[],
+            confidence=float(updated.confidence) if updated.confidence is not None else 0.0,
+        )
+        await session_client.update_status(session_id, STATUS_SUMMARY_READY)
+        await publisher(
+            Event(
+                type=SUMMARY_DRAFTED,
+                payload={
+                    "session_id": session_id,
+                    "campaign_id": campaign_id,
+                    "generation_job_id": str(job.id),
+                    "summary_id": str(updated.id),
+                    "revision": updated.revision,
+                    "confidence": float(updated.confidence) if updated.confidence is not None else None,
+                    "language": updated.language,
+                },
+            )
+        )
+        logger.info(
+            "session %s -> summary revision %s (%d correction request(s))",
+            session_id, updated.revision, len(history),
+        )
+    except Exception as exc:
+        logger.exception("summary regeneration failed for session %s", session_id)
+        await _record_failure(db, session_client, session_id, job.id, exc)
+        raise
+
+
+def _apply_revision_guards(current: dict[str, Any], revised: dict[str, Any]) -> dict[str, Any]:
+    """Keep a DM-driven rewrite inside the extracted session's bounds.
+
+    The revision prompt asks the model to touch nothing it was not asked
+    about, but two things are enforced deterministically anyway: the summary
+    stays a list of clean lines and the per-entity/per-event confidence of the
+    previous extraction is carried over (the model has no way to recompute
+    it, and a rewrite must not silently reset every confidence badge).
+    """
+    revised = dict(revised)
+    revised["session_summary"] = merge_summary_lines(
+        [revised.get("session_summary") or ""]
+    )
+    if not revised["session_summary"]:
+        revised["session_summary"] = current.get("session_summary") or ""
+    # A model that drops a whole category must not delete the session's
+    # entities: an entirely empty list where the extraction had items is
+    # treated as an omission (a request that removes SOME items still lands).
+    for kind in ("characters", "locations", "events", "timeline_entries"):
+        if not revised.get(kind) and current.get(kind):
+            revised[kind] = current[kind]
+
+    def _confidence_map(items: list[dict], key: str) -> dict[str, Any]:
+        return {
+            normalize_entity_name(str(item.get(key) or "")): item.get("confidence")
+            for item in items
+            if isinstance(item, dict) and item.get(key)
+        }
+
+    for kind, key in (("characters", "name"), ("locations", "name"), ("events", "title")):
+        previous = _confidence_map(current.get(kind) or [], key)
+        fallback = current.get("confidence")
+        for item in revised.get(kind) or []:
+            if not isinstance(item, dict) or not item.get(key):
+                continue
+            item["confidence"] = previous.get(
+                normalize_entity_name(str(item[key])), fallback
+            )
+    return revised
+
+
+
+async def process_plan_generation(
+    event: Event,
+    settings: ServiceSettings,
+    session_client: SessionServiceClient,
+    wiki_client: WikiServiceClient,
+    publisher: Callable[[Event], Awaitable[None]],
+    db: AsyncSession,
+) -> None:
+    """PHASE 2: turn the CONFIRMED summary into a PROPOSED change set.
+
+    Nothing is written to the wiki here. The proposed pages/updates/timeline
+    entries are stored as a draft change set the DM reviews on the session
+    page (the "git status" of the session), and the session parks on
+    wiki_plan_ready until that review is confirmed.
+    """
+    payload = event.payload
+    session_id = str(payload["session_id"])
+    campaign_id = str(payload.get("campaign_id", ""))
+
+    # Enter the planning phase; a 409 means another delivery already moved
+    # the session (idempotency guard) -> ack and skip.
+    try:
+        await session_client.update_status(session_id, STATUS_GENERATING_WIKI)
+    except ConflictTransition:
+        logger.info(
+            "session %s already past %s; skipping change-set generation",
+            session_id, STATUS_GENERATING_WIKI,
+        )
+        return
+
+    job = await job_services.create_job(
+        db,
+        UUID(session_id),
+        provider=settings.llm_provider,
+        model=settings.llm_model,
+        prompt_version=settings.prompt_version,
+        phase=PHASE_WIKI,
+    )
+
+    try:
+        # Generation starts ONLY from a summary the DM confirmed: without
+        # that stamp the proposal would carry unreviewed text.
+        summary = await job_services.confirmed_summary(db, UUID(session_id))
+        if summary is None:
+            raise ValueError(f"session {session_id} has no confirmed summary to expand")
+        merged = job_services.summary_to_merged(summary)
+        confirmed_by = payload.get("confirmed_by")
         # Existing campaign pages power cross-session dedupe: an entity the
-        # wiki already documents is not drafted again. A listing failure must
-        # never block generation - we just lose the dedupe net.
+        # wiki already documents is never proposed again. A listing failure
+        # must not block the proposal - we just lose the dedupe net.
         try:
             existing_pages = await wiki_client.list_campaign_pages(campaign_id)
         except WikiServiceError as exc:
             logger.warning("could not list existing pages for %s: %s", campaign_id, exc)
             existing_pages = []
-        drafts, relations, duplicates = build_page_drafts(
+        change_set = build_change_set(
             merged,
             campaign_id,
             session_id,
             existing_pages=existing_pages,
-            party_characters=list(party),
+            party_characters=list(summary.party_characters or []),
         )
-        event_drafts, event_updates, timeline_events, event_duplicates = (
-            build_event_drafts(
-                merged, campaign_id, session_id, existing_pages=existing_pages
-            )
+        plan = await job_services.save_plan(
+            db,
+            UUID(session_id),
+            summary_id=summary.id,
+            generation_job_id=job.id,
+            change_set=change_set,
+            language=merged.get("language"),
         )
-
-        created: list[dict] = []
-        for draft in drafts:
-            created.append(await wiki_client.create_page(draft))
-        for draft in event_drafts:
-            created.append(await wiki_client.create_page(draft))
-
-        # Propose relations: 'possible_duplicate' points straight at an
-        # existing page; auto-extracted durable relationships ('member_of',
-        # 'allied_with', 'led_by') resolve the target by name through the
-        # just-created drafts first, then through already-existing pages
-        # (matched by title or alias).
-        title_to_id = {
-            _title_key(page["title"]): str(page["id"]) for page in created
-        }
-        existing_title_to_id: dict[str, str] = {}
-        for page in existing_pages:
-            for name in [page.get("title"), *(page.get("aliases") or [])]:
-                key = _title_key(name or "")
-                if key:
-                    existing_title_to_id.setdefault(key, str(page["id"]))
-        for rel in relations:
-            from_id = title_to_id.get(_title_key(rel["from_title"]))
-            to_key = _title_key(rel.get("to_title") or "")
-            to_id = (
-                rel.get("to_page_id")
-                or title_to_id.get(to_key)
-                or existing_title_to_id.get(to_key)
-            )
-            if from_id and to_id and from_id != to_id:
-                try:
-                    await wiki_client.create_relation(from_id, to_id, rel["relation_type"])
-                except WikiServiceError as exc:
-                    logger.warning(
-                        "could not propose relation %s -> %s: %s",
-                        rel["from_title"], rel.get("to_title") or rel.get("to_page_id"), exc,
-                    )
-        for duplicate in duplicates + event_duplicates:
-            logger.info(
-                "session %s: '%s' matches existing page %s (%s); skipped - the "
-                "new facts stay on the session summary",
-                session_id, duplicate["title"],
-                duplicate.get("matched_title"), duplicate.get("matched_page_id"),
-            )
-
-        # World events already on the timeline are updated, not duplicated:
-        # merge the new information into the existing event page.
-        for update in event_updates:
-            try:
-                await wiki_client.update_page(
-                    update["page_id"],
-                    {
-                        "content_json": update["content_json"],
-                        "change_note": update["change_note"],
-                    },
-                )
-                logger.info(
-                    "session %s: event page %s (%s) updated with new information",
-                    session_id, update["page_id"], update["title"],
-                )
-            except WikiServiceError as exc:
-                logger.warning(
-                    "could not update event page %s (%s): %s",
-                    update["page_id"], update["title"], exc,
-                )
-
-        # Every event (new or updated) backs a campaign timeline entry; the
-        # entry is created as pending (approved=False) or refreshed if the
-        # page already has one. New drafts resolve their page id by title.
-        for entry in timeline_events:
-            page_id = entry.get("page_id") or title_to_id.get(_title_key(entry["title"]))
-            if not page_id:
-                logger.warning(
-                    "session %s: no page id for timeline event '%s'; skipping",
-                    session_id, entry["title"],
-                )
-                continue
-            try:
-                await wiki_client.upsert_timeline_event(
-                    {
-                        "campaign_id": campaign_id,
-                        "page_id": page_id,
-                        "in_world_date": entry.get("in_world_date"),
-                        "summary": entry["summary"],
-                        "source_session_id": entry.get("source_session_id"),
-                    }
-                )
-            except WikiServiceError as exc:
-                logger.warning(
-                    "could not upsert timeline entry for '%s': %s",
-                    entry["title"], exc,
-                )
-
+        confidence = merged.get("confidence")
         await job_services.complete_job(
             db,
             job.id,
-            draft_ids=[str(page["id"]) for page in created],
-            confidence=merged["confidence"],
+            draft_ids=[],
+            confidence=float(confidence) if confidence is not None else 0.0,
         )
+        await session_client.update_status(session_id, STATUS_WIKI_PLAN_READY)
+        counts = {
+            "create": sum(1 for c in change_set["changes"] if c["action"] == "create"),
+            "update": sum(1 for c in change_set["changes"] if c["action"] == "update"),
+            "relations": len(change_set["relations"]),
+            "skipped": len(change_set["skipped"]),
+        }
+        await publisher(
+            Event(
+                type=PLAN_READY,
+                payload={
+                    "session_id": session_id,
+                    "campaign_id": campaign_id,
+                    "generation_job_id": str(job.id),
+                    "plan_id": str(plan.id),
+                    "summary_id": str(summary.id),
+                    "confirmed_by": str(confirmed_by) if confirmed_by else None,
+                    **counts,
+                },
+            )
+        )
+        logger.info(
+            "session %s -> proposed change set %s (%d new, %d updates, %d links); "
+            "awaiting DM confirmation",
+            session_id, plan.id, counts["create"], counts["update"], counts["relations"],
+        )
+    except Exception as exc:
+        logger.exception("change-set generation failed for session %s", session_id)
+        await _record_failure(db, session_client, session_id, job.id, exc)
+        raise
+
+
+def _apply_payload(plan: Any, campaign_id: str, session_id: str, confirmed_by: Any) -> dict:
+    """The wiki-service payload of a confirmed change set (dropped items out)."""
+    changes = [
+        {
+            "change_id": str(change.get("id")),
+            "action": change.get("action") or "create",
+            "kind": change.get("kind"),
+            "title": (change.get("after") or {}).get("title") or change.get("title"),
+            "page_id": change.get("page_id"),
+            "content_json": (change.get("after") or {}).get("content_json") or {},
+            "visibility": (change.get("after") or {}).get("visibility") or "public",
+            "confidence": (change.get("after") or {}).get("confidence"),
+            "timeline": change.get("timeline"),
+        }
+        for change in (plan.changes or [])
+        if not change.get("dropped")
+    ]
+    relations = [
+        {
+            "relation_id": str(relation.get("id")),
+            "from_title": relation.get("from_title"),
+            "to_title": relation.get("to_title"),
+            "to_page_id": relation.get("to_page_id"),
+            "relation_type": relation.get("relation_type"),
+        }
+        for relation in (plan.relations or [])
+        if not relation.get("dropped")
+    ]
+    return {
+        "campaign_id": campaign_id,
+        "session_id": session_id,
+        "confirmed_by": str(confirmed_by) if confirmed_by else None,
+        "changes": changes,
+        "relations": relations,
+    }
+
+
+async def process_plan_application(
+    event: Event,
+    settings: ServiceSettings,
+    session_client: SessionServiceClient,
+    wiki_client: WikiServiceClient,
+    publisher: Callable[[Event], Awaitable[None]],
+    db: AsyncSession,
+) -> None:
+    """PHASE 3: write the CONFIRMED change set into the wiki.
+
+    The pages are created published and the timeline entries approved
+    (wiki-service internal apply endpoint): the DM confirmed the proposed
+    changes, so nothing pipeline-generated ever lands in "pending review".
+    """
+    payload = event.payload
+    session_id = str(payload["session_id"])
+    campaign_id = str(payload.get("campaign_id", ""))
+
+    # Enter the apply phase; a 409 means another delivery already moved the
+    # session (idempotency guard) -> ack and skip.
+    try:
+        await session_client.update_status(session_id, STATUS_APPLYING_WIKI)
+    except ConflictTransition:
+        logger.info(
+            "session %s already past %s; skipping change-set application",
+            session_id, STATUS_APPLYING_WIKI,
+        )
+        return
+
+    job = await job_services.create_job(
+        db,
+        UUID(session_id),
+        provider=settings.llm_provider,
+        model=settings.llm_model,
+        prompt_version=settings.prompt_version,
+        phase=PHASE_APPLY,
+    )
+
+    try:
+        plan = await job_services.get_plan(db, UUID(session_id))
+        if plan is None:
+            raise ValueError(f"session {session_id} has no proposed change set")
+        if plan.status == PLAN_APPLIED:
+            raise ValueError(f"the change set of session {session_id} is already applied")
+        # The API stamps the confirmation when the DM clicks; stamping again
+        # here keeps the row consistent for a redelivered message.
+        if plan.confirmed_by is None:
+            plan = await job_services.confirm_plan(
+                db,
+                UUID(session_id),
+                confirmed_by=(
+                    UUID(str(payload["confirmed_by"])) if payload.get("confirmed_by") else None
+                ),
+            )
+        await job_services.mark_applying(db, UUID(session_id))
+        confirmed_by = plan.confirmed_by or payload.get("confirmed_by")
+        result = await wiki_client.apply_changes(
+            _apply_payload(plan, campaign_id, session_id, confirmed_by)
+        )
+        created = result.get("created") or []
+        updated = result.get("updated") or []
+        skipped = result.get("skipped") or []
+        confidences = [
+            float((change.get("after") or {}).get("confidence"))
+            for change in (plan.changes or [])
+            if not change.get("dropped")
+            and (change.get("after") or {}).get("confidence") is not None
+        ]
+        confidence = round(sum(confidences) / len(confidences), 3) if confidences else 0.0
+        await job_services.complete_job(
+            db,
+            job.id,
+            draft_ids=[str(item["page_id"]) for item in [*created, *updated] if item.get("page_id")],
+            confidence=confidence,
+        )
+        await job_services.mark_applied(db, UUID(session_id), generation_job_id=job.id)
         await session_client.update_status(session_id, STATUS_CONTENT_READY)
         await publisher(
             Event(
@@ -475,48 +829,62 @@ async def process_job(
                     "session_id": session_id,
                     "campaign_id": campaign_id,
                     "generation_job_id": str(job.id),
-                    "draft_ids": [str(page["id"]) for page in created],
-                    "confidence": merged["confidence"],
-                    "language": merged.get("language") or None,
-                    "skipped_duplicates": duplicates + event_duplicates,
+                    "summary_id": str(plan.summary_id) if plan.summary_id else None,
+                    "plan_id": str(plan.id),
+                    "draft_ids": [
+                        str(item["page_id"]) for item in [*created, *updated] if item.get("page_id")
+                    ],
+                    "created": created,
+                    "updated": updated,
+                    "skipped": skipped,
+                    "timeline_entries": result.get("timeline_entries") or 0,
+                    "relations_created": result.get("relations_created") or 0,
+                    "confidence": confidence,
+                    "language": plan.language,
                 },
             )
         )
         logger.info(
-            "session %s -> %d drafts (confidence %s)",
-            session_id, len(created), merged["confidence"],
+            "session %s -> change set applied: %d created, %d updated, %d skipped",
+            session_id, len(created), len(updated), len(skipped),
         )
     except Exception as exc:
-        logger.exception("content generation failed for session %s", session_id)
-        try:
-            await job_services.fail_job(db, job.id, str(exc))
-        except Exception:
-            logger.exception("could not record job failure for session %s", session_id)
-        try:
-            await session_client.update_status(session_id, STATUS_FAILED, error=str(exc)[:2000])
-        except Exception:
-            logger.exception("could not mark session %s failed", session_id)
+        logger.exception("change-set application failed for session %s", session_id)
+        # the DM keeps the reviewed set: a retry re-confirms the same draft
+        await job_services.mark_draft(db, UUID(session_id), error=str(exc)[:2000])
+        await _record_failure(db, session_client, session_id, job.id, exc)
         raise
 
 
 async def handle(event: Event, connection: aio_pika.abc.AbstractConnection) -> None:
-    """Consume handler: wire process_job with process-level singletons."""
+    """Consume handler: route the event to its pipeline phase."""
     settings = _get_settings()
-    storage = get_storage(settings)
-    session_client = get_session_client(settings)
-    user_client = get_user_client(settings)
-    wiki_client = get_wiki_client(settings)
-    campaign_client = get_campaign_client(settings)
-    llm = get_llm(settings)
 
     async def publisher(ev: Event) -> None:
         await publish(connection, ev)
 
     async with session_factory(settings)() as db:
-        await process_job(
-            event, settings, storage, session_client, user_client, wiki_client,
-            llm, publisher, db, campaign_client=campaign_client,
-        )
+        if event.type == "summary.regenerate":
+            await process_summary_regeneration(
+                event, settings, get_session_client(settings), get_llm(settings),
+                publisher, db,
+            )
+        elif event.type == "summary.confirmed":
+            await process_plan_generation(
+                event, settings, get_session_client(settings),
+                get_wiki_client(settings), publisher, db,
+            )
+        elif event.type == "plan.confirmed":
+            await process_plan_application(
+                event, settings, get_session_client(settings),
+                get_wiki_client(settings), publisher, db,
+            )
+        else:
+            await process_job(
+                event, settings, get_storage(settings), get_session_client(settings),
+                get_user_client(settings), get_wiki_client(settings), get_llm(settings),
+                publisher, db, campaign_client=get_campaign_client(settings),
+            )
 
 
 async def main() -> None:

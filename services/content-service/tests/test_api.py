@@ -38,7 +38,7 @@ async def test_llm_config(client):
     body = resp.json()
     assert body["provider"] == "deepseek"
     assert body["model"] == "deepseek/deepseek-chat"
-    assert body["prompt_version"] == "v10"
+    assert body["prompt_version"] == "v11"
 
 
 async def test_job_status_unknown_session(client):
@@ -114,3 +114,8 @@ async def test_summary_returns_persisted_row(client, session_factory):
     assert summary["confidence"] == 0.8
     assert summary["llm_provider"] == "deepseek"
     assert summary["llm_model"] == "deepseek/deepseek-chat"
+    # a freshly saved summary is the DM's draft, revision 1
+    assert summary["review_status"] == "draft"
+    assert summary["revision"] == 1
+    assert summary["confirmed_at"] is None
+    assert summary["confirmed_by"] is None

@@ -1,9 +1,18 @@
 """Client for the session-service internal worker API (service-to-service).
 
 The content worker never touches dnd_sessions tables; it moves the session
-through the pipeline state machine (speakers_identified -> generating_wiki ->
+through the pipeline state machine (speakers_identified -> summarizing ->
+summary_ready -> generating_wiki -> wiki_plan_ready -> applying_wiki ->
 content_ready, or -> failed) via the internal endpoints, authenticating with a
 dnd-services client-credentials token.
+
+Two review layers park the session for the DM:
+
+- 'summarizing'/'summary_ready': a DRAFT summary the DM reviews and either
+  sends back for a rewrite or confirms ('generating_wiki');
+- 'generating_wiki'/'wiki_plan_ready'/'applying_wiki': the PROPOSED wiki
+  change set computed from the confirmed summary. Nothing is written while the
+  session sits on 'wiki_plan_ready'; 'applying_wiki' is the confirmed write.
 """
 
 from __future__ import annotations
@@ -18,7 +27,11 @@ from app.core.config import ServiceSettings
 
 logger = logging.getLogger(__name__)
 
+STATUS_SUMMARIZING = "summarizing"
+STATUS_SUMMARY_READY = "summary_ready"
 STATUS_GENERATING_WIKI = "generating_wiki"
+STATUS_WIKI_PLAN_READY = "wiki_plan_ready"
+STATUS_APPLYING_WIKI = "applying_wiki"
 STATUS_CONTENT_READY = "content_ready"
 STATUS_FAILED = "failed"
 

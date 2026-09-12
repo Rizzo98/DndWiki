@@ -12,7 +12,7 @@ same topology for reference/ops.
 | `transcription.jobs` | `session.recorded` | transcription-service | Run WhisperX on a recording |
 | `transcripts.refine` | `transcription.completed` | refiner-service | LLM contextual pass: fix transcription errors + speaker attribution, rewrite artifacts, emit `transcription.refined` |
 | `speakers.identify` | `transcription.refined`, `transcription.completed`, `speakers.assigned` | speaker-service | Match diarized labels to users (identify) + enroll the named voice (assign) |
-| `content.generate` | `speakers.identified`, `speakers.assigned` | content-service | Generate wiki drafts from the named transcript |
+| `content.generate` | `speakers.identified`, `speakers.assigned`, `summary.regenerate`, `summary.confirmed`, `plan.confirmed` | content-service | Review layers: draft the session summary from the named transcript, rewrite it from the DM's feedback, propose the wiki changes once the summary is confirmed, and write them once the DM confirms the proposal |
 | `search.events` | `wiki.published`, `wiki.updated`, `wiki.archived` | search-service | Keep Meilisearch in sync |
 | `notification.events` | `wiki.draft_ready`, `speaker.pending`, `session.published`, `wiki.published` | notification-service | Email/webhook/push |
 
@@ -185,9 +185,7 @@ and `chunk` are unchanged), and the artifacts at `transcript_uri` /
 
 > Entries may also carry `display_name` (member player name for userless
 > members) and `character_name` (the member's CHARACTER). content-service
-> labels party speakers by their character in the wiki; the synthetic
-> `speakers.identified` published by the debug regenerate endpoint carries
-> the same fields (plus `regenerated: true`).
+> labels party speakers by their character in the wiki.
 
 ## speakers.assigned
 
@@ -226,6 +224,155 @@ their voiceprint).
 > by their CHARACTER on the wiki. Naming the last pending speaker of a
 > session also moves it `speaker_pending -> speakers_identified`.
 
+## content.summary.drafted
+
+Published by content-service every time a session summary DRAFT is (re)built:
+the first distillation of the transcript and each rewrite driven by the DM's
+review feedback. Nothing is written to the wiki at this point — the session
+parks on `summary_ready` until the DM confirms it.
+
+```json
+{
+  "schema_version": 1,
+  "event_id": "uuid",
+  "occurred_at": "2025-01-01T12:12:00Z",
+  "type": "content.summary.drafted",
+  "payload": {
+    "session_id": "uuid",
+    "campaign_id": "uuid",
+    "generation_job_id": "uuid",
+    "summary_id": "uuid",
+    "revision": 2,
+    "confidence": 0.78,
+    "language": "it"
+  }
+}
+```
+
+> `revision` is 1 for the first draft and increases with every DM-driven
+> rewrite. The summary itself lives in `session_summaries` and is read by the
+> session page through `GET /api/content/summaries/{session_id}`, together
+> with its `review_status` (`draft`|`confirmed`).
+
+## summary.regenerate
+
+Published by content-service when the DM sends review feedback from the
+session page: the summary lines they selected plus what must change. The
+worker applies it to the WHOLE persisted extraction (summary lines, entities,
+events, timeline entries) and publishes `content.summary.drafted` with the new
+revision.
+
+```json
+{
+  "schema_version": 1,
+  "event_id": "uuid",
+  "occurred_at": "2025-01-01T12:18:00Z",
+  "type": "summary.regenerate",
+  "payload": {
+    "session_id": "uuid",
+    "campaign_id": "uuid",
+    "summary_id": "uuid",
+    "revision": 1,
+    "requested_by": "uuid",
+    "edits": [
+      {
+        "targets": ["Character A was going to the city center."],
+        "instruction": "It wasn't Character A, it was Character B"
+      }
+    ],
+    "summary_lines": ["Character A was going to the city center."]
+  }
+}
+```
+
+> `targets` lists the summary lines the request is about (empty = the whole
+> summary); `summary_lines` carries the lines exactly as displayed by the
+> client, so hand-edited text is honored.
+
+## summary.confirmed
+
+Published by content-service when the DM accepts the draft summary (the API
+stamps `session_summaries.review_status='confirmed'` in the same request).
+It unlocks the wiki phase, which turns the summary into a PROPOSED change set
+(`content.plan.ready`) — nothing is written to the wiki yet.
+
+```json
+{
+  "schema_version": 1,
+  "event_id": "uuid",
+  "occurred_at": "2025-01-01T12:19:00Z",
+  "type": "summary.confirmed",
+  "payload": {
+    "session_id": "uuid",
+    "campaign_id": "uuid",
+    "summary_id": "uuid",
+    "revision": 2,
+    "confirmed_by": "uuid"
+  }
+}
+```
+
+## content.plan.ready
+
+Published by content-service when the proposed wiki changes of a session are
+stored and parked for review (`wiki_change_sets.status='draft'`, session on
+`wiki_plan_ready`). The DM reads them through
+`GET /api/content/sessions/{id}/plan`, edits one or more entries and confirms
+the set.
+
+```json
+{
+  "schema_version": 1,
+  "event_id": "uuid",
+  "occurred_at": "2025-01-01T12:19:30Z",
+  "type": "content.plan.ready",
+  "payload": {
+    "session_id": "uuid",
+    "campaign_id": "uuid",
+    "generation_job_id": "uuid",
+    "plan_id": "uuid",
+    "summary_id": "uuid",
+    "confirmed_by": "uuid",
+    "create": 3,
+    "update": 1,
+    "relations": 4,
+    "skipped": 2
+  }
+}
+```
+
+> `create`/`update` count the proposed pages, `relations` the proposed
+> cross-references and `skipped` the entities the campaign already documents
+> (they are not proposed again).
+
+## plan.confirmed
+
+Published by content-service when the DM confirms the proposed changes. The
+worker then writes them through wiki-service's internal apply endpoint: the
+new pages are created PUBLISHED and new timeline entries APPROVED (the
+confirmation is the approval), so nothing pipeline-generated lands in
+"pending review".
+
+```json
+{
+  "schema_version": 1,
+  "event_id": "uuid",
+  "occurred_at": "2025-01-01T12:19:50Z",
+  "type": "plan.confirmed",
+  "payload": {
+    "session_id": "uuid",
+    "campaign_id": "uuid",
+    "plan_id": "uuid",
+    "confirmed_by": "uuid",
+    "create": 3,
+    "update": 1,
+    "pages": 4,
+    "relations": 4,
+    "dropped": 0
+  }
+}
+```
+
 ## content.generated
 
 ```json
@@ -238,24 +385,32 @@ their voiceprint).
     "session_id": "uuid",
     "campaign_id": "uuid",
     "generation_job_id": "uuid",
+    "summary_id": "uuid",
+    "plan_id": "uuid",
     "draft_ids": ["uuid", "uuid"],
+    "created": [{"change_id": "c1", "page_id": "uuid", "title": "Aragorn",
+                 "kind": "character", "action": "create", "reason": null}],
+    "updated": [],
+    "skipped": [],
+    "timeline_entries": 1,
+    "relations_created": 2,
     "confidence": 0.78,
-    "language": "it",
-    "skipped_duplicates": [
-      {"title": "Città", "kind": "location", "matched_page_id": "uuid", "matched_title": "Fatumastra"}
-    ]
+    "language": "it"
   }
 }
 ```
 
-> `language` is the majority transcript language the drafts were written in
-> (null when unknown). Drafts are CHARACTER and LOCATION pages, plus EVENT
-> pages for world-significant events (each event page gets a pending campaign
-> timeline entry via the internal wiki upsert endpoint; events already on the
-> timeline are updated, not duplicated). `skipped_duplicates` lists extracted
-> entities that were NOT drafted because the campaign already documents them
-> (exact title/alias match) — their new facts remain visible on the persisted
-> session summary. Fuzzy look-alikes still get a draft plus a
+> Published only after the DM confirmed the PROPOSED CHANGES (`plan_id` points
+> at the confirmed change set, `summary_id` at the confirmed summary it was
+> expanded from). `created`/`updated`/`skipped` report what the wiki did with
+> each change — a create the campaign already documents is skipped rather than
+> duplicated.
+
+> `language` is the transcript language the drafted text was written in (null
+> when unknown). Pages are CHARACTER and LOCATION pages, plus EVENT pages for
+> world-significant events (each event page backs a campaign timeline entry,
+> written approved because the DM confirmed it; events already on the timeline
+> are updated, not duplicated). Fuzzy look-alikes still get a page plus a
 > `possible_duplicate` page relation for the DM to merge.
 
 ## wiki.published / wiki.updated / wiki.archived

@@ -5,13 +5,23 @@ import json
 from app.prompts import (
     EXTRACTION_SCHEMA,
     PROMPT_VERSION,
+    SUMMARY_REVISION_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
     build_chunk_message,
+    build_summary_revision_message,
 )
 
 
-def test_prompt_version_is_v10():
-    assert PROMPT_VERSION == "v10"
+def test_prompt_version_is_v11():
+    assert PROMPT_VERSION == "v11"
+
+
+def test_summary_is_a_list_of_lines():
+    # v11: the summary is the reviewable layer - one beat per line, so the DM
+    # can select and correct single lines on the session page
+    assert "one beat per line" in SYSTEM_PROMPT
+    description = EXTRACTION_SCHEMA["properties"]["session_summary"]["description"]
+    assert "lines" in description
 
 
 def test_schema_requires_all_categories():
@@ -201,3 +211,55 @@ def test_system_prompt_requires_unique_location_names():
     assert "Ospedale di Fatumastra" in SYSTEM_PROMPT
     assert "Strada Maestra" in SYSTEM_PROMPT
     assert "PROPER" in SYSTEM_PROMPT
+
+def test_revision_prompt_applies_corrections_everywhere():
+    # the DM's correction must not survive only in the summary text: it has
+    # to reach the entities, the events and the timeline entries too
+    assert "EVERYWHERE" in SUMMARY_REVISION_SYSTEM_PROMPT
+    assert "timeline entries" in SUMMARY_REVISION_SYSTEM_PROMPT
+    assert "session_summary" in SUMMARY_REVISION_SYSTEM_PROMPT
+    # the corrected wording comes from the DM and must not be narrated
+    assert "Do not describe the correction itself" in SUMMARY_REVISION_SYSTEM_PROMPT
+    # unchanged values (and confidence numbers) are copied verbatim
+    assert "confidence" in SUMMARY_REVISION_SYSTEM_PROMPT
+    assert "EXTRACTION_SCHEMA" not in SUMMARY_REVISION_SYSTEM_PROMPT
+
+
+def test_build_summary_revision_message_lists_targets_and_instruction():
+    current = {
+        "language": "en",
+        "session_summary": "Character A was going to the city center.",
+        "characters": [],
+        "locations": [],
+        "events": [],
+        "timeline_entries": [],
+    }
+    message = build_summary_revision_message(
+        current,
+        [{"targets": ["Character A was going to the city center."],
+          "instruction": "It wasn't Character A, it was Character B"}],
+    )
+    assert "CURRENT EXTRACTION (JSON)" in message
+    assert "Character A was going to the city center." in message
+    assert "It wasn't Character A, it was Character B" in message
+    assert "Summary line(s) concerned" in message
+
+
+def test_build_summary_revision_message_accepts_dm_edited_lines():
+    # the client may send the lines exactly as displayed by the DM
+    current = {"session_summary": "old line", "characters": [], "locations": [],
+               "events": [], "timeline_entries": []}
+    message = build_summary_revision_message(
+        current,
+        [{"targets": [], "instruction": "shorten it"}],
+        summary_lines_override=["hand edited line one", "hand edited line two"],
+    )
+    assert "hand edited line one" in message
+    assert "old line" not in message
+    # no targets -> the request is about the whole summary
+    assert "the whole session summary" in message
+
+
+def test_build_summary_revision_message_survives_empty_edits():
+    message = build_summary_revision_message({"session_summary": "x"})
+    assert "Return the complete corrected JSON object." in message

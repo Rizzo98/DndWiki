@@ -216,3 +216,56 @@ async def test_extract_chunk_retries_bounded_by_setting(fake_litellm):
 async def test_corrective_message_constant_contains_error():
     msg = CORRECT_JSON_MESSAGE.format(error="boom")
     assert "boom" in msg
+
+# ------------------------------------------------- revise_summary: the loop
+
+
+async def test_revise_summary_sends_extraction_and_feedback(fake_litellm):
+    """The DM's feedback reaches the model together with the extraction that
+    is being corrected (one call, same JSON contract as the extraction)."""
+    revised = make_extraction()
+    revised["session_summary"] = "Boromir was going to the city center."
+    fake = fake_litellm([json.dumps(revised)])
+    client = _client()
+    current = make_extraction()
+    data = await client.revise_summary(
+        current,
+        [{"targets": ["The party reaches the gates of Moria."],
+          "instruction": "It wasn't Aragorn, it was Boromir."}],
+    )
+    assert data["session_summary"] == "Boromir was going to the city center."
+    assert len(fake.calls) == 1
+    system, user = fake.calls[0]["messages"][0]["content"], fake.calls[0]["messages"][1]["content"]
+    assert "CORRECTION REQUESTS" in user
+    assert "It wasn't Aragorn, it was Boromir." in user
+    assert "The party reaches the gates of Moria." in user
+    # the revision prompt, not the chunk-extraction one
+    assert "You maintain the session record" in system
+    assert "You are given one chunk of a session transcript" not in system
+
+
+async def test_revise_summary_honors_client_lines(fake_litellm):
+    fake = fake_litellm([json.dumps(make_extraction())])
+    client = _client()
+    await client.revise_summary(
+        make_extraction(), [], summary_lines_override=["hand edited line"]
+    )
+    assert "hand edited line" in fake.calls[0]["messages"][1]["content"]
+
+
+async def test_revise_summary_repairs_and_retries(fake_litellm):
+    good = json.dumps(make_extraction())
+    bad = good.replace('", "characters"', '" "characters"', 1)
+    fake = fake_litellm([bad])
+    client = _client()
+    data = await client.revise_summary(make_extraction(), [])
+    assert data["characters"][0]["name"] == "Aragorn"
+    assert len(fake.calls) == 1  # local repair, no retry
+
+
+async def test_revise_summary_raises_on_garbage(fake_litellm):
+    fake = fake_litellm(["not json", "still not json"])
+    client = _client()
+    with pytest.raises(ExtractionError, match="session summary revision"):
+        await client.revise_summary(make_extraction(), [])
+    assert len(fake.calls) == 2  # initial + 1 corrective retry

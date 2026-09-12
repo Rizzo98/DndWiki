@@ -107,40 +107,48 @@ async def test_session_network_error(monkeypatch, settings):
 # ------------------------------------------------------------- wiki
 
 
-async def test_wiki_create_page(monkeypatch, settings):
+async def test_wiki_apply_changes(monkeypatch, settings):
+    """The confirmed change set is posted to the internal apply endpoint."""
     fake = FakeAsyncClient(
-        response=httpx.Response(201, json={"id": "p1", "title": "Aragorn"}), method="post"
+        response=httpx.Response(200, json={"created": [], "updated": []}), method="post"
     )
     _patch(monkeypatch, wiki_mod, fake)
 
-    out = await WikiServiceClient(settings).create_page(
-        {"campaign_id": "c1", "kind": "character", "title": "Aragorn"}
-    )
-    assert out["title"] == "Aragorn"
+    payload = {
+        "campaign_id": "c1",
+        "session_id": "s1",
+        "confirmed_by": "u1",
+        "changes": [{"change_id": "c1", "action": "create", "kind": "character",
+                     "title": "Aragorn"}],
+        "relations": [],
+    }
+    out = await WikiServiceClient(settings).apply_changes(payload)
+    assert out == {"created": [], "updated": []}
     url, body, headers = fake.calls[0]
-    assert url == "http://wiki.test/api/wiki/pages"
-    assert body["title"] == "Aragorn"
+    assert url == "http://wiki.test/internal/wiki/changes/apply"
+    assert body == payload
     assert headers["Authorization"] == "Bearer tok"
 
 
-async def test_wiki_create_page_error(monkeypatch, settings):
+async def test_wiki_apply_changes_error(monkeypatch, settings):
     fake = FakeAsyncClient(
-        response=httpx.Response(403, text="service tokens may only create drafts"), method="post"
+        response=httpx.Response(422, text="invalid attributes"), method="post"
     )
     _patch(monkeypatch, wiki_mod, fake)
-    with pytest.raises(WikiServiceError, match="403"):
-        await WikiServiceClient(settings).create_page({"title": "x"})
+    with pytest.raises(WikiServiceError, match="422"):
+        await WikiServiceClient(settings).apply_changes({"changes": []})
 
 
-async def test_wiki_create_relation(monkeypatch, settings):
+async def test_wiki_list_campaign_pages(monkeypatch, settings):
     fake = FakeAsyncClient(
-        response=httpx.Response(201, json={"id": "r1"}), method="post"
+        response=httpx.Response(200, json=[{"id": "p1", "title": "Aragorn"}]), method="get"
     )
     _patch(monkeypatch, wiki_mod, fake)
-    await WikiServiceClient(settings).create_relation("p1", "p2", "appears_in")
+    pages = await WikiServiceClient(settings).list_campaign_pages("c1")
+    assert pages[0]["title"] == "Aragorn"
     url, body, _ = fake.calls[0]
-    assert url == "http://wiki.test/api/wiki/pages/p1/relations"
-    assert body == {"related_page_id": "p2", "relation_type": "appears_in"}
+    assert url == "http://wiki.test/internal/wiki/pages?campaign_id=c1"
+    assert body is None
 
 
 # ------------------------------------------------------------- user

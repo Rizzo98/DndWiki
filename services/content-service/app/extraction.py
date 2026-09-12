@@ -1,4 +1,4 @@
-"""LLM extraction client (LiteLLM), one call per transcript chunk.
+"""LLM client (LiteLLM): per-chunk transcript extraction + summary revision.
 
 litellm is imported lazily so the module can be imported and unit-tested
 without it installed (mirrors how transcription-service keeps whisperx lazy);
@@ -12,9 +12,16 @@ environment under the env var LiteLLM expects, so switching providers is a
 config change, not a code change. Each provider's key is a placeholder in
 .env.example until the DM fills it in.
 
-Every chunk must produce JSON matching EXTRACTION_SCHEMA. Because LLMs
-occasionally emit slightly malformed JSON (missing commas, trailing commas,
-markdown fences, ...), parsing is lenient in two stages:
+Two entry points share the same JSON contract and the same two-stage error
+handling:
+
+- extract_chunk: one call per transcript chunk (EXTRACTION_SCHEMA).
+- revise_summary: ONE call that applies the DM's review feedback to an
+  already extracted session (same schema), so a corrected attribution reaches
+  the summary lines, the entities, the events and the timeline entries at
+  once. The corrected object replaces the persisted draft.
+
+JSON handling is lenient in two stages:
 
 1. Local repair: the raw json.loads is tried first; on failure the output
    goes through json_repair (handles missing/trailing commas, unquoted
@@ -27,7 +34,7 @@ markdown fences, ...), parsing is lenient in two stages:
    model is asked once more (LLM_JSON_RETRIES times) with its own bad
    output and the parse error appended, asking for corrected JSON only.
 
-If both stages fail the chunk raises ExtractionError, which the worker treats
+If both stages fail the call raises ExtractionError, which the worker treats
 as a job failure (the session lands on 'failed' and the message retries are
 no-ops — see workers/generate.py).
 """
@@ -43,7 +50,12 @@ from typing import Any
 from json_repair import loads as repair_loads
 
 from app.core.config import ServiceSettings
-from app.prompts import SYSTEM_PROMPT, build_chunk_message
+from app.prompts import (
+    SUMMARY_REVISION_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
+    build_chunk_message,
+    build_summary_revision_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +96,7 @@ class ExtractionError(Exception):
 
 
 class LLMClient:
-    """Async wrapper around litellm.acompletion for chunk extraction."""
+    """Async wrapper around litellm.acompletion for the extraction prompts."""
 
     def __init__(self, settings: ServiceSettings) -> None:
         self._settings = settings
@@ -115,11 +127,45 @@ class LLMClient:
     ) -> dict[str, Any]:
         """Extract structured facts from one chunk view (raises ExtractionError).
 
-        On malformed output, local repair is tried first; if that fails, the
-        call is retried up to llm_json_retries times with the bad output
-        and the parse error appended as a corrective prompt.
         'out_of_world' names narrators (the DM) the model must never turn
         into characters.
+        """
+        return await self._complete_json(
+            SYSTEM_PROMPT,
+            build_chunk_message(
+                chunk_view, chunk_index, total_chunks, out_of_world=out_of_world
+            ),
+            chunk_index,
+        )
+
+    async def revise_summary(
+        self,
+        current: dict[str, Any],
+        edits: list[dict[str, Any]] | None = None,
+        summary_lines_override: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Apply the DM's review feedback to an extracted session.
+
+        'current' is the persisted extraction (summary lines + entities +
+        events + timeline entries), 'edits' the correction requests
+        ({'targets': [line, ...], 'instruction': str}). Returns the corrected
+        extraction with the same shape; raises ExtractionError on garbage.
+        """
+        return await self._complete_json(
+            SUMMARY_REVISION_SYSTEM_PROMPT,
+            build_summary_revision_message(
+                current, edits, summary_lines_override=summary_lines_override
+            ),
+            "the session summary revision",
+        )
+
+    async def _complete_json(
+        self, system: str, user: str, context: str | int
+    ) -> dict[str, Any]:
+        """One JSON-mode completion with local repair + corrective retries.
+
+        'context' labels the call in error messages: an int is a chunk index
+        ('chunk 1'), a string is used as-is.
         """
         import litellm  # lazy: heavy dependency, only needed at runtime
 
@@ -127,13 +173,8 @@ class LLMClient:
         self._export_provider_env()
 
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": build_chunk_message(
-                    chunk_view, chunk_index, total_chunks, out_of_world=out_of_world
-                ),
-            },
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
         ]
         for attempt in range(self._settings.llm_json_retries + 1):
             response = await litellm.acompletion(
@@ -145,13 +186,13 @@ class LLMClient:
             )
             content = response.choices[0].message.content
             try:
-                return self._parse(content, chunk_index)
+                return self._parse(content, context)
             except ExtractionError as exc:
                 if attempt >= self._settings.llm_json_retries:
                     raise
                 logger.warning(
-                    "chunk %d: %s (attempt %d/%d); asking the model to fix the JSON",
-                    chunk_index + 1,
+                    "%s: %s (attempt %d/%d); asking the model to fix the JSON",
+                    self._where(context),
                     exc,
                     attempt + 1,
                     self._settings.llm_json_retries,
@@ -161,10 +202,17 @@ class LLMClient:
                     {"role": "assistant", "content": content or ""},
                     {"role": "user", "content": CORRECT_JSON_MESSAGE.format(error=str(exc))},
                 ]
+        raise ExtractionError(f"unreachable: no attempt made for {self._where(context)}")
 
-    def _load_json(self, content: str, chunk_index: int) -> Any:
+    @staticmethod
+    def _where(context: str | int) -> str:
+        """Human label of the call the error came from."""
+        return f"chunk {context + 1}" if isinstance(context, int) else str(context)
+
+    def _load_json(self, content: str, context: str | int) -> Any:
         """Parse LLM output, repairing common JSON mistakes when needed."""
         text = content.strip()
+        where = self._where(context)
         try:
             return json.loads(text)
         except json.JSONDecodeError:
@@ -172,23 +220,22 @@ class LLMClient:
         try:
             repaired = repair_loads(text)
         except Exception as exc:  # json_repair.JsonRepairError and friends
-            raise ExtractionError(
-                f"LLM returned invalid JSON for chunk {chunk_index + 1}: {exc}"
-            ) from exc
+            raise ExtractionError(f"LLM returned invalid JSON for {where}: {exc}") from exc
         if isinstance(repaired, str):
             # json_repair returns the input unchanged when it cannot parse it
             # (e.g. plain prose) — treat as invalid rather than silently accept.
             raise ExtractionError(
-                f"LLM returned invalid JSON for chunk {chunk_index + 1}: unparseable output"
+                f"LLM returned invalid JSON for {where}: unparseable output"
             )
         return repaired
 
-    def _parse(self, content: str | None, chunk_index: int) -> dict[str, Any]:
+    def _parse(self, content: str | None, context: str | int) -> dict[str, Any]:
+        where = self._where(context)
         if not content:
-            raise ExtractionError(f"empty LLM response for chunk {chunk_index + 1}")
-        data = self._load_json(content, chunk_index)
+            raise ExtractionError(f"empty LLM response for {where}")
+        data = self._load_json(content, context)
         if not isinstance(data, dict):
-            raise ExtractionError(f"LLM returned non-object JSON for chunk {chunk_index + 1}")
+            raise ExtractionError(f"LLM returned non-object JSON for {where}")
         # Recognizable-extraction guard: the object must carry at least one
         # schema key. A dict that is unrelated JSON is not an extraction and
         # goes through the corrective retry. Missing CATEGORY keys, however,
@@ -197,8 +244,7 @@ class LLMClient:
         # whole chunk, let alone the generation job.
         if not any(key in data for key in _REQUIRED_KEYS):
             raise ExtractionError(
-                f"LLM output for chunk {chunk_index + 1} has no extraction keys: "
-                f"{sorted(data)[:5]}"
+                f"LLM output for {where} has no extraction keys: {sorted(data)[:5]}"
             )
         # Normalize: ensure lists/ints where the schema expects them.
         for key in ("characters", "locations", "events", "timeline_entries"):

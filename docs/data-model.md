@@ -100,7 +100,8 @@ sessions
   status        text NOT NULL DEFAULT 'uploaded'
                 -- uploaded|recorded|transcribing|transcribed|refining|refined|
                 -- identifying_speakers|speakers_identified|speaker_pending|
-                -- generating_wiki|content_ready|reviewed|published|failed
+                -- summarizing|summary_ready|generating_wiki|wiki_plan_ready|
+                -- applying_wiki|content_ready|reviewed|published|failed
   raw_audio_uri text                    -- MinIO recordings/...
   transcript_uri text                   -- MinIO transcripts/... (JSON)
   diarization_uri text                  -- MinIO transcripts/... (segments JSON)
@@ -289,28 +290,71 @@ generation_jobs
   id            uuid PK
   session_id    uuid NOT NULL
   status        text DEFAULT 'queued'   -- queued|running|done|failed
+  phase         text DEFAULT 'summary'  -- summary (transcript → draft summary),
+                                        -- wiki (confirmed summary → proposed changes),
+                                        -- apply (confirmed changes → wiki pages)
   llm_provider  text
   llm_model     text
   prompt_version text
-  draft_ids     uuid[]                  -- pages created (pending_review)
+  draft_ids     uuid[]                  -- pages written by an 'apply' run; empty for
+                                        -- the summary and wiki phases (no page yet)
   confidence    numeric
   error         text
   created_at    timestamptz
   updated_at    timestamptz
 
-session_summaries                    -- merged LLM extraction, shown on the session page
+session_summaries                    -- the review layer: merged LLM extraction the
+                                     -- session page shows and the DM corrects
   id            uuid PK
-  session_id    uuid UNIQUE NOT NULL  -- one row per session (regeneration overwrites)
+  session_id    uuid UNIQUE NOT NULL  -- one row per session (a new draft overwrites it)
   generation_job_id uuid NULL         -- the run that produced this summary
-  summary       text NOT NULL         -- session_summary paragraph
+  summary       text NOT NULL         -- session summary LINES, newline separated
+                                      -- (one beat per line: the DM selects and
+                                      -- corrects single lines)
+  language      text NULL             -- transcript language (draft page language)
+  party_characters jsonb DEFAULT '[]' -- party CHARACTER names resolved at extraction
+                                      -- time (player-vs-NPC tagging in the wiki phase)
   characters    jsonb DEFAULT '[]'    -- merged characters (name/aliases/description/facts/session_facts/mentions/confidence)
   locations     jsonb DEFAULT '[]'    -- merged locations (same shape)
   events        jsonb DEFAULT '[]'    -- merged events (title/description/participants/confidence)
   timeline_entries jsonb DEFAULT '[]' -- merged timeline (time/summary/characters)
+  review_status text DEFAULT 'draft'  -- draft (awaiting DM review) | confirmed
+                                      -- (wiki pages/events may be created from it)
+  revision      int DEFAULT 1         -- 1 for the first draft, +1 per DM rewrite
+  confirmed_at  timestamptz NULL      -- DM confirmation stamp
+  confirmed_by  uuid NULL
+  edit_history  jsonb DEFAULT '[]'    -- [{targets: [summary line, ...],
+                                      --   instruction, requested_by, created_at}]
   confidence    numeric
   llm_provider  text
   llm_model     text
   prompt_version text
+  created_at    timestamptz
+  updated_at    timestamptz
+
+wiki_change_sets                     -- the PROPOSED wiki changes of a session
+                                     -- (the "git status": reviewable before anything
+                                     -- is written, one row per session)
+  id            uuid PK
+  session_id    uuid UNIQUE NOT NULL
+  summary_id    uuid NULL             -- the confirmed summary it was expanded from
+  generation_job_id uuid NULL         -- the 'wiki' run that proposed it
+  status        text DEFAULT 'draft'  -- draft (under review) | applying (being
+                                      -- written) | applied (in the wiki)
+  language      text NULL
+  changes       jsonb DEFAULT '[]'    -- [{id, action: create|update, kind, title,
+                                      --   page_id, before: {title, content_json} | null,
+                                      --   after: {title, content_json, visibility,
+                                      --   confidence}, timeline: {summary,
+                                      --   in_world_date} | null, dropped}]
+  relations     jsonb DEFAULT '[]'    -- [{id, from_title, to_title, to_page_id,
+                                      --   relation_type, dropped}]
+  skipped       jsonb DEFAULT '[]'    -- entities the campaign already documents
+                                      -- (context for the DM, never changes)
+  confirmed_at  timestamptz NULL      -- DM confirmation of the proposed changes
+  confirmed_by  uuid NULL
+  applied_at    timestamptz NULL      -- when the wiki accepted them
+  error         text                  -- why a failed apply went back to review
   created_at    timestamptz
   updated_at    timestamptz
 

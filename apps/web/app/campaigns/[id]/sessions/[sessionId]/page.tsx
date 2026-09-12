@@ -1,16 +1,19 @@
 // /campaigns/[id]/sessions/[sessionId] — session detail: upload the recording,
-// listen to it, watch the pipeline, read the transcript, and (DM) name speakers.
+// listen to it, watch the pipeline, review the session summary, review the
+// proposed wiki changes it implies, read the transcript, and (DM) name
+// speakers + confirm both review layers.
 
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Badge, Button, Card, EmptyState, Field, FileInput, Select, SessionStatusBadge, TextInput, fmtDate, fmtDuration, fmtPercent } from "@/components/ui";
 import { AudioPlayer } from "@/components/session/audio-player";
+import { SessionPlanCard } from "@/components/session/session-plan";
 import { SessionSummaryCard } from "@/components/session/session-summary";
 import { LOW_SPEAKER_CONFIDENCE, TranscriptViewer, speakerConfidenceByLabel } from "@/components/session/transcript";
 import { AuthGate, useAuth } from "@/lib/auth";
-import { campaignsApi, contentApi, objectUrl, sessionsApi, usersApi, wikiApi, type Campaign, type CampaignMember, type PageSummary, type SessionDetail, type SessionSummary, type SpeakerAssignment } from "@/lib/api";
+import { campaignsApi, contentApi, objectUrl, sessionsApi, usersApi, wikiApi, type Campaign, type CampaignMember, type PageSummary, type PlanChangeEdit, type PlanRelationEdit, type SessionDetail, type SessionPlan, type SessionSummary, type SpeakerAssignment, type SummaryEdit } from "@/lib/api";
 import { buildLinkIndex, type LinkIndex } from "@/components/linked-text";
 import { errMessage, useAsyncData } from "@/lib/use-async";
 
@@ -24,7 +27,9 @@ const ACTIVE_STATUSES = new Set([
   "identifying_speakers",
   "speakers_identified",
   "speaker_pending",
+  "summarizing",
   "generating_wiki",
+  "applying_wiki",
 ]);
 
 // While the pipeline is still transcribing/refining, the object behind
@@ -54,8 +59,21 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
     [params.sessionId],
   );
 
+  // The proposed wiki changes: the 'git status' of the session. Nothing is
+  // written to the wiki until the DM confirms this set.
+  const { data: plan, reload: reloadPlan } = useAsyncData<SessionPlan | null>(
+    async (t) => {
+      try {
+        return (await contentApi.plan(t, params.sessionId)).plan;
+      } catch {
+        return null; // not a DM, or content-service down: no plan to show
+      }
+    },
+    [params.sessionId],
+  );
+
   // Campaign page index: entity names in the session summary link to their
-  // wiki pages (drafts produced by this session included).
+  // wiki pages (the pages written when the changes are confirmed included).
   const { data: pages, reload: reloadPages } = useAsyncData<PageSummary[]>((t) => wikiApi.pages(t, params.id, { limit: 500 }), [params.id]);
   const linkIndex: LinkIndex | null = useMemo(() => buildLinkIndex(pages ?? []), [pages]);
 
@@ -70,42 +88,11 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
   const [editForm, setEditForm] = useState({ title: "", session_no: "" });
   const [assignForm, setAssignForm] = useState<Record<string, { member_id: string }>>({});
   const [busy, setBusy] = useState(false);
-  const [regenBusy, setRegenBusy] = useState(false);
+  const [reviewBusy, setReviewBusy] = useState<"regenerate" | "confirm" | null>(null);
+  const [planBusy, setPlanBusy] = useState<"save" | "confirm" | null>(null);
+  const [planError, setPlanError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
-
-  // DEBUG (developer accounts): queue a fresh generation run for the SAME
-  // transcript. The pipeline poll below picks the new status up automatically.
-  async function regenerateWiki() {
-    if (!token) return;
-    if (
-      !window.confirm(
-        "Re-run wiki generation from this session's transcript?\n\nThe current AI summary will be overwritten and fresh pending drafts created.",
-      )
-    ) {
-      return;
-    }
-    setRegenBusy(true);
-    setFormError(null);
-    try {
-      const res = await contentApi.regenerate(token, params.sessionId);
-      setNotice(
-        "Generation queued (" +
-          res.llm_model +
-          ", prompt " +
-          res.prompt_version +
-          ") — the summary refreshes as the pipeline runs.",
-      );
-      reload();
-      reloadSummary();
-      reloadSpeakers();
-      reloadPages();
-    } catch (err) {
-      setFormError(errMessage(err));
-    } finally {
-      setRegenBusy(false);
-    }
-  }
 
   // The session is polled while the pipeline runs, and every poll returns a
   // freshly signed presigned URL. The <audio> src must stay stable across those
@@ -120,6 +107,12 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
     });
   }, [session?.raw_audio_url]);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const seek = useCallback((seconds: number) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.currentTime = seconds;
+    void audio.play().catch(() => undefined);
+  }, []);
 
   // user_id -> display_name for campaign members + assigned speakers, so the
   // speaker list and the member picker show names instead of uuids.
@@ -223,12 +216,166 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
       reload();
       reloadSummary();
       reloadSpeakers();
-      // Draft pages created by the running pipeline can appear at any point —
-      // keep the link index fresh so summary names resolve to them.
+      reloadPlan();
+      // Pages written by the running pipeline can appear at any point — keep
+      // the link index fresh so summary names resolve to them.
       reloadPages();
     }, 10_000);
     return () => window.clearInterval(t);
-  }, [session?.status, reload, reloadSummary, reloadSpeakers, reloadPages]);
+  }, [session?.status, reload, reloadSummary, reloadSpeakers, reloadPlan, reloadPages]);
+
+  // The wiki pages only appear once the PROPOSED CHANGES are confirmed
+  // (status moves to content_ready, which stops the poll above): refresh the
+  // link index on every status change so the names in the summary become
+  // clickable as soon as their pages exist.
+  useEffect(() => {
+    if (!session?.status) return;
+    reloadPages();
+  }, [session?.status, reloadPages]);
+
+  // A summary review action moves the session through summarizing /
+  // generating_wiki and back. While it runs, the page polls faster than the
+  // 10 s pipeline interval so the new revision (or the created pages) shows up
+  // promptly; the action ends once the queue picked the work up AND the
+  // session settled on its next resting state again.
+  const settleTarget = reviewBusy === "regenerate" ? "summary_ready" : reviewBusy === "confirm" ? "content_ready" : null;
+  const sawWorking = useRef(false);
+  useEffect(() => {
+    if (!reviewBusy || !settleTarget) {
+      sawWorking.current = false;
+      return;
+    }
+    const started = Date.now();
+    const t = window.setInterval(() => {
+      reload();
+      reloadSummary();
+      if (settleTarget === "content_ready") reloadPages();
+      const status = session?.status;
+      if (status === "summarizing" || status === "generating_wiki") sawWorking.current = true;
+      const waited = Date.now() - started;
+      // settled: back on the resting status after the worker ran; the
+      // fallbacks (30 s / 3 min) keep a lost message from locking the UI.
+      const settled =
+        status === settleTarget &&
+        (sawWorking.current || waited > 30_000);
+      if (settled || status === "failed" || waited > 180_000) {
+        sawWorking.current = false;
+        setReviewBusy(null);
+        reloadSpeakers();
+      }
+    }, 2_500);
+    return () => window.clearInterval(t);
+  }, [reviewBusy, settleTarget, session?.status, reload, reloadSummary, reloadPages, reloadSpeakers]);
+
+  async function regenerateSummary(edits: SummaryEdit[], lines: string[]) {
+    if (!token) return;
+    setReviewBusy("regenerate");
+    setFormError(null);
+    setNotice(null);
+    try {
+      const res = await contentApi.regenerateSummary(token, params.sessionId, {
+        edits,
+        summary_lines: lines,
+      });
+      setNotice(
+        "Rewriting the summary (revision " +
+          res.revision +
+          " → " +
+          (res.revision + 1) +
+          "). It refreshes in a few seconds.",
+      );
+      reload();
+      reloadSummary();
+    } catch (err) {
+      setReviewBusy(null);
+      setFormError(errMessage(err));
+    }
+  }
+
+  async function confirmSummary() {
+    if (!token) return;
+    setReviewBusy("confirm");
+    setFormError(null);
+    setNotice(null);
+    try {
+      await contentApi.confirmSummary(token, params.sessionId);
+      setNotice(
+        "Summary confirmed — the pages and events it implies are being proposed for your review.",
+      );
+      reload();
+      reloadSummary();
+      reloadPlan();
+    } catch (err) {
+      setReviewBusy(null);
+      setFormError(errMessage(err));
+    }
+  }
+
+  // The proposed changes are reviewed with the same poll-and-settle pattern as
+  // the summary: the session moves through generating_wiki / applying_wiki and
+  // back, and the card refreshes when it lands.
+  const planSettleTarget =
+    planBusy === "confirm" ? "content_ready" : planBusy === "save" ? "wiki_plan_ready" : null;
+  const planSawWorking = useRef(false);
+  useEffect(() => {
+    if (!planBusy || !planSettleTarget) {
+      planSawWorking.current = false;
+      return;
+    }
+    const started = Date.now();
+    const t = window.setInterval(() => {
+      reload();
+      reloadPlan();
+      const status = session?.status;
+      if (status === "generating_wiki" || status === "applying_wiki") {
+        planSawWorking.current = true;
+      }
+      const waited = Date.now() - started;
+      const settled =
+        status === planSettleTarget && (planSawWorking.current || waited > 30_000);
+      if (settled || status === "failed" || waited > 180_000) {
+        planSawWorking.current = false;
+        setPlanBusy(null);
+        if (planSettleTarget === "content_ready") reloadPages();
+      }
+    }, 2_500);
+    return () => window.clearInterval(t);
+  }, [planBusy, planSettleTarget, session?.status, reload, reloadPlan, reloadPages]);
+
+  async function savePlan(changes: PlanChangeEdit[], relations: PlanRelationEdit[]) {
+    if (!token) return;
+    setPlanBusy("save");
+    setPlanError(null);
+    try {
+      await contentApi.updatePlan(token, params.sessionId, { changes, relations });
+      setNotice("Review saved.");
+      reloadPlan();
+    } catch (err) {
+      setPlanError(errMessage(err));
+    } finally {
+      setPlanBusy(null);
+    }
+  }
+
+  async function confirmPlan(changes: PlanChangeEdit[], relations: PlanRelationEdit[]) {
+    if (!token) return;
+    setPlanBusy("confirm");
+    setPlanError(null);
+    setNotice(null);
+    try {
+      // Unsaved edits first: what the DM sees is what gets written.
+      if (changes.length || relations.length) {
+        await contentApi.updatePlan(token, params.sessionId, { changes, relations });
+      }
+      await contentApi.confirmPlan(token, params.sessionId);
+      setNotice("Changes confirmed — writing the pages and the timeline entries.");
+      reload();
+      reloadPlan();
+    } catch (err) {
+      setPlanBusy(null);
+      setPlanError(errMessage(err));
+    }
+  }
 
   async function upload(e: FormEvent) {
     e.preventDefault();
@@ -324,6 +471,10 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
   const showSpeakersCard =
     (speakers?.length ?? 0) > 0 && (isDm || !allSpeakersAssigned);
 
+  // The summary review is the DM's job (developer accounts keep the escape
+  // hatch); players read the summary and the links it produces.
+  const canReviewSummary = isDm || isDeveloper;
+
   return (
     <AuthGate>
     <div className="space-y-6">
@@ -348,14 +499,26 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
         campaignId={params.id}
         linkIndex={linkIndex}
         currentPromptVersion={currentPromptVersion}
-        onSeek={(seconds) => {
-          const audio = audioRef.current;
-          if (!audio) return;
-          audio.currentTime = seconds;
-          void audio.play().catch(() => undefined);
-        }}
-        {...(isDeveloper ? { onRegenerate: regenerateWiki, regenerating: regenBusy } : {})}
+        sessionStatus={session.status}
+        canReview={canReviewSummary}
+        reviewBusy={reviewBusy}
+        onRegenerateSummary={regenerateSummary}
+        onConfirmSummary={confirmSummary}
+        onSeek={seek}
       />
+
+      {isDm || isDeveloper ? (
+        <SessionPlanCard
+          plan={plan}
+          campaignId={params.id}
+          linkIndex={linkIndex}
+          canReview={canReviewSummary}
+          busy={planBusy}
+          error={planError}
+          onSave={savePlan}
+          onConfirm={confirmPlan}
+        />
+      ) : null}
 
       {isDm ? (
         <Card>
@@ -435,12 +598,7 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
             ? "Transcription and refinement in progress — the refined transcript will appear here once it is ready."
             : null}
           speakerNames={speakerNames}
-          onSeek={(seconds) => {
-            const audio = audioRef.current;
-            if (!audio) return;
-            audio.currentTime = seconds;
-            void audio.play().catch(() => undefined);
-          }}
+          onSeek={seek}
         />
       </Card>
 

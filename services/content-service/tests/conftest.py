@@ -22,6 +22,9 @@ PAGE_UUIDS = {
     "Moria": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
     "Entering Moria": "cccccccc-cccc-cccc-cccc-cccccccccccc",
     "Session Summary": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    # the second character of the relation fixture (FakeWikiClient ids pages by
+    # creation order, so the 2nd created page is UUID(int=2))
+    "Gimli": "00000000-0000-0000-0000-000000000002",
 }
 
 
@@ -133,16 +136,30 @@ class FakeStorage:
 
 
 class FakeSessionClient:
-    """Records status transitions; can be configured to 409."""
+    """Records status transitions; can be configured to 409 or report a status.
 
-    def __init__(self, conflict_on_generating: bool = False):
+    'status' is what get_session() reports (the phase-1 precondition check)
+    and is kept in sync with the transitions, so a fake behaves like the real
+    state machine for a single sequential run.
+    """
+
+    def __init__(self, conflict_on_start: bool = False, status: str = "speakers_identified"):
         self.status_calls: list[tuple[str, str, str | None]] = []
-        self.conflict_on_generating = conflict_on_generating
+        self.conflict_on_start = conflict_on_start
+        self.status = status
+
+    async def get_session(self, session_id: str) -> dict:
+        return {"id": session_id, "campaign_id": CAMPAIGN_ID, "status": self.status}
 
     async def update_status(self, session_id: str, status: str, error: str | None = None) -> dict:
-        if self.conflict_on_generating and status == "generating_wiki":
+        if self.conflict_on_start and status in (
+            "summarizing",
+            "generating_wiki",
+            "applying_wiki",
+        ):
             raise ConflictTransition("already moved on")
         self.status_calls.append((session_id, status, error))
+        self.status = status
         return {"id": session_id, "status": status}
 
 
@@ -171,8 +188,13 @@ class FakeCampaignClient:
 
 
 class FakeWikiClient:
-    """Creates pages/relations/timeline entries; pages get deterministic ids
-    by title.
+    """Reads the campaign listing and applies confirmed change sets.
+
+    apply_changes() mimics wiki-service's internal apply: it "creates" the
+    pages (deterministic ids by title), "updates" the existing ones and shows
+    the timeline entries the change set carries — with the same records the
+    old per-call worker produced (created/updated/relations/timeline_upserts),
+    so tests can assert on the applied result either way.
 
     'existing_pages' is what list_campaign_pages() reports back, simulating
     what the campaign wiki already documents (cross-run dedupe input).
@@ -186,51 +208,131 @@ class FakeWikiClient:
         self.updated: list[tuple[str, dict]] = []  # (page_id, payload)
         self.timeline_upserts: list[dict] = []
         self.timeline_list_calls: list[str] = []
+        self.applied: list[dict] = []  # the change-set payloads received
+        self.apply_error: Exception | None = None
 
     async def list_campaign_pages(self, campaign_id: str) -> list[dict]:
         self.list_calls.append(campaign_id)
         return self.existing_pages
 
-    async def create_page(self, payload: dict) -> dict:
-        self.created.append(payload)
-        return {
-            "id": PAGE_UUIDS.get(payload["title"], str(UUID(int=len(self.created)))),
-            "title": payload["title"],
-            "kind": payload["kind"],
-        }
-
-    async def create_relation(self, page_id: str, related_page_id: str, relation_type: str) -> dict:
-        self.relations.append((page_id, related_page_id, relation_type))
-        return {"id": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"}
-
-    async def list_timeline_events(self, campaign_id: str) -> list[dict]:
-        self.timeline_list_calls.append(campaign_id)
-        return []
-
-    async def upsert_timeline_event(self, payload: dict) -> dict:
-        self.timeline_upserts.append(payload)
-        return {
-            "event": {
-                "id": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+    async def apply_changes(self, payload: dict) -> dict:
+        """Stand-in for POST /internal/wiki/changes/apply (published pages)."""
+        self.applied.append(payload)
+        if self.apply_error is not None:
+            raise self.apply_error
+        created: list[dict] = []
+        updated: list[dict] = []
+        for change in payload.get("changes", []):
+            if change["action"] == "update":
+                self.updated.append(
+                    (
+                        change["page_id"],
+                        {
+                            "content_json": change["content_json"],
+                            "change_note": "Confirmed change set of session "
+                            + str(payload["session_id"]),
+                        },
+                    )
+                )
+                updated.append(
+                    {
+                        "change_id": change["change_id"],
+                        "page_id": change["page_id"],
+                        "title": change["title"],
+                        "kind": change["kind"],
+                        "action": "update",
+                        "reason": None,
+                    }
+                )
+                if change.get("timeline"):
+                    self.timeline_upserts.append(
+                        {
+                            "campaign_id": payload["campaign_id"],
+                            "page_id": change["page_id"],
+                            "in_world_date": change["timeline"].get("in_world_date"),
+                            "summary": change["timeline"]["summary"],
+                            "source_session_id": payload["session_id"],
+                            "approved": True,
+                        }
+                    )
+                continue
+            page = {
                 "campaign_id": payload["campaign_id"],
-                "page_id": payload["page_id"],
-                "approved": False,
-            },
-            "created": True,
+                "kind": change["kind"],
+                "title": change["title"],
+                "content_json": change["content_json"],
+                "status": "published",
+                "visibility": change["visibility"],
+                "confidence": change["confidence"],
+                "source_session_id": payload["session_id"],
+            }
+            self.created.append(page)
+            page_id = str(PAGE_UUIDS.get(change["title"], UUID(int=len(self.created))))
+            created.append(
+                {
+                    "change_id": change["change_id"],
+                    "page_id": page_id,
+                    "title": change["title"],
+                    "kind": change["kind"],
+                    "action": "create",
+                    "reason": None,
+                }
+            )
+            if change.get("timeline"):
+                self.timeline_upserts.append(
+                    {
+                        "campaign_id": payload["campaign_id"],
+                        "page_id": page_id,
+                        "in_world_date": change["timeline"].get("in_world_date"),
+                        "summary": change["timeline"]["summary"],
+                        "source_session_id": payload["session_id"],
+                        "approved": True,
+                    }
+                )
+        # titles resolve against the pages this apply created first, then
+        # against what the campaign already documents (the real service does
+        # exactly that) — PAGE_UUIDS stands in for the created pages.
+        by_title: dict[str, str] = dict(PAGE_UUIDS)
+        for page in self.existing_pages:
+            for name in [page.get("title"), *(page.get("aliases") or [])]:
+                if name:
+                    by_title.setdefault(str(name), str(page["id"]))
+        for relation in payload.get("relations", []):
+            source = by_title.get(str(relation.get("from_title") or ""))
+            target = relation.get("to_page_id") or by_title.get(
+                str(relation.get("to_title") or "")
+            )
+            if source and target:
+                self.relations.append((source, str(target), relation["relation_type"]))
+        return {
+            "created": created,
+            "updated": updated,
+            "skipped": [],
+            "timeline_entries": len(self.timeline_upserts),
+            "relations_created": len(payload.get("relations", [])),
         }
-
-    async def update_page(self, page_id: str, payload: dict) -> dict:
-        self.updated.append((page_id, payload))
-        return {"id": page_id, "title": "updated", "kind": "event"}
 
 
 class FakeLLM:
-    """Returns one canned extraction per chunk; records the views."""
+    """Returns one canned extraction per chunk; records the views.
 
-    def __init__(self, extractions: list[dict] | None = None, error: Exception | None = None):
+    'revised' is what revise_summary() returns (defaults to the extraction it
+    was given, i.e. an identity rewrite); 'revise_error' /
+    'revise_extractions' drive the failure and multi-call paths.
+    """
+
+    def __init__(
+        self,
+        extractions: list[dict] | None = None,
+        error: Exception | None = None,
+        revised: dict | None = None,
+    ):
         self.views: list[str] = []
         self.extractions = extractions or [make_extraction()]
         self.error = error
+        self.revised = revised
+        self.revise_calls: list[dict] = []
+        self.revise_error: Exception | None = None
 
     async def extract_many(
         self,
@@ -244,6 +346,23 @@ class FakeLLM:
         if self.error is not None:
             raise self.error
         return [self.extractions[min(i, len(self.extractions) - 1)] for i in range(len(chunk_views))]
+
+    async def revise_summary(
+        self,
+        current: dict,
+        edits: list[dict] | None = None,
+        summary_lines_override: list[str] | None = None,
+    ) -> dict:
+        self.revise_calls.append(
+            {
+                "current": current,
+                "edits": edits,
+                "summary_lines": summary_lines_override,
+            }
+        )
+        if self.revise_error is not None:
+            raise self.revise_error
+        return dict(self.revised if self.revised is not None else current)
 
 
 class FakePublisher:

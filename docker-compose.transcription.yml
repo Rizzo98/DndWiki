@@ -98,7 +98,9 @@ services:
       # description at job time.
       ASSEMBLYAI_PROMPT: ${ASSEMBLYAI_PROMPT:-}
       # Inject the campaign roster names as keyterms_prompt so fantasy names
-      # are transcribed accurately (true by default).
+      # are transcribed accurately (true by default). Each character name is
+      # sent as a keyterm: the full name plus every single word of multi-word
+      # names (the short forms players use at the table are covered too).
       ASSEMBLYAI_KEYTERMS_ENABLED: ${ASSEMBLYAI_KEYTERMS_ENABLED:-true}
       # Long recordings are decoded locally (ffmpeg) and sliced into
       # fixed-length chunks; bounded jobs keep latency low and produce

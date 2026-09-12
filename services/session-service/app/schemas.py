@@ -105,10 +105,10 @@ class SpeakerAssignRequest(BaseModel):
 
 
 class InternalSpeakerOut(BaseModel):
-    """Flat speaker row for internal consumers (content-service regenerate).
+    """Flat speaker row for internal consumers (content-service generation).
 
-    display_name is resolved from the campaign member's player_name so a
-    re-run of wiki generation keeps labeling userless speakers correctly.
+    display_name is resolved from the campaign member's player_name so
+    userless speakers are labeled correctly.
     character_name lets generation prefer the CHARACTER name of party
     members over player names, per the wiki convention.
     """

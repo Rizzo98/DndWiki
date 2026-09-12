@@ -484,6 +484,35 @@ def _parse_time(time: str) -> int:
     return 2**31 - 1
 
 
+#: Safety cap on the merged session summary: overlapping chunks can repeat a
+#: beat and a runaway model can emit dozens of lines per chunk. The prompt asks
+#: for 1-3 lines per chunk, so a real session lands far below this.
+MAX_SUMMARY_LINES = 60
+
+
+def merge_summary_lines(summaries: list[str]) -> str:
+    """The whole-session summary: unique chunk lines, in chunk order.
+
+    v11: the summary is the REVIEWABLE layer of the pipeline - the DM selects
+    the lines they want corrected - so it is stored as one beat per line.
+    Overlapping chunks repeat beats, hence the de-duplication by normalized
+    text; the surviving line keeps the first spelling seen.
+    """
+    lines: list[str] = []
+    seen: set[str] = set()
+    for summary in summaries:
+        for raw in (summary or "").splitlines():
+            line = raw.strip().lstrip("-*•").strip()
+            if not line:
+                continue
+            key = _normalize(line)
+            if key in seen:
+                continue
+            seen.add(key)
+            lines.append(line)
+    return "\n".join(lines[:MAX_SUMMARY_LINES])
+
+
 def merge_extractions(extractions: list[dict[str, Any]]) -> dict[str, Any]:
     """Combine per-chunk extractions into one structured result."""
     total_chunks = max(1, len(extractions))
@@ -595,7 +624,7 @@ def merge_extractions(extractions: list[dict[str, Any]]) -> dict[str, Any]:
 
     return {
         "language": language,
-        "session_summary": _longest(summaries),
+        "session_summary": merge_summary_lines(summaries),
         "characters": merged_characters,
         "locations": merged_locations,
         "events": merged_events,

@@ -46,10 +46,26 @@ the service validates, hashes and streams it to MinIO, then publishes
 
 ## State machine
 
-`uploaded → recorded → transcribing → transcribed → identifying_speakers
-→ speakers_identified → (speaker_pending) → generating_wiki → content_ready
-→ reviewed → published` — plus `failed` from any active state. Enforced in
-`app/status.py`; invalid transitions return 409.
+`uploaded → recorded → transcribing → transcribed → refining → refined →
+identifying_speakers → speakers_identified → (speaker_pending) → summarizing →
+summary_ready → generating_wiki → wiki_plan_ready → applying_wiki →
+content_ready → reviewed → published` — plus `failed` from any active state.
+Enforced in `app/status.py`; invalid transitions return 409.
+
+`summarizing`/`summary_ready` is the **session-summary review layer**:
+content-service distills the transcript into a draft summary the DM reviews
+and either sends back for a rewrite (`summary_ready → summarizing`) or
+confirms (`summary_ready → generating_wiki`).
+
+`generating_wiki`/`wiki_plan_ready`/`applying_wiki` is the **change-set review
+layer**: the confirmed summary becomes a set of proposed wiki changes the DM
+inspects, edits and confirms; only `applying_wiki` writes them. Nothing
+reaches the wiki before that second confirmation.
+
+The pipeline never goes backwards: a session that reached `content_ready` can
+only move forward (or be unpublished from `published` back to `reviewed`).
+The only re-entry is a failed phase being retried by its redelivered queue
+message (`failed → summarizing|generating_wiki|applying_wiki`).
 
 ## Owns
 

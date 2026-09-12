@@ -201,16 +201,112 @@ export interface SummaryTimelineEntry {
   characters: string[];
 }
 
+/** One proposed wiki change (create or update) the DM reviews. */
+export interface PlanChange {
+  id: string;
+  action: "create" | "update";
+  kind: WikiPageKind;
+  title: string;
+  /** The page an update targets (null for a creation). */
+  page_id: string | null;
+  /** For updates: the page as it is NOW, so the UI can diff it. */
+  before: { title: string; content_json: Record<string, unknown> } | null;
+  /** What would be written. */
+  after: {
+    title: string;
+    content_json: Record<string, unknown>;
+    visibility: WikiVisibility;
+    confidence: number | null;
+  };
+  /** The timeline entry an event page backs. */
+  timeline: { summary: string; in_world_date: string | null } | null;
+  /** Unchecked by the DM (kept so the review stays reversible). */
+  dropped: boolean;
+}
+
+/** A cross-reference proposed with the change set. */
+export interface PlanRelation {
+  id: string;
+  from_title: string;
+  to_title: string | null;
+  to_page_id: string | null;
+  relation_type: string;
+  dropped: boolean;
+}
+
+/** An entity the campaign already documents: context, never a change. */
+export interface PlanSkipped {
+  title: string;
+  kind: string;
+  matched_title: string | null;
+  reason: string;
+}
+
+/** The 'git status' of a session: what confirming would write to the wiki. */
+export interface SessionPlan {
+  id: string;
+  session_id: string;
+  summary_id: string | null;
+  status: "draft" | "applying" | "applied";
+  language: string | null;
+  changes: PlanChange[];
+  relations: PlanRelation[];
+  skipped: PlanSkipped[];
+  counts: {
+    create: number;
+    update: number;
+    pages: number;
+    events: number;
+    relations: number;
+    dropped: number;
+  };
+  error: string | null;
+  confirmed_at: string | null;
+  confirmed_by: string | null;
+  applied_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/** The DM's edit of one change (identity fields are server-owned). */
+export interface PlanChangeEdit {
+  id: string;
+  title?: string;
+  after?: { content_json?: Record<string, unknown>; visibility?: WikiVisibility };
+  timeline?: { summary: string; in_world_date?: string | null } | null;
+  dropped?: boolean;
+}
+
+export interface PlanRelationEdit {
+  id: string;
+  dropped?: boolean;
+}
+
+/** One review request: the summary lines concerned + what must change. */
+export interface SummaryEdit {
+  /** Verbatim summary lines the request is about; empty = whole summary. */
+  targets: string[];
+  instruction: string;
+}
+
 export interface SessionSummary {
   id: string;
   session_id: string;
   generation_job_id: string | null;
+  /** The reviewable summary: one beat per line (newline separated). */
   summary: string;
+  language: string | null;
   characters: SummaryEntity[];
   locations: SummaryEntity[];
   events: SummaryEvent[];
   timeline_entries: SummaryTimelineEntry[];
   confidence: number | null;
+  /** 'draft' while the DM reviews it, 'confirmed' once the wiki was built. */
+  review_status: "draft" | "confirmed";
+  /** 1 for the first draft, +1 per DM-driven rewrite. */
+  revision: number;
+  confirmed_at: string | null;
+  confirmed_by: string | null;
   llm_provider: string | null;
   llm_model: string | null;
   prompt_version: string | null;
@@ -526,14 +622,14 @@ export const wikiApi = {
 };
 
 // ---------------------------------------------------------------------------
-// content-service (job status + llm config)
+// content-service (job status + summary review)
 // ---------------------------------------------------------------------------
 
-export interface RegenerateResponse {
+export interface SummaryReviewResponse {
   session_id: string;
   campaign_id: string;
   queued: boolean;
-  speakers: number;
+  revision: number;
   llm_model: string;
   prompt_version: string;
 }
@@ -546,11 +642,58 @@ export const contentApi = {
   llm: (token: string) =>
     request<{ provider: string; model: string; prompt_version: string }>(token, "/api/content/llm"),
 
-  // DEBUG (developer accounts): re-run wiki generation from the same transcript.
-  regenerate: (token: string, sessionId: string) =>
-    request<RegenerateResponse>(
+  /** DM: rebuild the draft summary applying the review feedback. */
+  regenerateSummary: (
+    token: string,
+    sessionId: string,
+    body: { edits: SummaryEdit[]; summary_lines?: string[] | null },
+  ) =>
+    request<SummaryReviewResponse>(
       token,
-      "/api/content/sessions/" + sessionId + "/regenerate",
+      `/api/content/sessions/${sessionId}/summary/regenerate`,
+      jsonInit("POST", body),
+    ),
+
+  /** DM: accept the summary - the PROPOSED changes get computed next. */
+  confirmSummary: (token: string, sessionId: string) =>
+    request<SummaryReviewResponse>(
+      token,
+      `/api/content/sessions/${sessionId}/summary/confirm`,
+      jsonInit("POST"),
+    ),
+
+  /** DM: the proposed wiki changes of a session (null while there are none). */
+  plan: (token: string, sessionId: string) =>
+    request<{ session_id: string; plan: SessionPlan | null }>(
+      token,
+      `/api/content/sessions/${sessionId}/plan`,
+    ),
+
+  /** DM: save the review (edited payloads, dropped changes and links). */
+  updatePlan: (
+    token: string,
+    sessionId: string,
+    body: { changes?: PlanChangeEdit[]; relations?: PlanRelationEdit[] },
+  ) =>
+    request<{ session_id: string; plan: SessionPlan }>(
+      token,
+      `/api/content/sessions/${sessionId}/plan`,
+      jsonInit("PUT", body),
+    ),
+
+  /** DM: confirm the proposed changes - they are written into the wiki. */
+  confirmPlan: (token: string, sessionId: string) =>
+    request<{
+      session_id: string;
+      campaign_id: string;
+      queued: boolean;
+      plan_id: string;
+      pages: number;
+      llm_model: string;
+      prompt_version: string;
+    }>(
+      token,
+      `/api/content/sessions/${sessionId}/plan/confirm`,
       jsonInit("POST"),
     ),
 };

@@ -141,13 +141,15 @@ async def upsert_timeline_event(
     in_world_date: str | None = None,
     summary: str,
     source_session_id: UUID | None = None,
+    approved_on_create: bool = False,
 ) -> tuple[TimelineEvent, bool]:
     """Create or refresh the timeline entry for an event page.
 
-    The content pipeline calls this after drafting an event page: new pages
-    get a pending entry (approved=False, the DM approves it), pages that
-    already have an entry get their summary/in-world date refreshed with the
-    newly extracted information. The approval state is never touched here.
+    New entries land pending (approved=False) by default: a proposal the DM
+    approves on the timeline. 'approved_on_create=True' is for the confirmed
+    change set, where the DM already reviewed the entry before it was written.
+    An EXISTING entry only gets its summary/in-world date refreshed — the
+    approval state the DM set is never touched either way.
     """
     page = await get_page_or_404(db, page_id)
     if page.campaign_id != campaign_id:
@@ -172,7 +174,9 @@ async def upsert_timeline_event(
         in_world_date=in_world_date,
         summary=summary,
         source_session_id=source_session_id,
-        approved=False,  # LLM-proposed: the DM approves it on the timeline
+        # a proposal by default (the DM approves it on the timeline); the
+        # confirmed change set creates it approved instead
+        approved=approved_on_create,
     )
     db.add(event)
     await db.commit()

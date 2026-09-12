@@ -264,7 +264,8 @@ export function WikiTab({ campaign }: { campaign: Campaign }) {
               <Alert tone="error">{error}</Alert>
             ) : visiblePages.length === 0 ? (
               <EmptyState>
-                No pages here yet. Drafts appear after a session is transcribed and the LLM generates them (pending review).
+                No pages here yet. Pages appear once a session summary is distilled and you
+                confirm the proposed changes on the session page.
               </EmptyState>
             ) : (
               <div className="divide-y divide-slate-800">

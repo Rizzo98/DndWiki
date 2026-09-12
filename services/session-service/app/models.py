@@ -37,9 +37,9 @@ class Session(Base):
     title: Mapped[str | None] = mapped_column(String(255))
     session_no: Mapped[int | None] = mapped_column(Integer)
     recorded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # uploaded|recorded|transcribing|transcribed|identifying_speakers|
-    # speakers_identified|speaker_pending|generating_wiki|content_ready|
-    # reviewed|published|failed
+    # uploaded|recorded|transcribing|transcribed|refining|refined|
+    # identifying_speakers|speakers_identified|speaker_pending|summarizing|
+    # summary_ready|generating_wiki|content_ready|reviewed|published|failed
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="uploaded", server_default="uploaded", index=True
     )

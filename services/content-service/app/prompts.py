@@ -91,13 +91,24 @@ v8 changes (location page structure):
 - locations gain 'founded' (era/date the place was founded) and 'history'
   (durable past recounted in the chunk: founding, wars, famous events).
   'history' is a narrative section of the page, never a session fact.
+
+v11 changes (reviewable session summary + DM feedback loop):
+- 'session_summary' became a LIST OF LINES: 1-3 short beats per chunk, one
+  beat per line, newline separated (no bullets, no numbering). The merger
+  concatenates the chunks' lines into the whole-session summary the DM reads
+  on the session page, where each line is individually selectable and
+  correctable - a single long paragraph could not be reviewed line by line.
+- the module also ships SUMMARY_REVISION_PROMPT, the second LLM entry point:
+  it applies the DM's corrections (select some lines + describe the change)
+  to an already extracted session, so a fixed attribution propagates to the
+  summary, the entities, the events and the timeline entries at once.
 """
 
 from __future__ import annotations
 
 import json
 
-PROMPT_VERSION = "v10"
+PROMPT_VERSION = "v11"
 
 #: Strict JSON schema given to the LLM (OpenAI-style; LiteLLM passes it through
 #: to providers that support response_format; others just follow instructions).
@@ -111,7 +122,14 @@ EXTRACTION_SCHEMA: dict = {
                 "e.g. 'en', 'it'."
             ),
         },
-        "session_summary": {"type": "string"},
+        "session_summary": {
+            "type": "string",
+            "description": (
+                "The chunk's story as 1-3 SHORT lines, one beat per line, "
+                "separated by newline characters. Chronological, no bullets, "
+                "no numbering, no blank lines."
+            ),
+        },
         "characters": {
             "type": "array",
             "items": {
@@ -563,7 +581,10 @@ The wiki is CROSS-SESSION:
 
 Rules:
 - language: code of the transcript's dominant language (see above).
-- session_summary: 2-4 sentences summarizing what happens in this chunk.
+- session_summary: the story of this chunk as 1-3 SHORT lines, one beat per
+  line, separated by newline characters (\n). Chronological order, no bullet
+  characters, no numbering, no blank lines: the session page shows one line
+  per row so the DM can correct it line by line.
 - characters: named characters that appear or are mentioned. Keep the name as
   spoken (capitalize properly). aliases: other names used for the same person,
   including generic descriptors ("the innkeeper"). description: who they are /
@@ -676,4 +697,112 @@ def build_chunk_message(
     return (
         f"This is chunk {chunk_index + 1} of {total_chunks} of the session "
         f"transcript.\n\n{chunk_view}{note}"
+    )
+
+# ---------------------------------------------------------------------------
+# Session-summary revision (the DM feedback loop)
+# ---------------------------------------------------------------------------
+#
+# The session summary is the intermediate layer of the pipeline: it is drafted
+# from the transcript, the DM reviews it line by line and asks for changes
+# ("it wasn't Character A, it was Character B"), and only the confirmed
+# summary becomes wiki pages and timeline events. This second prompt applies
+# those corrections to the WHOLE extraction - not just to the summary text -
+# so a corrected attribution cannot survive in the character page, the event
+# description or the timeline while the summary says otherwise.
+
+SUMMARY_REVISION_SYSTEM_PROMPT = f"""You maintain the session record of a tabletop RPG (Dungeons & Dragons) campaign.
+
+You receive the CURRENT structured extraction of one session - the same JSON
+object you would have produced from the transcript - plus the Dungeon Master's
+correction requests. Apply the corrections and return the COMPLETE corrected
+JSON object, matching EXACTLY this schema (no markdown, no commentary outside
+the JSON):
+
+{json.dumps(EXTRACTION_SCHEMA)}
+
+How to apply a correction:
+- A request names the summary lines it is about and states what must change
+  (for example: the line "Character A was going to the city center" with the
+  request "It wasn't Character A, it was Character B").
+- Apply it EVERYWHERE the same fact appears: the summary lines, the affected
+  characters (description, facts, session_facts, relationships), the
+  locations, the events (description, participants) and the timeline entries.
+  An attribution fixed in the summary but left wrong in the events is a bug.
+- Rewrite the summary lines the request is about so they say what the DM
+  says. When the DM supplies the corrected wording, use their wording, in the
+  session's language. Do not describe the correction itself ("the DM
+  corrected...", "previously it was...") - the summary must read as the plain
+  record of what happened.
+- When a correction moves an action from one character to another, drop the
+  wrong character from that fact (including 'participants' lists) and add the
+  right one.
+- The DM may also ask for removals, additions, reorderings, a different
+  level of detail or a different tone: follow the request, staying inside the
+  information the session already contains.
+- Never invent new events, characters or locations that the correction did
+  not introduce, and never drop information the DM did not ask about.
+
+Rules that always hold:
+- Keep the extraction's language: every text field stays in the language of
+  the table ('language' is unchanged).
+- 'session_summary' stays a list of short lines separated by newline
+  characters (\n), one beat per line, chronological, no bullets, no
+  numbering, no blank lines. If the DM added or removed a line, keep the
+  remaining lines' order.
+- Keep every schema key, using [] for an empty category, and keep the shape
+  of every entity: same fields, same proper names, same 'mentions',
+  'aliases', 'facts', 'session_facts', 'relationships'. Copy unchanged
+  values verbatim, 'confidence' numbers included.
+- Only include what the session supports: no invented facts, no filler.
+"""
+
+
+def build_summary_revision_message(
+    current: dict,
+    edits: list[dict] | None = None,
+    summary_lines_override: list[str] | None = None,
+) -> str:
+    """User message for one summary-revision call.
+
+    'current' is the extraction as persisted for the session (summary lines +
+    characters/locations/events/timeline entries). 'edits' are the DM's
+    correction requests, each {'targets': [line, ...], 'instruction': str} -
+    an empty 'targets' means the request is about the summary as a whole.
+    'summary_lines_override' lets the DM's client send the lines exactly as
+    displayed (they may have edited the text in the UI before regenerating).
+    """
+    payload = dict(current)
+    if summary_lines_override:
+        payload["session_summary"] = "\n".join(summary_lines_override)
+
+    requests: list[str] = []
+    for index, edit in enumerate(edits or [], start=1):
+        instruction = (edit.get("instruction") or "").strip()
+        if not instruction:
+            continue
+        targets = [t.strip() for t in (edit.get("targets") or []) if isinstance(t, str) and t.strip()]
+        if targets:
+            quoted = "\n".join(f'    - "{t}"' for t in targets)
+            requests.append(
+                f"{index}. Summary line(s) concerned:\n{quoted}\n"
+                f"   Change requested: {instruction}"
+            )
+        else:
+            requests.append(
+                f"{index}. Concerned lines: the whole session summary.\n"
+                f"   Change requested: {instruction}"
+            )
+    if not requests:
+        requests.append(
+            "1. Concerned lines: the whole session summary.\n"
+            "   Change requested: tighten the summary to the session's key beats."
+        )
+
+    return (
+        "CURRENT EXTRACTION (JSON):\n"
+        f"{json.dumps(payload, ensure_ascii=False)}\n\n"
+        "CORRECTION REQUESTS FROM THE DUNGEON MASTER:\n"
+        + "\n".join(requests)
+        + "\n\nReturn the complete corrected JSON object."
     )

@@ -1,8 +1,9 @@
-"""content-service — FastAPI entrypoint (health, job status, debug regenerate).
+"""content-service — FastAPI entrypoint (health, job status, review APIs).
 
 Runs in the same container as the queue worker; exposes lightweight status
-endpoints plus the DM-only debug regenerate trigger. The heavy LLM pipeline
-lives in app.workers.generate.
+endpoints plus the DM-only session-pipeline controls (summary rewrite, summary
+confirmation, proposed-changes review and confirmation). The heavy LLM
+pipeline lives in app.workers.generate.
 """
 
 import logging
@@ -13,7 +14,7 @@ from dnd_common.db import get_session
 from fastapi import Depends, FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api import regenerate
+from app.api import plan, summary_review
 from app.broker import EventPublisher
 from app.core.config import get_settings
 from app.services import jobs, summaries
@@ -40,7 +41,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="content-service", version="0.1.0", lifespan=lifespan)
-app.include_router(regenerate.router)
+app.include_router(summary_review.router)
+app.include_router(plan.router)
 
 
 @app.get("/health")
@@ -65,6 +67,8 @@ async def generation_job(session_id: str, db: AsyncSession = Depends(get_session
         "job": {
             "id": str(job.id),
             "status": job.status,
+            # summary | wiki — which half of the pipeline this run covered
+            "phase": job.phase,
             "llm_provider": job.llm_provider,
             "llm_model": job.llm_model,
             "prompt_version": job.prompt_version,
@@ -83,6 +87,10 @@ async def session_summary(session_id: str, db: AsyncSession = Depends(get_sessio
 
     Same contract as generation_job: an invalid id is not an error, the body
     just carries a null summary so the UI can treat it as "not generated yet".
+    'review_status' tells the session page whether the summary is still the
+    DM's draft ('draft') or already confirmed ('confirmed', which is when the
+    wiki pages and the timeline events exist); 'revision' counts how many
+    times the DM asked for a rewrite.
     """
     from uuid import UUID
 
@@ -100,11 +108,16 @@ async def session_summary(session_id: str, db: AsyncSession = Depends(get_sessio
             "session_id": str(row.session_id),
             "generation_job_id": str(row.generation_job_id) if row.generation_job_id else None,
             "summary": row.summary,
+            "language": row.language,
             "characters": row.characters or [],
             "locations": row.locations or [],
             "events": row.events or [],
             "timeline_entries": row.timeline_entries or [],
             "confidence": float(row.confidence) if row.confidence is not None else None,
+            "review_status": row.review_status,
+            "revision": row.revision,
+            "confirmed_at": row.confirmed_at.isoformat() if row.confirmed_at else None,
+            "confirmed_by": str(row.confirmed_by) if row.confirmed_by else None,
             "llm_provider": row.llm_provider,
             "llm_model": row.llm_model,
             "prompt_version": row.prompt_version,

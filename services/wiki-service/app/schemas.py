@@ -226,3 +226,77 @@ class TimelineUpsertOut(BaseModel):
 
     event: TimelineEventOut
     created: bool
+
+# ------------------------------------------------- confirmed change sets
+
+
+class PlannedTimeline(BaseModel):
+    """Timeline entry backing an event page in a confirmed change set."""
+
+    summary: str = Field(min_length=1, max_length=2000)
+    in_world_date: str | None = Field(default=None, max_length=256)
+
+
+class PlannedPage(BaseModel):
+    """One page of a confirmed change set (create or update).
+
+    The DM reviewed and possibly edited this payload on the session page;
+    'change_id' ties the applied page back to that review entry.
+    """
+
+    change_id: str = Field(min_length=1, max_length=64)
+    action: Literal["create", "update"]
+    kind: PAGE_KIND
+    title: str = Field(min_length=1, max_length=255)
+    page_id: UUID | None = None
+    content_json: dict[str, Any] = Field(default_factory=dict)
+    visibility: PAGE_VISIBILITY = "public"
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    change_note: str | None = Field(default=None, max_length=500)
+    timeline: PlannedTimeline | None = None
+
+
+class PlannedRelation(BaseModel):
+    """A cross-reference proposed with the change set (titles or ids)."""
+
+    relation_id: str = Field(min_length=1, max_length=64)
+    from_title: str = Field(min_length=1, max_length=255)
+    to_title: str | None = Field(default=None, max_length=255)
+    to_page_id: UUID | None = None
+    relation_type: str = Field(min_length=1, max_length=32, pattern=RELATION_TYPE_PATTERN)
+
+
+class ChangeSetApply(BaseModel):
+    """Payload for POST /internal/wiki/changes/apply (service token).
+
+    Sent by content-service ONLY after the DM confirmed the proposed change
+    set on the session page: the pages are created published (no draft review
+    step) and new timeline entries are created approved.
+    """
+
+    campaign_id: UUID
+    session_id: UUID
+    confirmed_by: UUID | None = None
+    changes: list[PlannedPage] = Field(default_factory=list, max_length=200)
+    relations: list[PlannedRelation] = Field(default_factory=list, max_length=200)
+
+
+class AppliedChange(BaseModel):
+    """What happened to one change of the set."""
+
+    change_id: str
+    page_id: UUID | None = None
+    title: str
+    kind: str
+    action: str
+    reason: str | None = None
+
+
+class ChangeSetApplyOut(BaseModel):
+    """Result of applying a change set (also what the session page reports)."""
+
+    created: list[AppliedChange] = Field(default_factory=list)
+    updated: list[AppliedChange] = Field(default_factory=list)
+    skipped: list[AppliedChange] = Field(default_factory=list)
+    timeline_entries: int = 0
+    relations_created: int = 0

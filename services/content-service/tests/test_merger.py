@@ -1,6 +1,7 @@
 """Tests for the cross-chunk merger + wiki draft builder."""
 
 from app.merger import (
+    MAX_SUMMARY_LINES,
     POSSIBLE_DUPLICATE,
     build_event_drafts,
     build_page_drafts,
@@ -10,6 +11,7 @@ from app.merger import (
     map_location_type,
     match_existing_page,
     merge_extractions,
+    merge_summary_lines,
 )
 
 
@@ -97,8 +99,11 @@ def test_merge_dedupes_entities_across_chunks():
     assert char["mentions"] == 7
     # appeared in both chunks
     assert char["confidence"] == 1.0
-    # longest summary wins
-    assert merged["session_summary"] == "A much longer and more detailed summary of the session."
+    # v11: the summary is the reviewable layer - the chunks' lines are
+    # concatenated in order, so the DM can correct single beats
+    assert merged["session_summary"] == (
+        "short\nA much longer and more detailed summary of the session."
+    )
     # unanimous per-chunk language
     assert merged["language"] == "en"
 
@@ -957,3 +962,41 @@ def test_build_event_drafts_title_collision_with_non_event_page():
     assert timeline_events == []
     assert len(duplicates) == 1
     assert duplicates[0]["matched_page_id"] == "location-1"
+
+def test_merge_summary_lines_dedupes_repeated_beats():
+    """Overlapping chunks repeat beats; the merged summary keeps one of each."""
+    extractions = [
+        {
+            "language": "en",
+            "session_summary": "The party reaches Moria.\nThe gate is sealed.",
+            "characters": [],
+            "locations": [],
+            "events": [],
+            "timeline_entries": [],
+        },
+        {
+            "language": "en",
+            "session_summary": "The gate is sealed.\nAragorn speaks the password.",
+            "characters": [],
+            "locations": [],
+            "events": [],
+            "timeline_entries": [],
+        },
+    ]
+    assert merge_extractions(extractions)["session_summary"] == (
+        "The party reaches Moria.\nThe gate is sealed.\nAragorn speaks the password."
+    )
+
+
+def test_merge_summary_lines_strips_bullets_and_caps_length():
+    # models occasionally answer with bullets despite the instructions
+    assert merge_summary_lines(["- first beat\n\n* second beat"]) == (
+        "first beat\nsecond beat"
+    )
+    # a runaway model cannot blow up the review UI
+    huge = "\n".join(f"beat {i}" for i in range(MAX_SUMMARY_LINES + 20))
+    assert len(merge_summary_lines([huge]).splitlines()) == MAX_SUMMARY_LINES
+
+
+def test_merge_summary_lines_empty_when_nothing_reported():
+    assert merge_summary_lines(["", "   "]) == ""

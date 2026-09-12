@@ -54,6 +54,45 @@ def test_build_keyterms_falls_back_to_player_name():
     assert build_keyterms(_settings(), members) == ["Bob"]
 
 
+def test_build_keyterms_expands_multi_word_names():
+    """Multi-word names are sent as the full name AND as every single word,
+    so the short forms players actually use at the table are recognized.
+    """
+    members = [
+        {"role": "player", "character_name": "Thorin Oakenshield", "player_name": "Bob"},
+    ]
+    assert build_keyterms(_settings(), members) == [
+        "Thorin Oakenshield",
+        "Thorin",
+        "Oakenshield",
+    ]
+
+
+def test_build_keyterms_expansion_is_case_insensitive_and_deduped():
+    members = [
+        {"role": "player", "character_name": "Elara Moonshadow", "player_name": "A"},
+        {"role": "player", "character_name": "MOONSHADOW", "player_name": "B"},
+    ]
+    assert build_keyterms(_settings(), members) == [
+        "Elara Moonshadow",
+        "Elara",
+        "Moonshadow",
+    ]
+
+
+def test_build_keyterms_single_word_name_not_duplicated():
+    assert build_keyterms(_settings(), [{"character_name": "Gimli", "player_name": "A"}]) == ["Gimli"]
+
+
+def test_build_keyterms_overlong_name_sends_only_single_words():
+    # > MAX_KEYTERM_WORDS (6) words: the full phrase exceeds AssemblyAI's
+    # per-phrase limit, so only the single-word forms go through.
+    name = " ".join(["W" + str(i) for i in range(8)])
+    out = build_keyterms(_settings(), [{"character_name": name, "player_name": "A"}])
+    assert name not in out
+    assert out == name.split()
+
+
 def test_build_keyterms_disabled_or_empty():
     assert build_keyterms(_settings(assemblyai_keyterms_enabled=False), [{"character_name": "A"}]) == []
     assert build_keyterms(_settings(), None) == []

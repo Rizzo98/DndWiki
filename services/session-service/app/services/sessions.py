@@ -323,8 +323,8 @@ async def assign_speaker(
     await db.refresh(assignment)
 
     # Naming the last pending speaker of a session closes the identification
-    # stage (speaker_pending -> speakers_identified), so the speakers.assigned
-    # event can drive content generation.
+    # stage (speaker_pending -> speakers_identified) BEFORE the event is
+    # published, so the content worker always sees a session it may distill.
     if session.status == SessionStatus.SPEAKER_PENDING.value:
         remaining_pending = await db.scalar(
             select(func.count())

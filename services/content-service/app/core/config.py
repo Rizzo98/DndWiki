@@ -2,8 +2,8 @@
 
 The worker needs four integration points beyond the shared settings:
 - MinIO ``transcripts`` bucket (input: the named transcript JSON)
-- session-service internal API (pipeline state machine: generating_wiki ->
-  content_ready, or failed)
+- session-service internal API (pipeline state machine: summarizing ->
+  summary_ready -> generating_wiki -> content_ready, or failed)
 - user-service internal API (resolve user ids -> display names for the
   named-transcript view)
 - wiki-service API (create pending_review draft pages + proposed relations)
@@ -38,7 +38,7 @@ class ServiceSettings(Settings):
     anthropic_api_key: str = ""
     ollama_base_url: str = ""
     # Version of app/prompts.py shipped with this deployment; recorded per job.
-    prompt_version: str = "v10"
+    prompt_version: str = "v11"
     # Parallel per-chunk LLM calls per session job.
     llm_chunk_concurrency: int = 4
     # Corrective retries per chunk when the LLM returns malformed JSON

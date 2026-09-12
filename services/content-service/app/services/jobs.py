@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import GenerationJob
+from app.models import PHASE_SUMMARY, GenerationJob
 
 QUEUED = "queued"
 RUNNING = "running"
@@ -22,11 +22,18 @@ async def create_job(
     provider: str,
     model: str,
     prompt_version: str,
+    phase: str = PHASE_SUMMARY,
 ) -> GenerationJob:
-    """Record a generation run as started (status='running')."""
+    """Record a generation run as started (status='running').
+
+    'phase' records which half of the pipeline the run covers: 'summary'
+    (transcript -> reviewable draft / DM-feedback rewrite) or 'wiki'
+    (confirmed summary -> pages, events, timeline entries).
+    """
     job = GenerationJob(
         session_id=session_id,
         status=RUNNING,
+        phase=phase,
         llm_provider=provider,
         llm_model=model,
         prompt_version=prompt_version,

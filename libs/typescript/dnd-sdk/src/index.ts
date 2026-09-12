@@ -53,10 +53,21 @@ export type SessionStatus =
   | "recorded"
   | "transcribing"
   | "transcribed"
+  | "refining"
+  | "refined"
   | "identifying_speakers"
   | "speakers_identified"
   | "speaker_pending"
+  /** The session summary is being (re)built from the transcript. */
+  | "summarizing"
+  /** Draft summary waiting for the DM's review: the wiki is not generated yet. */
+  | "summary_ready"
+  /** The proposed wiki changes are being computed from the confirmed summary. */
   | "generating_wiki"
+  /** Proposed changes waiting for the DM's review: nothing is in the wiki yet. */
+  | "wiki_plan_ready"
+  /** The DM confirmed the changes; the wiki is being written. */
+  | "applying_wiki"
   | "content_ready"
   | "reviewed"
   | "published"

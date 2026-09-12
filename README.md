@@ -5,8 +5,10 @@ living campaign wiki.
 
 Players drop a phone at the center of the table and hit record. The audio is uploaded,
 transcribed with speaker diarization (WhisperX), speakers are matched to player
-voiceprints, and LLMs distill the named transcript into wiki content — characters,
-locations, events, and a campaign timeline. The Dungeon Master curates everything;
+voiceprints, and LLMs distill the named transcript into a **session summary** the
+Dungeon Master reviews line by line — correcting the AI and regenerating it until
+it reads right. Only the confirmed summary is turned into wiki content —
+characters, locations, events, and a campaign timeline. The DM curates everything;
 players get read-only access.
 
 ## High-level flow
@@ -26,7 +28,9 @@ phone recording ──▶ session-service ──▶ MinIO (raw audio)
                 speaker-service (ECAPA-TDNN embeddings ↔ voiceprints in Qdrant)
                         │  unknown speakers flagged for DM assignment
                         ▼ RabbitMQ (content.generate)
-                content-service (LLM structured extraction → wiki drafts)
+                content-service (LLM structured extraction → DRAFT session summary)
+                        │  DM reviews/regenerates it on the session page
+                        │  summary confirmed (summary.confirmed) → wiki drafts
                         │  drafts (pending_review)
                         ▼
                 wiki-service (DM approves/edits → published) ──▶ search-service
@@ -49,7 +53,7 @@ DnDWiki/
 │   ├── transcription-assemblyai-service/  # Cloud API variant (AssemblyAI Universal-3.5 Pro + diarization)
 │   ├── refiner-service/   #   LLM contextual diarization (transcript + speaker-label fixes)
 │   ├── speaker-service/   #   Speaker identification from voiceprints
-│   ├── content-service/   #   LLM transcript → wiki draft generation
+│   ├── content-service/   #   LLM transcript → session summary → wiki drafts
 │   ├── wiki-service/      #   Wiki CRUD, versions, visibility, approval
 │   ├── search-service/    #   Meilisearch indexing
 │   └── notification-service/   # Emails / webhooks / push

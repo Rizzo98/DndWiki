@@ -20,7 +20,7 @@ export interface AuthState {
   realmRoles: string[];
   isDm: boolean;
   userId: string | null;
-  /** Users with the 'dev' realm role see debug affordances (rerun generation, wiki reset). */
+  /** Users with the 'dev' realm role may drive the summary review of any campaign. */
   isDeveloper: boolean;
   login: (redirectUri?: string) => void;
   logout: () => void;

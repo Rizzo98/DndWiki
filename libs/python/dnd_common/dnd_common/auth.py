@@ -132,8 +132,8 @@ def require_roles(*roles: str):
 require_dm = require_roles("dm")
 require_player_or_dm = require_roles("player", "dm")
 
-#: Realm role that unlocks developer/debug tooling (rerun generation,
-#: campaign wiki reset). Assigned manually in Keycloak.
+#: Realm role that unlocks developer/debug tooling (driving the summary
+#: review of any campaign). Assigned manually in Keycloak.
 DEV_ROLE = "dev"
 
 
