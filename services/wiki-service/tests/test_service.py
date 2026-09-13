@@ -103,8 +103,7 @@ async def test_list_pages_player_sees_only_published_public(session_factory):
     visible = await _seed_page(session_factory, campaign)
     await _seed_page(session_factory, campaign, visibility="dm_only")
     await _seed_page(session_factory, campaign, status="draft")
-    await _seed_page(session_factory, campaign, status="pending_review")
-    await _seed_page(session_factory, campaign, status="archived")
+    await _seed_page(session_factory, campaign, status="archived", title="Old Junk")
 
     async with session_factory() as db:
         pages = await services.list_pages(db, campaign, "player")
@@ -116,12 +115,11 @@ async def test_list_pages_dm_sees_everything(session_factory):
     await _seed_page(session_factory, campaign)
     await _seed_page(session_factory, campaign, visibility="dm_only")
     await _seed_page(session_factory, campaign, status="draft")
-    await _seed_page(session_factory, campaign, status="pending_review")
-    await _seed_page(session_factory, campaign, status="archived")
+    await _seed_page(session_factory, campaign, status="archived", title="Old Junk")
 
     async with session_factory() as db:
         pages = await services.list_pages(db, campaign, "dm")
-        assert len(pages) == 5
+        assert len(pages) == 4
 
 
 async def test_list_pages_does_not_leak_other_campaigns(session_factory):
@@ -204,7 +202,7 @@ async def test_get_page_or_404(session_factory):
 async def test_approve_draft_publishes_and_emits(session_factory, fake_publisher):
     async with session_factory() as db:
         page = await services.create_page(
-            db, campaign_id=uuid.uuid4(), kind="character", title="Aragorn", status="pending_review"
+            db, campaign_id=uuid.uuid4(), kind="character", title="Aragorn"
         )
         approved = await services.approve_page(
             db, page.id, approved_by=uuid.uuid4(), publisher=fake_publisher

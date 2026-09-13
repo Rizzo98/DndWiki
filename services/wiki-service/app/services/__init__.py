@@ -6,7 +6,6 @@ from app.services.pages import (
     DM_ONLY,
     DRAFT,
     HIDDEN,
-    PENDING_REVIEW,
     PUBLIC,
     PUBLISHED,
     SERVICE_CREATE_STATUSES,
@@ -28,6 +27,7 @@ from app.services.pages import (
     update_page,
     visible_to,
 )
+from app.services.session_content import session_content
 from app.services.timeline import (
     create_timeline_event,
     delete_campaign_timeline_events,
@@ -43,7 +43,6 @@ __all__ = [
     "DM_ONLY",
     "DRAFT",
     "HIDDEN",
-    "PENDING_REVIEW",
     "PUBLIC",
     "PUBLISHED",
     "SERVICE_CREATE_STATUSES",
@@ -65,6 +64,7 @@ __all__ = [
     "list_timeline_events",
     "list_versions",
     "page_event_payload",
+    "session_content",
     "set_visibility",
     "slugify",
     "unique_slug",

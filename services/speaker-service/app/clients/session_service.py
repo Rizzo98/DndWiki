@@ -61,6 +61,40 @@ class SessionServiceClient:
             items,
         )
 
+    async def speaker_history(
+        self,
+        campaign_id: str,
+        *,
+        exclude_session_id: str | None = None,
+        limit_sessions: int = 5,
+    ) -> list[dict[str, Any]]:
+        """GET /internal/campaigns/{id}/speaker-history (DM-confirmed labels).
+
+        The labels the DM named by hand in earlier sessions of the campaign:
+        app.history turns their audio into voice samples for this run. Newest
+        sessions first; the session being identified is excluded so it never
+        becomes a reference for itself.
+        """
+        params: dict[str, Any] = {"limit_sessions": limit_sessions}
+        if exclude_session_id:
+            params["exclude_session_id"] = exclude_session_id
+        return await self._get(
+            f"/internal/campaigns/{campaign_id}/speaker-history", params
+        )
+
+    async def _get(self, path: str, params: dict[str, Any]) -> Any:
+        token = service_token(self._settings)
+        headers = {"Authorization": f"Bearer {token}"}
+        try:
+            async with httpx.AsyncClient(timeout=self._settings.session_service_timeout_sec) as client:
+                resp = await client.get(f"{self._base_url}{path}", params=params, headers=headers)
+        except httpx.HTTPError as exc:
+            logger.warning("session-service request failed: %s", exc)
+            raise SessionServiceError(f"session-service request failed: {exc}") from exc
+        if resp.status_code >= 400:
+            raise SessionServiceError(f"session-service returned {resp.status_code}: {resp.text}")
+        return resp.json()
+
     async def _request(self, method: str, path: str, body: dict[str, Any] | list[dict[str, Any]]) -> Any:
         token = service_token(self._settings)
         headers = {"Authorization": f"Bearer {token}"}

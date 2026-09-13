@@ -27,7 +27,8 @@ and system status.
 | Route | Purpose |
 |---|---|
 | `/` | Landing + Keycloak sign-in |
-| `/campaigns` | Campaign list, create (you become DM), accept invite |
+| `/campaigns` | Campaign list + accept invite |
+| `/campaigns/new` | Campaign creation (you become DM): name, slug, description, session language, starting roster |
 | `/campaigns/[id]` | Workspace: overview, wiki, sessions, timeline, members, invites |
 | `/campaigns/[id]/pages/[pageId]` | Page viewer + DM edit/approve/archive/visibility/relations/versions |
 | `/campaigns/[id]/sessions/[sessionId]` | Recording upload, in-page audio player (click transcript to seek), transcript + diarization viewer, live pipeline status, speaker assignment |
@@ -45,14 +46,14 @@ app/
 ├── api/backend/[...path]/route.ts   # BFF proxy to the API gateway
 ├── layout.tsx                       # AuthProvider + nav shell
 ├── page.tsx                         # landing / sign-in
-├── campaigns/                       # list + workspace
+├── campaigns/                       # list, creation page + workspace
 ├── profile/                         # profile + voiceprints
 ├── system/                          # pipeline status
 components/
 ├── ui.tsx                           # buttons, cards, badges, form controls
 ├── nav.tsx
 ├── page-content.tsx                 # renders wiki content_json
-└── campaign/                        # workspace tabs (overview/members/invites/sessions/wiki/timeline)
+└── campaign/                        # create form + workspace tabs (overview/members/invites/sessions/wiki/timeline)
 lib/
 ├── auth.tsx                         # keycloak-js provider (auto token refresh)
 ├── api.ts                           # typed client for every endpoint

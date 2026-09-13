@@ -7,9 +7,10 @@ Authorization is enforced locally per query:
 - the DM reads everything and alone may create/edit/approve/archive pages,
   change visibility, or manage relations
 - POST /api/wiki/pages and POST /api/wiki/pages/{id}/relations also accept
-  a dnd-services client token so the content-service can create
-  pending_review drafts and tag possible duplicates (DM approval is still
-  required to publish)
+  a dnd-services client token so a service can create DRAFT pages and tag
+  possible duplicates (DM approval is still required to publish). The
+  content pipeline itself writes its confirmed pages through the internal
+  change-set apply endpoint, never as pending drafts.
 """
 
 from __future__ import annotations
@@ -191,14 +192,15 @@ async def create_page(
     """Create a page.
 
     - DM (user token): any status; the caller becomes created_by.
-    - content-service (service token): drafts only (draft|pending_review) —
-      publishing requires DM approval. Emits wiki.draft_ready for drafts.
+    - service token: drafts only — publishing requires DM approval. Emits
+      wiki.draft_ready so the draft can be picked up for review.
     """
-    if _is_service(user, settings):
+    is_service = _is_service(user, settings)
+    if is_service:
         if body.status not in services.SERVICE_CREATE_STATUSES:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Service tokens may only create drafts (draft|pending_review)",
+                detail="Service tokens may only create drafts (status 'draft')",
             )
         page = await services.create_page(
             db,
@@ -231,7 +233,7 @@ async def create_page(
             change_note=body.change_note,
         )
 
-    if page.status == services.PENDING_REVIEW:
+    if is_service and page.status == services.DRAFT:
         await publisher.publish(
             Event(
                 type="wiki.draft_ready",
@@ -347,7 +349,7 @@ async def approve_page(
     publisher: EventPublisher = Depends(get_publisher),
     storage: ObjectStorage = Depends(get_storage),
 ):
-    """DM approval: draft|pending_review -> published (emits wiki.published)."""
+    """DM approval: draft -> published (emits wiki.published)."""
     page = await services.get_page_or_404(db, page_id)
     user_id = _user_id(user)
     await _dm_or_403(campaign_client, page.campaign_id, user_id)

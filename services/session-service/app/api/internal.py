@@ -11,7 +11,7 @@ import logging
 from uuid import UUID
 
 from dnd_common.db import get_session
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import services
@@ -23,6 +23,7 @@ from app.schemas import (
     SessionOut,
     SpeakerAssignmentIn,
     SpeakerAssignmentOut,
+    SpeakerHistoryEntryOut,
     StatusUpdate,
 )
 
@@ -105,3 +106,34 @@ async def list_speakers(
             )
         )
     return out
+
+
+campaigns_router = APIRouter(
+    prefix="/internal/campaigns",
+    tags=["internal"],
+    dependencies=[Depends(require_service)],
+)
+
+
+@campaigns_router.get("/{campaign_id}/speaker-history", response_model=list[SpeakerHistoryEntryOut])
+async def campaign_speaker_history(
+    campaign_id: UUID,
+    exclude_session_id: UUID | None = None,
+    limit_sessions: int = Query(default=5, ge=1, le=50),
+    db: AsyncSession = Depends(get_session),
+):
+    """DM-confirmed speaker labels of a campaign's previous sessions.
+
+    speaker-service reads this while identifying a session: the DM already
+    named those speakers by hand, so the labelled audio of their turns becomes
+    a voice sample for the campaign (only high-confidence, long-enough turns —
+    the filtering itself lives in speaker-service). Newest sessions first;
+    'exclude_session_id' keeps the session being identified out of its own
+    reference set, and 'limit_sessions' bounds how far back a run looks.
+    """
+    return await services.campaign_speaker_history(
+        db,
+        campaign_id,
+        exclude_session_id=exclude_session_id,
+        limit_sessions=limit_sessions,
+    )

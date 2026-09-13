@@ -6,7 +6,7 @@ The worker needs four integration points beyond the shared settings:
   summary_ready -> generating_wiki -> content_ready, or failed)
 - user-service internal API (resolve user ids -> display names for the
   named-transcript view)
-- wiki-service API (create pending_review draft pages + proposed relations)
+- wiki-service API (campaign page listing, session content guard, apply)
 
 LLM calls go through LiteLLM (any provider); provider keys come from env.
 The provider is selected by the ``llm_provider`` setting and the model string

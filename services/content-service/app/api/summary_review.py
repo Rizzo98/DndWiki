@@ -10,9 +10,9 @@ wiki. These two DM-only endpoints drive its review:
   events, timeline entries) and parks the session back on 'summary_ready'
   with a new revision.
 - POST /api/content/sessions/{id}/summary/confirm — the DM accepts the
-  summary. The worker then materializes it into pending_review wiki pages,
-  event pages and campaign timeline entries ('generating_wiki' ->
-  'content_ready').
+  summary. The worker then turns it into the PROPOSED change set the DM
+  reviews on the session page ('generating_wiki' -> 'wiki_plan_ready'); the
+  pages and timeline entries are written only after that second confirmation.
 
 Authorization: campaign DM, or any user with the Keycloak 'dev' realm role.
 Both endpoints only publish an event: the state machine transition (and its

@@ -41,6 +41,15 @@ speaker_label}`. They are not tracked in `voice_profiles` (that table documents
 explicit user enrollment) but are searched alongside it, so a name assigned in
 one session is reused automatically in later ones.
 
+While identifying a session, speaker-service additionally backfills the
+**DM's namings of earlier sessions** of the same campaign: every confirmed,
+user-linked assignment there (`speaker_assignments.status = 'confirmed'`) whose
+turn is long enough and confident enough is embedded and stored as a point with
+`{source: "history", session_id, speaker_label, history_key, turn_confidence}`.
+`history_key` is `session_id#label#window`, so each turn is enrolled exactly
+once and later runs reuse it. Only the campaign's own history is ever read —
+voiceprints stay per campaign.
+
 ---
 
 ## dnd_campaigns (campaign-service)
@@ -130,7 +139,10 @@ speaker_assignments                 -- diarized label -> campaign member per ses
                                     -- voiceprint enrollment/matching keys on
                                     -- this; null until assigned
   confidence    numeric             -- cosine similarity of best match
-  status        text DEFAULT 'pending'  -- pending | auto | confirmed
+  status        text DEFAULT 'pending'  -- pending (DM names it) | auto (pipeline
+                                    -- proposed it) | confirmed (the DM accepted
+                                    -- it: what speaker-service learns voices
+                                    -- from, see below)
   assigned_by   uuid NULL
   created_at    timestamptz
   updated_at    timestamptz
@@ -208,7 +220,9 @@ wiki_pages
                 --   session_references [{session_id, facts[]}] session-scoped details
                 --   attributes         VALIDATED per-kind schema (see below)
   status        text DEFAULT 'draft'
-                -- draft|pending_review|published|archived
+                -- draft|published|archived (migration 0005 folded the legacy
+                -- pending_review rows into draft: the pipeline writes pages
+                -- only after the DM confirmed the proposed changes)
   visibility    text DEFAULT 'public'  -- public|dm_only|hidden
   confidence    numeric              -- 0..1 from the LLM draft
   source_session_id uuid NULL       -- which session generated this page
@@ -379,5 +393,11 @@ notifications
 - A page is **never** hard-deleted; `archived` + `hidden` cover removal.
   Sanctioned exceptions: the debug reset endpoint and migration 0002 (which
   removed the event/session_note/article page kinds).
+- A **session** may be deleted by the DM only while it has not generated its
+  wiki updates (blocked from `applying_wiki` on; every session payload carries
+  `can_delete`). Deletion purges the recording/artifacts, the content-service
+  rows of the session (summary, jobs, change set) and the session itself — and
+  is refused (409) if wiki-service still reports pages or timeline entries
+  attributed to it.
 - All MinIO URIs are `bucket/key` pairs; services resolve them against
   `MINIO_ENDPOINT` + presigned URLs only.

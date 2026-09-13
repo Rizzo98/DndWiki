@@ -90,6 +90,40 @@ class CampaignServiceClient:
         if role != "dm":
             raise PermissionError("dm role required")
 
+    async def list_members(self, campaign_id: UUID) -> list[dict[str, Any]]:
+        """The campaign roster (service token, internal endpoint).
+
+        Used to trace an automatic speaker match back to the roster: the
+        pipeline proposes a *user* id, while naming a speaker stores the
+        member (which also carries the character name generation needs).
+        """
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(
+                    f"{self._base_url}/internal/campaigns/{campaign_id}/members",
+                    headers={"Authorization": f"Bearer {self._token()}"},
+                )
+        except httpx.HTTPError as exc:
+            logger.warning("campaign-service unreachable: %s", exc)
+            raise MembershipUnavailable("campaign-service unreachable") from exc
+        resp.raise_for_status()
+        return resp.json()
+
+    async def find_member_for_user(
+        self, campaign_id: UUID, user_id: UUID
+    ) -> dict[str, Any] | None:
+        """The member linked to a user account, or None (no such member).
+
+        A campaign can link the same user once; when the roster has no such
+        member (the account was removed from the campaign, or the proposal
+        came from a voiceprint enrolled under an older account) the caller
+        keeps the user link alone.
+        """
+        for member in await self.list_members(campaign_id):
+            if str(member.get("user_id")) == str(user_id):
+                return member
+        return None
+
     async def get_member(self, campaign_id: UUID, member_id: UUID) -> dict[str, Any]:
         """Resolve a campaign member by its surrogate id.
 

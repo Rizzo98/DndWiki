@@ -1,7 +1,7 @@
 """Apply a DM-confirmed change set to the wiki (internal pipeline endpoint).
 
 This is the ONE path that writes pipeline-generated content as PUBLISHED. The
-public API still restricts service tokens to draft|pending_review: publishing
+public API still restricts service tokens to plain drafts: publishing
 there requires the DM to approve each draft. Here the DM already reviewed the
 whole change set on the session page (the 'git status' of the session) and
 confirmed it, so the pages land in the wiki ready to read — no 'pending

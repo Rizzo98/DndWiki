@@ -7,9 +7,10 @@
 //
 //   1. tick the lines that are wrong (or none, for the whole summary),
 //   2. describe the change in the box below ("it wasn't Character A, it was
-//      Character B"),
-//   3. regenerate - the LLM rewrites the whole session record and the DM
-//      reviews the new revision,
+//      Character B") and add it to the list of changes - a change is queued
+//      with the lines it targets, and stays editable and removable there,
+//   3. regenerate - the LLM rewrites the whole session record applying every
+//      queued change and the DM reviews the new revision,
 //
 // and only the CONFIRMED summary is turned into wiki pages and timeline
 // events. Timeline entries and events are click-to-seek into the recording
@@ -31,6 +32,58 @@ export function summaryLines(text: string): string[] {
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
+}
+
+/** A change queued for the next rewrite: the API payload + a stable list key. */
+type PendingEdit = SummaryEdit & { key: string };
+
+/** The rewrite endpoint accepts at most 20 corrections per request. */
+const MAX_CHANGES = 20;
+
+/** How many target lines are quoted before the rest collapse into "+N more". */
+const MAX_QUOTED_TARGETS = 3;
+
+let pendingEditSeq = 0;
+
+/** Stable identity for a queued change (removing one must not re-target
+ *  another, and the editor stays on the row the DM opened). */
+function nextEditKey(): string {
+  pendingEditSeq += 1;
+  return `change-${pendingEditSeq}`;
+}
+
+// Inline actions for a single queued change: the shared <Button> is sized for
+// the main actions, not for a row of a list.
+const ROW_ACTION =
+  "rounded-md px-2 py-1 text-xs font-medium text-slate-400 transition hover:bg-slate-700/60 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-50";
+/** Save: the one affirmative action inside a row. */
+const ROW_ACTION_PRIMARY =
+  "rounded-md bg-ember-500 px-2.5 py-1 text-xs font-semibold text-slate-950 transition hover:bg-ember-400 disabled:cursor-not-allowed disabled:opacity-50";
+const ROW_ACTION_DANGER =
+  "rounded-md px-2 py-1 text-xs font-medium text-slate-400 transition hover:bg-red-500/10 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-50";
+
+/** The summary lines a change is about, quoted and collapsed when numerous. */
+function TargetPills({ targets }: { targets: string[] }) {
+  if (!targets.length) return <span className="text-xs text-slate-500">the whole summary</span>;
+  const shown = targets.slice(0, MAX_QUOTED_TARGETS);
+  const hidden = targets.length - shown.length;
+  return (
+    <span className="flex flex-wrap items-center gap-1">
+      <span className="text-xs text-slate-500">
+        {targets.length === 1 ? "line:" : `${targets.length} lines:`}
+      </span>
+      {shown.map((line, i) => (
+        <span
+          key={`${i}-${line.slice(0, 16)}`}
+          title={line}
+          className="max-w-[32ch] truncate rounded bg-slate-800/80 px-1.5 py-0.5 text-xs italic text-slate-400"
+        >
+          “{line}”
+        </span>
+      ))}
+      {hidden > 0 ? <span className="text-xs text-slate-500">+{hidden} more</span> : null}
+    </span>
+  );
 }
 
 function parseTimeToSeconds(time: string): number | null {
@@ -98,7 +151,17 @@ export function SessionSummaryCard({
 }) {
   const [selected, setSelected] = useState<string[]>([]);
   const [instruction, setInstruction] = useState("");
-  const [pendingEdits, setPendingEdits] = useState<SummaryEdit[]>([]);
+  // The changes queued for the next rewrite: this list — not the box — is what
+  // "Regenerate summary" sends.
+  const [pendingEdits, setPendingEdits] = useState<PendingEdit[]>([]);
+  // The queued change open for editing (keyed, so removing a sibling does not
+  // move the editor onto another change).
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  const [editTargets, setEditTargets] = useState<string[]>([]);
+  // Key moments are the transcript-anchored beats; they are a reference, not
+  // the thing being reviewed, so they stay folded until asked for.
+  const [showMoments, setShowMoments] = useState(false);
 
   const revision = summary?.revision ?? 1;
   const updatedAt = summary?.updated_at ?? null;
@@ -109,36 +172,84 @@ export function SessionSummaryCard({
     setSelected([]);
     setPendingEdits([]);
     setInstruction("");
+    setEditingKey(null);
+    setEditDraft("");
+    setEditTargets([]);
   }, [updatedAt, revision]);
 
   const lines = summary ? summaryLines(summary.summary) : [];
   const isDraft = summary?.review_status !== "confirmed";
   const pipelineRunning = sessionStatus === "summarizing" || sessionStatus === "generating_wiki";
   const reviewOpen = Boolean(canReview) && isDraft && Boolean(summary?.summary);
+  // The backend refuses a rewrite with more than MAX_CHANGES corrections.
+  const atChangeLimit = pendingEdits.length >= MAX_CHANGES;
 
   function toggleLine(line: string) {
     setSelected((prev) => (prev.includes(line) ? prev.filter((l) => l !== line) : [...prev, line]));
   }
 
+  /** Queue the composer (ticked lines + text) as one change. */
   function addEdit() {
     const text = instruction.trim();
-    if (!text) return;
-    setPendingEdits((prev) => [...prev, { targets: selected, instruction: text }]);
+    if (!text || pendingEdits.length >= MAX_CHANGES) return;
+    setPendingEdits((prev) => [...prev, { key: nextEditKey(), targets: selected, instruction: text }]);
     setInstruction("");
     setSelected([]);
   }
 
+  function removeEdit(key: string) {
+    setPendingEdits((prev) => prev.filter((edit) => edit.key !== key));
+    if (editingKey === key) cancelEdit();
+  }
+
+  function startEdit(edit: PendingEdit) {
+    setEditingKey(edit.key);
+    setEditDraft(edit.instruction);
+    setEditTargets(edit.targets);
+  }
+
+  function cancelEdit() {
+    setEditingKey(null);
+    setEditDraft("");
+    setEditTargets([]);
+  }
+
+  /** Write the open editor back into its queued change. An empty instruction
+   *  is refused: the rewrite endpoint rejects a change without text. */
+  function saveEdit() {
+    const text = editDraft.trim();
+    if (editingKey === null || !text) return;
+    setPendingEdits((prev) =>
+      prev.map((edit) =>
+        edit.key === editingKey ? { ...edit, targets: editTargets, instruction: text } : edit,
+      ),
+    );
+    cancelEdit();
+  }
+
   function submitReview() {
     if (!onRegenerateSummary) return;
-    // The request collected in the box (with the current selection) goes
-    // together with the ones already added below it.
+    // Whatever is still in the box is queued first: nothing typed is dropped
+    // silently, and the list always shows exactly what is being sent.
     const text = instruction.trim();
-    const edits = text ? [...pendingEdits, { targets: selected, instruction: text }] : pendingEdits;
-    if (!edits.length) return;
-    onRegenerateSummary(edits, lines);
-    setPendingEdits([]);
-    setSelected([]);
-    setInstruction("");
+    const queued: PendingEdit[] =
+      text && pendingEdits.length < MAX_CHANGES
+        ? [...pendingEdits, { key: nextEditKey(), targets: selected, instruction: text }]
+        : pendingEdits;
+    if (!queued.length) return;
+    if (queued !== pendingEdits) {
+      setPendingEdits(queued);
+      setInstruction("");
+      setSelected([]);
+      cancelEdit();
+    }
+    // The list stays on screen until the new revision lands (or the request
+    // fails): a failed rewrite stays retryable, a successful one clears it
+    // through the revision effect above.
+    onRegenerateSummary(
+      queued.map(({ targets, instruction: body }) => ({ targets, instruction: body })),
+      lines,
+    );
   }
 
   if (!summary || !summary.summary) {
@@ -222,7 +333,8 @@ export function SessionSummaryCard({
       {reviewOpen ? (
         <p className="mb-2 text-xs text-slate-500">
           Tick the lines that are wrong (tick none to talk about the summary as a whole), describe the
-          change below and regenerate. The wiki is only generated once you confirm.
+          change and add it to the list — the rewrite applies every listed change at once. The wiki is
+          only generated once you confirm.
         </p>
       ) : null}
 
@@ -281,55 +393,189 @@ export function SessionSummaryCard({
             onChange={(e) => setInstruction(e.target.value)}
             disabled={Boolean(reviewBusy) || pipelineRunning}
           />
-          {pendingEdits.length ? (
-            <ul className="mt-3 space-y-1">
-              {pendingEdits.map((edit, i) => (
-                <li
-                  key={i}
-                  className="flex items-start justify-between gap-2 rounded-lg bg-slate-900/60 px-2 py-1.5 text-xs text-slate-300"
-                >
-                  <span>
-                    <span className="text-slate-500">
-                      {edit.targets.length
-                        ? `${edit.targets.length} line${edit.targets.length > 1 ? "s" : ""}: `
-                        : "whole summary: "}
-                    </span>
-                    {edit.instruction}
-                  </span>
-                  <button
-                    className="shrink-0 text-slate-500 hover:text-red-300"
-                    onClick={() => setPendingEdits((prev) => prev.filter((_, j) => j !== i))}
-                    title="Remove this request"
-                  >
-                    ✕
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-          <div className="mt-3 flex flex-wrap items-center gap-2">
+          <div className="mt-2 flex flex-wrap items-center gap-2">
             <Button
               variant="secondary"
               onClick={addEdit}
-              disabled={!instruction.trim() || Boolean(reviewBusy) || pipelineRunning}
+              disabled={!instruction.trim() || atChangeLimit || Boolean(reviewBusy) || pipelineRunning}
+              title="Queue this request below"
             >
               Add change
             </Button>
+            <span className="text-xs text-slate-500">
+              {atChangeLimit
+                ? `That is the maximum of ${MAX_CHANGES} changes at a time.`
+                : "The ticked lines are attached to the change."}
+            </span>
+          </div>
+
+          {/* The queued changes: one entry per request, each editable and
+              removable. This list is what the rewrite is built from. */}
+          <div className="mt-4 border-t border-slate-800 pt-3">
+            <div className="mb-2 flex items-center gap-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                Changes to apply
+              </span>
+              <Badge tone={pendingEdits.length ? "amber" : "slate"}>{pendingEdits.length}</Badge>
+            </div>
+
+            {pendingEdits.length === 0 ? (
+              <p className="rounded-lg border border-dashed border-slate-800 px-3 py-2.5 text-xs text-slate-500">
+                No change added yet. Describe the correction above and press “Add change” — the
+                rewrite is built from this list only.
+              </p>
+            ) : (
+              <ol className="space-y-2">
+                {pendingEdits.map((edit, i) => {
+                  const isEditing = editingKey === edit.key;
+                  return (
+                    <li
+                      key={edit.key}
+                      className={`rounded-lg border px-3 py-2.5 text-xs transition ${
+                        isEditing
+                          ? "border-ember-500/50 bg-slate-900/80"
+                          : "border-slate-800 bg-slate-900/60"
+                      }`}
+                    >
+                      {isEditing ? (
+                        <div>
+                          <div className="mb-1.5 text-xs font-semibold text-ember-400">
+                            Editing change {i + 1}
+                          </div>
+                          <TextArea
+                            rows={3}
+                            autoFocus
+                            value={editDraft}
+                            onChange={(e) => setEditDraft(e.target.value)}
+                            disabled={Boolean(reviewBusy) || pipelineRunning}
+                          />
+                          <div className="mt-2 text-slate-500">
+                            <div className="mb-1 flex flex-wrap items-center gap-2">
+                              <span>Lines concerned:</span>
+                              <button
+                                type="button"
+                                className={ROW_ACTION}
+                                disabled={!selected.length}
+                                onClick={() => setEditTargets(selected)}
+                                title="Replace them with the lines ticked in the summary"
+                              >
+                                use the {selected.length} ticked
+                              </button>
+                              {editTargets.length ? (
+                                <button
+                                  type="button"
+                                  className={ROW_ACTION}
+                                  onClick={() => setEditTargets([])}
+                                  title="Make the change about the summary as a whole"
+                                >
+                                  whole summary
+                                </button>
+                              ) : null}
+                            </div>
+                            {editTargets.length ? (
+                              <ul className="space-y-1">
+                                {editTargets.map((line) => (
+                                  <li key={line} className="flex items-start gap-1.5">
+                                    <span className="italic text-slate-400">“{line}”</span>
+                                    <button
+                                      type="button"
+                                      className="shrink-0 text-slate-600 hover:text-red-300"
+                                      onClick={() =>
+                                        setEditTargets((prev) => prev.filter((l) => l !== line))
+                                      }
+                                      title="Drop this line from the change"
+                                      aria-label="Drop this line from the change"
+                                    >
+                                      ✕
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <p>The change concerns the whole summary.</p>
+                            )}
+                          </div>
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              className={ROW_ACTION_PRIMARY}
+                              onClick={saveEdit}
+                              disabled={!editDraft.trim() || Boolean(reviewBusy) || pipelineRunning}
+                            >
+                              Save
+                            </button>
+                            <button
+                              type="button"
+                              className={ROW_ACTION}
+                              onClick={cancelEdit}
+                              disabled={Boolean(reviewBusy) || pipelineRunning}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div>
+                          <div className="flex items-start gap-2">
+                            <span className="mt-px inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-slate-700/70 text-[10px] font-semibold text-slate-300">
+                              {i + 1}
+                            </span>
+                            <p className="flex-1 whitespace-pre-wrap leading-relaxed text-slate-200">
+                              {edit.instruction}
+                            </p>
+                            <div className="flex shrink-0 items-center gap-1">
+                              <button
+                                type="button"
+                                className={ROW_ACTION}
+                                onClick={() => startEdit(edit)}
+                                disabled={Boolean(reviewBusy) || pipelineRunning}
+                                title="Edit this change"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                className={ROW_ACTION_DANGER}
+                                onClick={() => removeEdit(edit.key)}
+                                disabled={Boolean(reviewBusy) || pipelineRunning}
+                                title="Remove this change"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          </div>
+                          <div className="mt-1.5 pl-6">
+                            <TargetPills targets={edit.targets} />
+                          </div>
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2">
             <Button
               onClick={submitReview}
-              disabled={
-                Boolean(reviewBusy) ||
-                pipelineRunning ||
-                (pendingEdits.length === 0 && !instruction.trim())
+              disabled={Boolean(reviewBusy) || pipelineRunning || pendingEdits.length === 0}
+              title={
+                pendingEdits.length
+                  ? "Rebuild the summary applying the changes listed above"
+                  : "Add at least one change first"
               }
-              title="Rebuild the summary applying the changes"
             >
               {reviewBusy === "regenerate" ? "Regenerating…" : "Regenerate summary"}
             </Button>
+            <span className="text-xs text-slate-500">
+              {pendingEdits.length === 0
+                ? "Add at least one change to regenerate."
+                : instruction.trim()
+                  ? "The text still in the box is added as a final change."
+                  : "All the changes above are sent together."}
+            </span>
           </div>
-          <p className="mt-2 text-xs text-slate-500">
-            Add several changes before regenerating, or confirm once the summary reads right.
-          </p>
         </div>
       ) : null}
 
@@ -357,36 +603,53 @@ export function SessionSummaryCard({
 
       {hasTimeline ? (
         <div className="mt-5">
-          <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
-            Key moments
-          </h3>
-          <ul className="space-y-1.5">
-            {summary.timeline_entries.map((entry, i) => {
-              const seconds = parseTimeToSeconds(entry.time);
-              return (
-                <li key={i}>
-                  <div className="group flex w-full items-start gap-3 rounded-lg px-2 py-1.5 text-left transition hover:bg-slate-800/60">
-                    {seconds !== null && onSeek ? (
-                      <button
-                        onClick={() => onSeek(seconds)}
-                        title="Jump to this moment in the recording"
-                        className="mt-0.5 shrink-0 font-mono text-xs text-slate-500 tabular-nums hover:text-ember-400"
-                      >
-                        {entry.time}
-                      </button>
-                    ) : (
-                      <span className="mt-0.5 shrink-0 font-mono text-xs text-slate-500 tabular-nums">
-                        {entry.time}
+          <button
+            type="button"
+            onClick={() => setShowMoments((v) => !v)}
+            aria-expanded={showMoments}
+            className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-slate-800/60"
+          >
+            <span
+              aria-hidden
+              className={"inline-block text-xs text-slate-500 transition-transform " + (showMoments ? "rotate-90" : "")}
+            >
+              ▶
+            </span>
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+              Key moments
+            </h3>
+            <Badge tone="slate">{summary.timeline_entries.length}</Badge>
+            <span className="ml-auto text-xs text-slate-500">{showMoments ? "Hide" : "Show"}</span>
+          </button>
+          {showMoments ? (
+            <ul className="mt-1 space-y-1.5">
+              {summary.timeline_entries.map((entry, i) => {
+                const seconds = parseTimeToSeconds(entry.time);
+                return (
+                  <li key={i}>
+                    <div className="group flex w-full items-start gap-3 rounded-lg px-2 py-1.5 text-left transition hover:bg-slate-800/60">
+                      {seconds !== null && onSeek ? (
+                        <button
+                          onClick={() => onSeek(seconds)}
+                          title="Jump to this moment in the recording"
+                          className="mt-0.5 shrink-0 font-mono text-xs text-slate-500 tabular-nums hover:text-ember-400"
+                        >
+                          {entry.time}
+                        </button>
+                      ) : (
+                        <span className="mt-0.5 shrink-0 font-mono text-xs text-slate-500 tabular-nums">
+                          {entry.time}
+                        </span>
+                      )}
+                      <span className="text-sm leading-relaxed text-slate-200">
+                        <LinkedText text={entry.summary} campaignId={campaignId} index={linkIndex} />
                       </span>
-                    )}
-                    <span className="text-sm leading-relaxed text-slate-200">
-                      <LinkedText text={entry.summary} campaignId={campaignId} index={linkIndex} />
-                    </span>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : null}
         </div>
       ) : null}
 

@@ -271,8 +271,9 @@ async def test_upsert_and_assign_speaker(session_factory, fake_publisher):
 
 
 async def test_assign_last_pending_moves_to_identified(session_factory, fake_publisher):
-    """Naming the last pending speaker closes identification (speaker_pending
-    -> speakers_identified) so content generation can proceed."""
+    """Naming the last unnamed speaker closes identification (speaker_pending
+    -> speakers_identified) so content generation can proceed - once nothing
+    is left to decide, i.e. no other label is still an unaccepted proposal."""
     user_a, user_b = uuid.uuid4(), uuid.uuid4()
     async with session_factory() as db:
         session = await _create_session(db)
@@ -295,6 +296,57 @@ async def test_assign_last_pending_moves_to_identified(session_factory, fake_pub
             db, session.id, "SPEAKER_01",
             member_id=uuid.uuid4(), user_id=user_b, display_name="Bob",
             character_name=None,
+            assigned_by=uuid.uuid4(), publisher=fake_publisher,
+        )
+        # SPEAKER_00 is still an unaccepted auto match: the panel is not done.
+        await db.refresh(session)
+        assert session.status == SessionStatus.SPEAKER_PENDING.value
+
+        await services.confirm_assignment(
+            db, session.id, "SPEAKER_00",
+            member_id=uuid.uuid4(), display_name="Ann", character_name=None,
+            assigned_by=uuid.uuid4(), publisher=fake_publisher,
+        )
+        await db.refresh(session)
+        assert session.status == SessionStatus.SPEAKERS_IDENTIFIED.value
+
+
+async def test_auto_match_keeps_the_stage_open_until_confirmed(
+    session_factory, fake_publisher
+):
+    """An auto match is a proposal: the session waits for the DM to accept it
+    (or pick someone else) before the next pipeline step runs."""
+    user_a = uuid.uuid4()
+    async with session_factory() as db:
+        session = await _create_session(db)
+        session.status = SessionStatus.SPEAKER_PENDING.value
+        await db.commit()
+
+        await services.upsert_assignments(
+            db,
+            session.id,
+            [
+                SpeakerAssignmentIn(
+                    speaker_label="SPEAKER_00", user_id=user_a, confidence=0.93, status="auto"
+                ),
+                SpeakerAssignmentIn(
+                    speaker_label="SPEAKER_01", user_id=user_a, confidence=0.88, status="auto"
+                ),
+            ],
+        )
+        # Naming is not needed for these labels, but confirming is.
+        await services.assign_speaker(
+            db, session.id, "SPEAKER_00",
+            member_id=uuid.uuid4(), user_id=user_a, display_name="Ann",
+            character_name=None,
+            assigned_by=uuid.uuid4(), publisher=fake_publisher,
+        )
+        await db.refresh(session)
+        assert session.status == SessionStatus.SPEAKER_PENDING.value
+
+        await services.confirm_assignment(
+            db, session.id, "SPEAKER_01",
+            member_id=uuid.uuid4(), display_name="Ann", character_name=None,
             assigned_by=uuid.uuid4(), publisher=fake_publisher,
         )
         await db.refresh(session)

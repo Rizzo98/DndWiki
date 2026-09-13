@@ -2,11 +2,11 @@
 //
 // The confirmed summary is turned into a set of PROPOSED wiki changes — pages
 // to create, pages to update and the timeline entries they back. Nothing is in
-// the wiki yet: this card is where the DM inspects each change (creations as a
-// preview, updates as a field-by-field diff against what the wiki already
-// documents), edits or drops the ones they disagree with, and confirms the
-// whole set. Only then does the pipeline write the pages (published) and the
-// timeline entries (approved).
+// the wiki yet: this card is where the DM inspects each change (the same form
+// as the editor, read-only, so a creation reads like the page it will become
+// and an update shows the fields it rewrites with the previous value), edits or
+// drops the ones they disagree with, and confirms the whole set. Only then does
+// the pipeline write the pages (published) and the timeline entries (approved).
 
 "use client";
 
@@ -168,7 +168,25 @@ function parseValue(text: string, previous: unknown): unknown {
   return text.trim();
 }
 
-// ------------------------------------------------------------- component
+// ------------------------------------------------------------- form pieces
+
+/** No local field drafts (inspect mode always shows the stored values). */
+const NO_DRAFTS: Record<string, string> = {};
+
+/** Read-only look of an input: same box, muted, nothing to type into. */
+const READONLY_CONTROL =
+  "w-full rounded-lg border border-slate-800 bg-slate-900/50 px-3 py-2 text-sm text-slate-300 outline-none";
+
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={"inline-block text-xs text-slate-500 transition-transform " + (open ? "rotate-90" : "")}
+    >
+      ▶
+    </span>
+  );
+}
 
 function ActionChip({ action }: { action: "create" | "update" }) {
   return action === "create" ? (
@@ -177,6 +195,197 @@ function ActionChip({ action }: { action: "create" | "update" }) {
     <Badge tone="amber">~ update</Badge>
   );
 }
+
+/** The proposed value of a change: what the page will say. */
+function ChangeForm({
+  change,
+  readOnly,
+  drafts,
+  onDraft,
+  rawDraft,
+  onRawDraft,
+  rawError,
+  onTitle,
+  onTimeline,
+  onVisibility,
+}: {
+  change: PlanChange;
+  /** Inspect mode: every control is the editor's, disabled (nothing to type). */
+  readOnly: boolean;
+  drafts: Record<string, string>;
+  onDraft: (path: string, value: string) => void;
+  rawDraft: string | null;
+  onRawDraft: (value: string) => void;
+  rawError: string | null;
+  onTitle: (title: string) => void;
+  onTimeline: (timeline: { summary: string; in_world_date: string | null }) => void;
+  onVisibility: (visibility: WikiVisibility) => void;
+}) {
+  const fields = flattenContent(change.after.content_json ?? {});
+  const before = flattenContent(change.before?.content_json ?? {});
+  // Fields the update drops: they exist in the page today and not in the
+  // proposal (the merge never removes facts silently, so this is rare - and
+  // worth showing).
+  const removed = change.before
+    ? Object.keys(before).filter((path) => !(path in fields))
+    : [];
+  const titleChanged = Boolean(change.before && change.before.title !== change.after.title);
+
+  return (
+    <div className="space-y-3">
+      <Field label="Title">
+        {readOnly ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-semibold text-slate-100">{change.title}</span>
+            {titleChanged ? (
+              <span className="text-xs text-slate-500">
+                was <span className="text-red-300 line-through">{change.before?.title}</span>
+              </span>
+            ) : null}
+          </div>
+        ) : (
+          <TextInput value={change.title} onChange={(e) => onTitle(e.target.value)} />
+        )}
+      </Field>
+
+      {rawDraft !== null ? (
+        <Field
+          label="content_json"
+          hint={
+            readOnly
+              ? "Raw JSON of the proposed page."
+              : "Raw JSON — the escape hatch for anything the fields do not cover."
+          }
+        >
+          <TextArea
+            rows={12}
+            className={readOnly ? READONLY_CONTROL + " font-mono text-xs" : "font-mono text-xs"}
+            value={rawDraft}
+            readOnly={readOnly}
+            onChange={(e) => onRawDraft(e.target.value)}
+          />
+        </Field>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2">
+          {Object.entries(fields).map(([path, value]) => {
+            const was = before[path];
+            const changed =
+              change.before !== null &&
+              JSON.stringify(was ?? null) !== JSON.stringify(value ?? null);
+            const text = drafts[path] ?? editableValue(value);
+            const multiline = Array.isArray(value) || editableValue(value).length > 60;
+            return (
+              <Field key={path} label={fieldLabel(path)}>
+                {multiline ? (
+                  <TextArea
+                    rows={3}
+                    className={readOnly ? READONLY_CONTROL : undefined}
+                    value={text}
+                    readOnly={readOnly}
+                    onChange={(e) => onDraft(path, e.target.value)}
+                  />
+                ) : (
+                  <TextInput
+                    className={readOnly ? READONLY_CONTROL : undefined}
+                    value={text}
+                    readOnly={readOnly}
+                    onChange={(e) => onDraft(path, e.target.value)}
+                  />
+                )}
+                {readOnly && changed ? (
+                  <span className="mt-1 block text-xs text-slate-500">
+                    {was === undefined ? (
+                      <span className="text-green-300">new field</span>
+                    ) : (
+                      <>
+                        was <span className="text-red-300 line-through">{displayValue(was)}</span>
+                      </>
+                    )}
+                  </span>
+                ) : null}
+              </Field>
+            );
+          })}
+        </div>
+      )}
+
+      {removed.length ? (
+        <div className="rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2">
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Dropped from the page
+          </div>
+          <ul className="mt-1 space-y-0.5">
+            {removed.map((path) => (
+              <li key={path} className="text-xs text-slate-400">
+                <span className="font-semibold">{fieldLabel(path)}</span>:{" "}
+                <span className="text-red-300 line-through">{displayValue(before[path])}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {rawError ? <Alert tone="error">{rawError}</Alert> : null}
+
+      {change.timeline ? (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Timeline entry">
+            <TextArea
+              rows={2}
+              className={readOnly ? READONLY_CONTROL : undefined}
+              value={change.timeline.summary}
+              readOnly={readOnly}
+              onChange={(e) =>
+                onTimeline({
+                  summary: e.target.value,
+                  in_world_date: change.timeline?.in_world_date ?? null,
+                })
+              }
+            />
+          </Field>
+          <Field label="In-world date">
+            <TextInput
+              className={readOnly ? READONLY_CONTROL : undefined}
+              value={change.timeline.in_world_date ?? ""}
+              readOnly={readOnly}
+              onChange={(e) =>
+                onTimeline({
+                  summary: change.timeline?.summary ?? "",
+                  in_world_date: e.target.value || null,
+                })
+              }
+            />
+          </Field>
+        </div>
+      ) : null}
+
+      <Field label="Visibility">
+        {readOnly ? (
+          <div className="text-sm text-slate-300">{change.after.visibility.replace(/_/g, " ")}</div>
+        ) : (
+          <Select
+            className="w-48"
+            value={change.after.visibility}
+            onChange={(e) => onVisibility(e.target.value as WikiVisibility)}
+          >
+            <option value="public">public</option>
+            <option value="dm_only">dm only</option>
+            <option value="hidden">hidden</option>
+          </Select>
+        )}
+      </Field>
+
+      {readOnly ? (
+        <p className="text-xs text-slate-500">
+          This is the page the change set will write. Switch to Edit to change it, or Drop to
+          leave it out.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------- component
 
 export function SessionPlanCard({
   plan,
@@ -205,11 +414,16 @@ export function SessionPlanCard({
   // overrides, so a background poll never discards what the DM is typing.
   const [edits, setEdits] = useState<Record<string, Partial<PlanChange>>>({});
   const [droppedRelations, setDroppedRelations] = useState<Record<string, boolean>>({});
+  // One panel per change: read-only (Inspect) or editable (Edit).
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [editing, setEditing] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [rawDraft, setRawDraft] = useState<string | null>(null);
+  // Raw-JSON escape hatch, per change (a draft typed for one change must not
+  // show up in the panel of another).
+  const [rawDraft, setRawDraft] = useState<Record<string, string>>({});
   const [rawError, setRawError] = useState<string | null>(null);
+  // Page-type sections start expanded; the DM collapses what they are done with.
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   const merged: PlanChange[] = useMemo(
     () =>
@@ -234,27 +448,48 @@ export function SessionPlanCard({
     setEdits((prev) => ({ ...prev, [change.id]: { ...prev[change.id], ...partial } }));
   }
 
+  /** Open the editable panel of a change (seeds the field drafts). */
   function startEditing(change: PlanChange) {
     const fields = flattenContent(change.after.content_json ?? {});
     const seeded: Record<string, string> = {};
     for (const [path, value] of Object.entries(fields)) seeded[path] = editableValue(value);
     setDrafts(seeded);
     setEditing(change.id);
-    setRawDraft(null);
+    setOpen((prev) => ({ ...prev, [change.id]: true }));
+    clearRaw(change.id);
     setRawError(null);
   }
 
+  /** Close the panel of a change (leaving edit mode). */
+  function closePanel(change: PlanChange) {
+    setOpen((prev) => ({ ...prev, [change.id]: false }));
+    if (editing === change.id) setEditing(null);
+    clearRaw(change.id);
+    setRawError(null);
+  }
+
+  /** Drop the raw-JSON draft of one change (back to the field editors). */
+  function clearRaw(id: string) {
+    setRawDraft((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  }
+
   function saveEdit(change: PlanChange) {
-    if (rawDraft !== null) {
+    const raw = rawDraft[change.id];
+    if (raw !== undefined && raw !== null) {
       try {
-        const parsed = JSON.parse(rawDraft) as Record<string, unknown>;
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
         patch(change, { after: { ...change.after, content_json: parsed } });
       } catch (err) {
         setRawError(err instanceof Error ? err.message : "invalid JSON");
         return;
       }
       setEditing(null);
-      setRawDraft(null);
+      clearRaw(change.id);
       setRawError(null);
       return;
     }
@@ -348,260 +583,157 @@ export function SessionPlanCard({
         </EmptyState>
       ) : null}
 
-      {groups.map((group) => (
-        <div key={group.kind} className="mt-4">
-          <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
-            {PAGE_KIND_LABELS[group.kind] ?? group.kind}
-          </h3>
-          <ul className="space-y-2">
-            {group.items.map((change) => {
-              const diffs = change.before ? diffChange(change) : [];
-              const expanded = open[change.id] ?? false;
-              const isEditing = editing === change.id;
-              const fields = flattenContent(change.after.content_json ?? {});
-              return (
-                <li
-                  key={change.id}
-                  className={
-                    "rounded-lg border px-3 py-2.5 " +
-                    (change.dropped
-                      ? "border-slate-800 bg-slate-900/60 opacity-60"
-                      : "border-slate-800 bg-slate-800/30")
-                  }
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <ActionChip action={change.action} />
-                      <span
-                        className={
-                          "text-sm font-semibold " +
-                          (change.dropped ? "text-slate-500 line-through" : "text-slate-100")
-                        }
-                      >
-                        <LinkedText text={change.title} campaignId={campaignId} index={linkIndex} />
-                      </span>
-                      <Badge tone="slate">{PAGE_KIND_TITLES[change.kind] ?? change.kind}</Badge>
-                      {change.before ? (
-                        <span className="text-xs text-slate-500">
-                          {diffs.length} field{diffs.length === 1 ? "" : "s"} changed
-                        </span>
-                      ) : null}
-                      {change.timeline ? <Badge tone="blue">timeline</Badge> : null}
-                      {change.after.confidence !== null &&
-                      change.after.confidence !== undefined ? (
-                        <span className="text-xs text-slate-500">
-                          confidence {Math.round(change.after.confidence * 100)}%
-                        </span>
-                      ) : null}
-                    </div>
-                    <div className="flex flex-wrap items-center gap-1">
-                      <Button
-                        variant="ghost"
-                        onClick={() => setOpen((prev) => ({ ...prev, [change.id]: !expanded }))}
-                      >
-                        {expanded ? "Hide" : "Inspect"}
-                      </Button>
-                      {canReview && !isApplied && !isApplying ? (
-                        <>
-                          <Button
-                            variant="ghost"
-                            onClick={() => (isEditing ? setEditing(null) : startEditing(change))}
-                          >
-                            {isEditing ? "Cancel" : "Edit"}
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            onClick={() => patch(change, { dropped: !change.dropped })}
-                            title={change.dropped ? "Keep this change" : "Drop this change"}
-                          >
-                            {change.dropped ? "Restore" : "Drop"}
-                          </Button>
-                        </>
-                      ) : null}
-                    </div>
-                  </div>
+      {groups.map((group) => {
+        const isCollapsed = collapsed[group.kind] ?? false;
+        const label = PAGE_KIND_LABELS[group.kind] ?? group.kind;
+        const groupDropped = group.items.filter((c) => c.dropped).length;
+        return (
+          <div key={group.kind} className="mt-4">
+            <button
+              type="button"
+              onClick={() => setCollapsed((prev) => ({ ...prev, [group.kind]: !isCollapsed }))}
+              aria-expanded={!isCollapsed}
+              className="mb-2 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-slate-800/60"
+            >
+              <Chevron open={!isCollapsed} />
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">{label}</h3>
+              <Badge tone="slate">
+                {group.items.length - groupDropped}
+                {groupDropped ? ` · ${groupDropped} dropped` : ""}
+              </Badge>
+              <span className="ml-auto text-xs text-slate-500">{isCollapsed ? "Show" : "Hide"}</span>
+            </button>
 
-                  {expanded ? (
-                    <div className="mt-3 space-y-2 border-t border-slate-800 pt-3">
-                      {isEditing ? (
-                        <div className="space-y-3">
-                          <Field label="Title">
-                            <TextInput
-                              value={change.title}
-                              onChange={(e) => patch(change, { title: e.target.value })}
-                            />
-                          </Field>
-                          {rawDraft !== null ? (
-                            <Field
-                              label="content_json"
-                              hint="Raw JSON — the escape hatch for anything the fields do not cover."
-                            >
-                              <TextArea
-                                rows={12}
-                                className="font-mono text-xs"
-                                value={rawDraft}
-                                onChange={(e) => setRawDraft(e.target.value)}
-                              />
-                            </Field>
-                          ) : (
-                            <div className="grid gap-3 sm:grid-cols-2">
-                              {Object.entries(fields).map(([path, value]) => (
-                                <Field key={path} label={fieldLabel(path)}>
-                                  {Array.isArray(value) ||
-                                  editableValue(value).length > 60 ? (
-                                    <TextArea
-                                      rows={3}
-                                      value={drafts[path] ?? editableValue(value)}
-                                      onChange={(e) =>
-                                        setDrafts((prev) => ({
-                                          ...prev,
-                                          [path]: e.target.value,
-                                        }))
-                                      }
-                                    />
-                                  ) : (
-                                    <TextInput
-                                      value={drafts[path] ?? editableValue(value)}
-                                      onChange={(e) =>
-                                        setDrafts((prev) => ({
-                                          ...prev,
-                                          [path]: e.target.value,
-                                        }))
-                                      }
-                                    />
-                                  )}
-                                </Field>
-                              ))}
-                            </div>
-                          )}
-                          {rawError ? <Alert tone="error">{rawError}</Alert> : null}
-                          {change.timeline ? (
-                            <div className="grid gap-3 sm:grid-cols-2">
-                              <Field label="Timeline entry">
-                                <TextArea
-                                  rows={2}
-                                  value={change.timeline.summary}
-                                  onChange={(e) =>
-                                    patch(change, {
-                                      timeline: {
-                                        summary: e.target.value,
-                                        in_world_date: change.timeline?.in_world_date ?? null,
-                                      },
-                                    })
-                                  }
-                                />
-                              </Field>
-                              <Field label="In-world date">
-                                <TextInput
-                                  value={change.timeline.in_world_date ?? ""}
-                                  onChange={(e) =>
-                                    patch(change, {
-                                      timeline: {
-                                        summary: change.timeline?.summary ?? "",
-                                        in_world_date: e.target.value || null,
-                                      },
-                                    })
-                                  }
-                                />
-                              </Field>
-                            </div>
+            {isCollapsed ? null : (
+              <ul className="space-y-2">
+                {group.items.map((change) => {
+                  const diffs = change.before ? diffChange(change) : [];
+                  const expanded = open[change.id] ?? false;
+                  const isEditing = editing === change.id;
+                  return (
+                    <li
+                      key={change.id}
+                      className={
+                        "rounded-lg border px-3 py-2.5 " +
+                        (change.dropped
+                          ? "border-slate-800 bg-slate-900/60 opacity-60"
+                          : "border-slate-800 bg-slate-800/30")
+                      }
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex min-w-0 flex-wrap items-center gap-2">
+                          <ActionChip action={change.action} />
+                          <span
+                            className={
+                              "text-sm font-semibold " +
+                              (change.dropped ? "text-slate-500 line-through" : "text-slate-100")
+                            }
+                          >
+                            <LinkedText text={change.title} campaignId={campaignId} index={linkIndex} />
+                          </span>
+                          {change.before ? (
+                            <span className="text-xs text-slate-500">
+                              {diffs.length} field{diffs.length === 1 ? "" : "s"} changed
+                            </span>
                           ) : null}
-                          <Field label="Visibility">
-                            <Select
-                              className="w-48"
-                              value={change.after.visibility}
-                              onChange={(e) =>
-                                patch(change, {
-                                  after: {
-                                    ...change.after,
-                                    visibility: e.target.value as WikiVisibility,
-                                  },
-                                })
-                              }
-                            >
-                              <option value="public">public</option>
-                              <option value="dm_only">dm only</option>
-                              <option value="hidden">hidden</option>
-                            </Select>
-                          </Field>
+                          {change.timeline ? <Badge tone="blue">timeline</Badge> : null}
+                          {change.after.confidence !== null &&
+                          change.after.confidence !== undefined ? (
+                            <span className="text-xs text-slate-500">
+                              confidence {Math.round(change.after.confidence * 100)}%
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1">
+                          <Button
+                            variant="ghost"
+                            onClick={() => (expanded ? closePanel(change) : setOpen((prev) => ({ ...prev, [change.id]: true })))}
+                          >
+                            {expanded ? "Hide" : "Inspect"}
+                          </Button>
+                          {canReview && !isApplied && !isApplying ? (
+                            <>
+                              <Button
+                                variant="ghost"
+                                onClick={() => (isEditing ? setEditing(null) : startEditing(change))}
+                              >
+                                {isEditing ? "Done editing" : "Edit"}
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                onClick={() => patch(change, { dropped: !change.dropped })}
+                                title={change.dropped ? "Keep this change" : "Drop this change"}
+                              >
+                                {change.dropped ? "Restore" : "Drop"}
+                              </Button>
+                            </>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      {expanded ? (
+                        <div className="mt-3 space-y-3 border-t border-slate-800 pt-3">
+                          {/* Inspect and Edit render the SAME form; Inspect is
+                              simply read-only (and, for updates, annotates every
+                              field with the value the page holds today). */}
+                          <ChangeForm
+                            change={change}
+                            readOnly={!isEditing}
+                            drafts={isEditing ? drafts : NO_DRAFTS}
+                            onDraft={(path, value) =>
+                              setDrafts((prev) => ({ ...prev, [path]: value }))
+                            }
+                            rawDraft={rawDraft[change.id] ?? null}
+                            onRawDraft={(value) =>
+                              setRawDraft((prev) => ({ ...prev, [change.id]: value }))
+                            }
+                            rawError={rawError}
+                            onTitle={(title) => patch(change, { title })}
+                            onTimeline={(timeline) => patch(change, { timeline })}
+                            onVisibility={(visibility) =>
+                              patch(change, { after: { ...change.after, visibility } })
+                            }
+                          />
+
                           <div className="flex flex-wrap gap-2">
-                            <Button onClick={() => saveEdit(change)}>
-                              Apply to the proposal
-                            </Button>
+                            {isEditing ? (
+                              <Button onClick={() => saveEdit(change)}>Apply to the proposal</Button>
+                            ) : null}
                             <Button
                               variant="ghost"
                               onClick={() => {
-                                if (rawDraft === null) {
-                                  setRawDraft(
-                                    JSON.stringify(change.after.content_json ?? {}, null, 2),
-                                  );
-                                  setRawError(null);
-                                } else {
-                                  setRawDraft(null);
+                                setRawError(null);
+                                if (rawDraft[change.id] !== undefined) {
+                                  clearRaw(change.id);
+                                  return;
                                 }
+                                setRawDraft((prev) => ({
+                                  ...prev,
+                                  [change.id]: JSON.stringify(
+                                    change.after.content_json ?? {},
+                                    null,
+                                    2,
+                                  ),
+                                }));
                               }}
                             >
-                              {rawDraft === null ? "Edit raw JSON" : "Back to fields"}
+                              {rawDraft[change.id] !== undefined
+                                ? "Back to fields"
+                                : isEditing
+                                  ? "Edit raw JSON"
+                                  : "View raw JSON"}
                             </Button>
                           </div>
                         </div>
-                      ) : change.before ? (
-                        <ul className="space-y-1.5">
-                          {diffs.length === 0 ? (
-                            <li className="text-xs text-slate-500">
-                              No field changes — only the timeline entry below.
-                            </li>
-                          ) : null}
-                          {diffs.map((diff) => (
-                            <li key={diff.path} className="text-xs">
-                              <span className="font-semibold text-slate-400">{diff.label}</span>
-                              <div className="mt-0.5 grid gap-1 sm:grid-cols-2">
-                                <span className="rounded bg-red-500/10 px-2 py-1 text-red-300 line-through">
-                                  {displayValue(diff.before) || "—"}
-                                </span>
-                                <span className="rounded bg-green-500/10 px-2 py-1 text-green-200">
-                                  {displayValue(diff.after) || "—"}
-                                </span>
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <dl className="space-y-1.5">
-                          {Object.entries(fields).map(([path, value]) => (
-                            <div key={path} className="text-xs">
-                              <dt className="font-semibold text-slate-400">{fieldLabel(path)}</dt>
-                              <dd className="text-slate-200">
-                                <LinkedText
-                                  text={displayValue(value)}
-                                  campaignId={campaignId}
-                                  index={linkIndex}
-                                />
-                              </dd>
-                            </div>
-                          ))}
-                        </dl>
-                      )}
-
-                      {change.timeline && !isEditing ? (
-                        <div className="rounded-lg bg-slate-900/60 px-2 py-1.5 text-xs text-slate-300">
-                          <span className="font-semibold text-slate-400">Timeline</span>{" "}
-                          {change.timeline.in_world_date ? (
-                            <span className="text-slate-500">
-                              {change.timeline.in_world_date} ·{" "}
-                            </span>
-                          ) : null}
-                          {change.timeline.summary}
-                        </div>
                       ) : null}
-                    </div>
-                  ) : null}
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      ))}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        );
+      })}
 
       {plan.relations.length ? (
         <div className="mt-4">

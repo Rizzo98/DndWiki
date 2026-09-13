@@ -85,6 +85,9 @@ export interface Session {
   diarization_uri: string | null;
   duration_sec: number | null;
   error: string | null;
+  /** True until the session's wiki updates are generated: only then may the
+   * DM delete it (its pages would otherwise outlive the session). */
+  can_delete: boolean;
   created_at: string;
   updated_at: string;
 }

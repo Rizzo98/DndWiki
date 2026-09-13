@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from app.api import internal, sessions
 from app.broker import EventPublisher
 from app.clients.campaigns import CampaignServiceClient
+from app.clients.content import ContentServiceClient
 from app.core.config import get_settings
 from app.storage import ObjectStorage
 
@@ -35,6 +36,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.publisher = publisher
     app.state.storage = ObjectStorage(settings)
     app.state.campaign_client = CampaignServiceClient(settings.campaign_service_url, settings)
+    app.state.content_client = ContentServiceClient(settings.content_service_url, settings)
     try:
         yield
     finally:
@@ -45,6 +47,7 @@ app = FastAPI(title="session-service", version="0.2.0", lifespan=lifespan)
 
 app.include_router(sessions.router)
 app.include_router(internal.router)
+app.include_router(internal.campaigns_router)
 
 
 @app.get("/health")

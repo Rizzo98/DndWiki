@@ -4,6 +4,10 @@ Runs in the same container as the queue worker; exposes lightweight status
 endpoints plus the DM-only session-pipeline controls (summary rewrite, summary
 confirmation, proposed-changes review and confirmation). The heavy LLM
 pipeline lives in app.workers.generate.
+
+/internal/content is the service-to-service side: session-service purges a
+session's rows here when the DM deletes it (refused while the wiki already has
+the session's content).
 """
 
 import logging
@@ -14,7 +18,7 @@ from dnd_common.db import get_session
 from fastapi import Depends, FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api import plan, summary_review
+from app.api import internal, plan, summary_review
 from app.broker import EventPublisher
 from app.core.config import get_settings
 from app.services import jobs, summaries
@@ -43,6 +47,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="content-service", version="0.1.0", lifespan=lifespan)
 app.include_router(summary_review.router)
 app.include_router(plan.router)
+app.include_router(internal.router)
 
 
 @app.get("/health")

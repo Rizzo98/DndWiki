@@ -84,7 +84,7 @@ async def _seed_event_page(session_factory, campaign_id, title="The Siege"):
             kind="event",
             title=title,
             slug=f"event-{uuid.uuid4().hex[:8]}",
-            status="pending_review",
+            status="draft",
         )
         db.add(page)
         await db.commit()

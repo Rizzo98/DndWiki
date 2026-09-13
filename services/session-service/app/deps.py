@@ -8,6 +8,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.broker import EventPublisher
 from app.clients.campaigns import CampaignServiceClient
+from app.clients.content import ContentServiceClient
 from app.core.config import ServiceSettings, get_settings
 from app.storage import ObjectStorage
 
@@ -24,6 +25,10 @@ def get_storage(request: Request) -> ObjectStorage:
 
 def get_campaign_client(request: Request) -> CampaignServiceClient:
     return request.app.state.campaign_client
+
+
+def get_content_client(request: Request) -> ContentServiceClient:
+    return request.app.state.content_client
 
 
 def require_service(

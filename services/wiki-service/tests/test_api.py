@@ -98,14 +98,14 @@ async def test_create_page_service_token_draft_201(client, claims, fake_publishe
             "campaign_id": str(campaign),
             "kind": "character",
             "title": "Gandalf",
-            "status": "pending_review",
+            "status": "draft",
             "confidence": 0.91,
             "source_session_id": str(session),
         },
     )
     assert resp.status_code == 201
     body = resp.json()
-    assert body["status"] == "pending_review"
+    assert body["status"] == "draft"
     assert body["created_by"] is None
     assert body["confidence"] == 0.91
 
@@ -200,7 +200,7 @@ async def test_page_detail_dm_sees_draft(client, claims, dm_id, fake_campaign, s
     campaign = uuid.uuid4()
     claims["sub"] = str(dm_id)
     fake_campaign.roles[(campaign, dm_id)] = "dm"
-    page = await _seed_page(session_factory, campaign, status="pending_review")
+    page = await _seed_page(session_factory, campaign, status="draft")
     resp = await client.get(f"/api/wiki/pages/{page.id}")
     assert resp.status_code == 200
 
@@ -244,7 +244,7 @@ async def test_approve_dm_publishes(
     campaign = uuid.uuid4()
     claims["sub"] = str(dm_id)
     fake_campaign.roles[(campaign, dm_id)] = "dm"
-    page = await _seed_page(session_factory, campaign, status="pending_review")
+    page = await _seed_page(session_factory, campaign, status="draft")
 
     resp = await client.post(f"/api/wiki/pages/{page.id}/approve")
     assert resp.status_code == 200
@@ -258,7 +258,7 @@ async def test_approve_dm_publishes(
 async def test_approve_player_403(client, user_id, fake_campaign, session_factory):
     campaign = uuid.uuid4()
     fake_campaign.roles[(campaign, user_id)] = "player"
-    page = await _seed_page(session_factory, campaign, status="pending_review")
+    page = await _seed_page(session_factory, campaign, status="draft")
     resp = await client.post(f"/api/wiki/pages/{page.id}/approve")
     assert resp.status_code == 403
 
@@ -399,7 +399,7 @@ async def test_relations_service_token_can_propose(client, claims, session_facto
         title="Città di Fatumastra",
         slug="citta-di-fatumastra",
         kind="location",
-        status="pending_review",
+        status="draft",
     )
     resp = await client.post(
         f"/api/wiki/pages/{draft.id}/relations",
@@ -434,7 +434,7 @@ async def test_delete_all_pages_dm(client, claims, dm_id, fake_campaign, session
     fake_campaign.roles[(campaign, dm_id)] = "dm"
     published = await _seed_page(session_factory, campaign, slug="published-one")
     draft = await _seed_page(
-        session_factory, campaign, title="Draft", slug="draft", status="pending_review"
+        session_factory, campaign, title="Draft", slug="draft", status="draft"
     )
     other_campaign = await _seed_page(session_factory, uuid.uuid4(), slug="untouched")
 
@@ -584,7 +584,7 @@ async def test_create_timeline_event_service_token_pending(
             kind="event",
             title="The Siege of Fatumastra",
             slug="siege-of-fatumastra",
-            status="pending_review",
+            status="draft",
         )
         db.add(page)
         await db.commit()
@@ -741,7 +741,7 @@ async def test_upload_image_dm_200(
     campaign = uuid.uuid4()
     claims["sub"] = str(dm_id)
     fake_campaign.roles[(campaign, dm_id)] = "dm"
-    page = await _seed_page(session_factory, campaign, status="pending_review")
+    page = await _seed_page(session_factory, campaign, status="draft")
 
     resp = await client.put(
         f"/api/wiki/pages/{page.id}/image",

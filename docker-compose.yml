@@ -271,6 +271,8 @@ services:
       SERVICE_DB_NAME: dnd_sessions
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-512}
       CAMPAIGN_SERVICE_URL: http://campaign-service:8000
+      # deleting a session purges the rows content-service holds for it
+      CONTENT_SERVICE_URL: http://content-service:8000
     ports:
       - "8003:8000"
     labels:
@@ -345,6 +347,16 @@ services:
       SESSION_SERVICE_URL: http://session-service:8000
       VOICE_EMBEDDING_MODEL: ${VOICE_EMBEDDING_MODEL:-speechbrain/spkrec-ecapa-voxceleb}
       SPEAKER_MATCH_THRESHOLD: ${SPEAKER_MATCH_THRESHOLD:-0.75}
+      # Voice samples from the DM's namings in earlier sessions of a campaign:
+      # the labelled turns (long enough, confident enough) become voiceprints,
+      # enrolled once per turn.
+      HISTORY_SAMPLES_ENABLED: ${HISTORY_SAMPLES_ENABLED:-true}
+      HISTORY_SAMPLE_MIN_SEC: ${HISTORY_SAMPLE_MIN_SEC:-3.0}
+      HISTORY_SAMPLE_MAX_SEC: ${HISTORY_SAMPLE_MAX_SEC:-20.0}
+      HISTORY_SAMPLE_MIN_CONFIDENCE: ${HISTORY_SAMPLE_MIN_CONFIDENCE:-0.8}
+      HISTORY_MAX_WINDOWS_PER_LABEL: ${HISTORY_MAX_WINDOWS_PER_LABEL:-3}
+      HISTORY_MAX_WINDOWS_PER_RUN: ${HISTORY_MAX_WINDOWS_PER_RUN:-24}
+      HISTORY_MAX_SESSIONS: ${HISTORY_MAX_SESSIONS:-5}
       # Re-cluster raw diarizer labels before matching (override per-chunk labels)
       RELABEL_ENABLED: ${RELABEL_ENABLED:-true}
       RELABEL_MODE: ${RELABEL_MODE:-threshold}

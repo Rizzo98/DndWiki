@@ -21,6 +21,11 @@ class ServiceSettings(Settings):
     )
     # campaign-service URL (membership checks)
     campaign_service_url: str = "http://localhost:8002"
+    # content-service URL: purging a session's generated rows when it is deleted
+    content_service_url: str = "http://localhost:8006"
+    # Timeout of the service-to-service calls made from a request (the session
+    # purge walks session-service -> content-service -> wiki-service).
+    service_timeout_sec: float = 30.0
     # How long a (campaign, user) -> role lookup stays valid in-process, so the
     # UI poll loop does not hammer campaign-service on every request.
     membership_cache_ttl_sec: int = 60

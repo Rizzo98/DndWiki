@@ -16,6 +16,8 @@ the service validates, hashes and streams it to MinIO, then publishes
   publish **`session.recorded`** (docs/event-contracts.md).
 - `GET /api/sessions?campaign_id=` / `GET /api/sessions/{id}` — session list
   and detail with short-lived presigned URLs for audio/transcript/diarization.
+- `DELETE /api/sessions/{id}` — DM-only, while the session has not generated
+  its wiki updates (see *State machine*).
 - Speaker assignments: workers write them via the internal API; the DM names
   unknown speakers by campaign member (emits **`speakers.assigned`**). Members
   without a linked user account are fully supported — their voice is labeled
@@ -33,8 +35,10 @@ the service validates, hashes and streams it to MinIO, then publishes
 | GET | `/api/sessions/{id}` | detail + presigned media URLs |
 | PUT | `/api/sessions/{id}/recording` | multipart `file` + optional `duration_sec` |
 | PATCH | `/api/sessions/{id}` | DM: edit title / session_no |
+| DELETE | `/api/sessions/{id}` | DM: delete the session — only while its wiki updates are not generated yet (`can_delete` in every session payload) |
 | GET | `/api/sessions/{id}/speakers` | speaker assignments |
 | POST | `/api/sessions/{id}/speakers/{label}/assign` | DM names a speaker by campaign member `{member_id}` (userless players allowed) |
+| POST | `/api/sessions/{id}/speakers/{label}/confirm` | DM confirms a proposed (`auto`) match: the assignment becomes `confirmed`, its roster member is filled in, and `speakers.assigned` makes speaker-service learn the voice |
 
 ### Internal API (dnd-services client token)
 
@@ -43,6 +47,7 @@ the service validates, hashes and streams it to MinIO, then publishes
 | PATCH | `/internal/sessions/{id}/status` | validated state-machine transition |
 | PATCH | `/internal/sessions/{id}/artifacts` | attach transcript/diarization URIs |
 | POST | `/internal/sessions/{id}/speakers` | bulk upsert speaker assignments |
+| GET | `/internal/campaigns/{id}/speaker-history` | the DM's confirmed namings in the campaign's earlier sessions (`exclude_session_id`, `limit_sessions`) — speaker-service turns them into voice samples |
 
 ## State machine
 
@@ -51,6 +56,12 @@ identifying_speakers → speakers_identified → (speaker_pending) → summarizi
 summary_ready → generating_wiki → wiki_plan_ready → applying_wiki →
 content_ready → reviewed → published` — plus `failed` from any active state.
 Enforced in `app/status.py`; invalid transitions return 409.
+
+`speaker_pending` is the DM's speaker panel: the session parks there until
+**every** diarized label is `confirmed` (the DM accepted the automatic match or
+named a member). Naming or confirming the last one closes the stage
+(`speaker_pending → speakers_identified`), which is what unblocks the summary —
+so the pipeline never distills a transcript whose speakers nobody validated.
 
 `summarizing`/`summary_ready` is the **session-summary review layer**:
 content-service distills the transcript into a draft summary the DM reviews
@@ -66,6 +77,15 @@ The pipeline never goes backwards: a session that reached `content_ready` can
 only move forward (or be unpublished from `published` back to `reviewed`).
 The only re-entry is a failed phase being retried by its redelivered queue
 message (`failed → summarizing|generating_wiki|applying_wiki`).
+
+**Deletion** follows the same line: the DM may throw a session away until the
+pipeline starts writing the wiki (blocked from `applying_wiki` on, since the
+pages would outlive the session). `DELETE /api/sessions/{id}` then removes the
+recording + artifacts from MinIO, asks content-service to purge the session's
+summary / jobs / change set (it refuses with 409 while any of that content is
+already in the wiki) and finally deletes the session with its uploads and
+speaker assignments. Every session payload carries `can_delete` so the UI only
+offers the button when the call can succeed.
 
 ## Owns
 
@@ -103,7 +123,7 @@ python scripts/smoke_integration.py  # upload → MinIO round-trip → session.r
 ```
 app/
   api/           public + internal routers
-  clients/       campaign-service membership client (service token)
+  clients/       campaign-service (membership) + content-service (session purge)
   services/      business logic (state machine, upload, assignments)
   storage.py     MinIO streaming upload + presigned URLs (aioboto3)
   broker.py      RabbitMQ publisher (robust connection, topology declared)

@@ -285,7 +285,7 @@ def test_build_page_drafts():
     by_kind = {d["kind"]: d for d in drafts}
     character = by_kind["character"]
     assert character["title"] == "Aragorn"
-    assert character["status"] == "pending_review"
+    assert character["status"] == "draft"  # a proposal, never a pending page
     assert character["source_session_id"] == "11111111-1111-1111-1111-111111111111"
     # characters have no Summary block: appearance + temperament carry the page
     assert "summary" not in character["content_json"]
@@ -560,7 +560,7 @@ def test_build_page_drafts_alias_match_skips_duplicate():
             "title": "Strider",  # page titled by the alias
             "slug": "strider",
             "kind": "character",
-            "status": "pending_review",
+            "status": "published",  # already in the wiki (dedupe input)
             "aliases": [],
         }
     ]
@@ -884,7 +884,7 @@ def test_build_event_drafts_new_event_gets_page_and_timeline():
     draft = drafts[0]
     assert draft["kind"] == "event"
     assert draft["title"] == "The Siege of Fatumastra"
-    assert draft["status"] == "pending_review"
+    assert draft["status"] == "draft"
     assert draft["source_session_id"] == "session-1"
     assert draft["content_json"]["summary"] == "The horde breaks against the city walls."
     assert draft["content_json"]["language"] == "en"

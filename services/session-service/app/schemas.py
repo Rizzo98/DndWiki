@@ -3,9 +3,9 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
-from app.status import SessionStatus
+from app.status import SessionStatus, can_delete
 
 
 class SessionCreate(BaseModel):
@@ -41,6 +41,25 @@ class SessionOut(BaseModel):
     error: str | None
     created_at: datetime
     updated_at: datetime
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def can_delete(self) -> bool:
+        """Whether the DM may still delete this session.
+
+        True until the session reaches the part of the pipeline that writes the
+        wiki ('applying_wiki' and later): from there on its pages and timeline
+        entries exist and must not outlive the session.
+        """
+        return can_delete(self.status)
+
+
+class SessionDeleteOut(BaseModel):
+    """Result of DELETE /api/sessions/{id}."""
+
+    session_id: UUID
+    title: str | None = None
+    deleted: bool = True
 
 
 class SessionDetail(SessionOut):
@@ -102,6 +121,26 @@ class SpeakerAssignRequest(BaseModel):
 
     member_id: UUID
     enrolled_voiceprint: bool = False
+
+
+class SpeakerHistoryEntryOut(BaseModel):
+    """One DM-confirmed label of a past session, as a voice-sample source.
+
+    speaker-service asks for a campaign's history while identifying a new
+    session: each entry points at the labelled audio of a speaker the DM named
+    in an earlier session of the same campaign, which it turns into a
+    voiceprint (see its app.history). Only user-linked, 'confirmed'
+    assignments are ever returned.
+    """
+
+    session_id: UUID
+    campaign_id: UUID
+    session_status: str
+    speaker_label: str
+    user_id: UUID
+    # The recording to slice the labelled windows out of.
+    audio_uri: str
+    updated_at: datetime
 
 
 class InternalSpeakerOut(BaseModel):

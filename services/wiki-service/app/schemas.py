@@ -10,7 +10,10 @@ from pydantic import BaseModel, ConfigDict, Field
 # timeline event links to an event page (page_id), and the LLM pipeline
 # drafts them from world-significant moments of a session.
 PAGE_KIND = Literal["character", "location", "faction", "item", "quest", "event"]
-PAGE_STATUS = Literal["draft", "pending_review", "published", "archived"]
+# A page is never "pending review": the pipeline writes pages only after the
+# DM confirmed the proposed changes on the session page (published), and the
+# DM drafts/publishes by hand. Archived pages left the wiki on purpose.
+PAGE_STATUS = Literal["draft", "published", "archived"]
 PAGE_VISIBILITY = Literal["public", "dm_only", "hidden"]
 
 SLUG_PATTERN = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
@@ -279,6 +282,36 @@ class ChangeSetApply(BaseModel):
     confirmed_by: UUID | None = None
     changes: list[PlannedPage] = Field(default_factory=list, max_length=200)
     relations: list[PlannedRelation] = Field(default_factory=list, max_length=200)
+
+
+class SessionContentPage(BaseModel):
+    """One page a session wrote (deletion guard for session-service)."""
+
+    id: UUID
+    title: str
+    kind: str
+    status: str
+
+
+class SessionContentTimeline(BaseModel):
+    """One timeline entry a session wrote."""
+
+    id: UUID
+    summary: str
+    approved: bool
+
+
+class SessionContentOut(BaseModel):
+    """What a session wrote into the wiki (GET /internal/wiki/sessions/{id}/content).
+
+    'published' is the number of live pages: a session with any is not
+    deletable, because its pages would survive it.
+    """
+
+    session_id: UUID
+    pages: list[SessionContentPage] = Field(default_factory=list)
+    timeline: list[SessionContentTimeline] = Field(default_factory=list)
+    published: int = 0
 
 
 class AppliedChange(BaseModel):

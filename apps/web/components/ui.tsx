@@ -1,27 +1,48 @@
 // Small shared UI primitives (dark slate theme, Tailwind).
 
+import Link from "next/link";
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from "react";
 
 // ---------------------------------------------------------------- buttons
 
 type ButtonVariant = "primary" | "secondary" | "danger" | "ghost";
 
+const BUTTON_STYLES: Record<ButtonVariant, string> = {
+  primary: "bg-ember-500 text-slate-950 hover:bg-ember-400 disabled:opacity-50",
+  secondary: "border border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700 disabled:opacity-50",
+  danger: "bg-red-600/90 text-white hover:bg-red-500 disabled:opacity-50",
+  ghost: "text-slate-300 hover:bg-slate-800 disabled:opacity-50",
+};
+
+/** Button styling shared by <Button> and <ButtonLink>. */
+export function buttonClass(variant: ButtonVariant = "primary", className = ""): string {
+  return `inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed ${BUTTON_STYLES[variant]} ${className}`;
+}
+
 export function Button({
   variant = "primary",
   className = "",
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: ButtonVariant }) {
-  const styles: Record<ButtonVariant, string> = {
-    primary: "bg-ember-500 text-slate-950 hover:bg-ember-400 disabled:opacity-50",
-    secondary: "border border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700 disabled:opacity-50",
-    danger: "bg-red-600/90 text-white hover:bg-red-500 disabled:opacity-50",
-    ghost: "text-slate-300 hover:bg-slate-800 disabled:opacity-50",
-  };
+  return <button className={buttonClass(variant, className)} {...props} />;
+}
+
+/** Navigation dressed as a button (a link, not an action). */
+export function ButtonLink({
+  href,
+  variant = "primary",
+  className = "",
+  children,
+}: {
+  href: string;
+  variant?: ButtonVariant;
+  className?: string;
+  children: ReactNode;
+}) {
   return (
-    <button
-      className={`inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed ${styles[variant]} ${className}`}
-      {...props}
-    />
+    <Link href={href} className={buttonClass(variant, className)}>
+      {children}
+    </Link>
   );
 }
 
@@ -131,9 +152,10 @@ export function SessionStatusBadge({ status }: { status: string }) {
   return <Badge tone={SESSION_STATUS_TONE[status] ?? "slate"}>{status.replace(/_/g, " ")}</Badge>;
 }
 
+// A page is either a draft, published or archived — there is no 'pending
+// review' state (the pipeline only writes confirmed changes).
 export const PAGE_STATUS_TONE: Record<string, BadgeTone> = {
   draft: "slate",
-  pending_review: "amber",
   published: "green",
   archived: "slate",
 };

@@ -3,8 +3,9 @@
 The service layer owns the invariants:
 
 - every page belongs to exactly one campaign; slugs are unique per campaign
-- a page is never hard-deleted: status moves draft -> pending_review ->
-  published | archived (archived is terminal in v1)
+- a page is never hard-deleted: status moves draft -> published | archived
+  (archived is terminal in v1). There is no 'pending review' state: the
+  pipeline only writes pages once the DM confirmed the proposed changes.
 - players may only ever read published + public pages; the DM reads everything
 - every content change writes an immutable page_versions snapshot
 - wiki.published / wiki.updated / wiki.archived are emitted via the publisher
@@ -31,7 +32,6 @@ from app.page_attributes import validate_attributes
 logger = logging.getLogger(__name__)
 
 DRAFT = "draft"
-PENDING_REVIEW = "pending_review"
 PUBLISHED = "published"
 ARCHIVED = "archived"
 
@@ -39,8 +39,10 @@ PUBLIC = "public"
 DM_ONLY = "dm_only"
 HIDDEN = "hidden"
 
-#: statuses the content-service (service token) may create drafts with
-SERVICE_CREATE_STATUSES = (DRAFT, PENDING_REVIEW)
+#: statuses a service token (the content pipeline) may create pages with:
+#: drafts only — the pipeline's own pages are written published through the
+#: internal change-set apply endpoint, after the DM confirmed them.
+SERVICE_CREATE_STATUSES = (DRAFT,)
 
 _SLUG_STRIP = re.compile(r"[^a-z0-9]+")
 
@@ -223,7 +225,7 @@ async def update_page(
 async def approve_page(
     db: AsyncSession, page_id: UUID, *, approved_by: UUID, publisher: EventPublisher
 ) -> WikiPage:
-    """DM approval: draft|pending_review -> published; emits wiki.published."""
+    """DM approval: draft -> published; emits wiki.published."""
     page = await get_page_or_404(db, page_id)
     if page.status == ARCHIVED:
         raise HTTPException(

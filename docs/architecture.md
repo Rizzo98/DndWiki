@@ -17,8 +17,10 @@
    named, searchable transcript plus a structured wiki draft.
 2. **Zero-effort speaker attribution** — diarized segments are matched to enrolled
    player voiceprints automatically; the DM only names strangers the first time.
-3. **DM-owned content** — everything the LLM generates lands as a *draft*
-   (`pending_review`); only the DM can publish, edit, or hide pages.
+3. **DM-owned content** — everything the LLM generates is proposed to the DM
+   first (the session summary, then the change set) and written into the wiki
+   only once confirmed; the DM alone can publish, edit, or hide pages. No
+   pipeline-generated page ever sits in a "pending review" state.
 4. **Strict read-only players** — player accounts can view published pages only.
 5. **Horizontal scalability where it matters** — the GPU transcription and the LLM
    generation are queue-driven workers that scale independently.
@@ -170,7 +172,7 @@ sequenceDiagram
 ```
 uploaded → recorded → transcribing → transcribed → refining → refined
         → identifying_speakers → speakers_identified
-        → (speaker_pending: DM assigns) → summarizing → summary_ready
+        → (speaker_pending: DM names + confirms the speakers) → summarizing → summary_ready
         → generating_wiki → wiki_plan_ready → applying_wiki → content_ready
         → reviewed → published
 
@@ -221,10 +223,23 @@ retried with exponential backoff (max 3 attempts).
    the refiner is disabled it receives the raw `transcription.completed` instead
    and first re-clusters the raw labels from its own ECAPA-TDNN embeddings
    (cosine agglomerative, seeded by per-campaign enrollment centroids).
+   Before matching, it also learns the campaign's **speaker history**: the DM's
+   manual namings in earlier sessions (session-service
+   `GET /internal/campaigns/{id}/speaker-history`) become voice samples — the
+   labelled turns of at least `HISTORY_SAMPLE_MIN_SEC`, of at least
+   `HISTORY_SAMPLE_MIN_CONFIDENCE` diarization confidence, capped per label and
+   per run, enrolled once (`source: "history"`).
 3. Each label is matched to the campaign voiceprints in Qdrant (anchor centroids
    shortcut known speakers); best match ≥ `SPEAKER_MATCH_THRESHOLD` (0.75) → auto-assign.
 4. Below threshold → `speaker_assignments.status = pending`; DM is notified and
    assigns a name (which also enrolls a new voiceprint if the speaker is new).
+   A match above the threshold lands `auto` and the DM either **confirms** it in
+   the speaker panel (one click, roster member + character name filled in) or
+   picks another member; confirming is what turns the proposal into a voice
+   sample for the sessions that come after it.
+   The session stays on `speaker_pending` until **every** label is `confirmed`
+   (named or accepted): an `auto` match is a proposal, not a decision, so the
+   summary never starts from speakers nobody validated.
 
 > Voiceprints are **per campaign** — the same person can be "Gandalf" in one
 > campaign and "Dumbledore" in another. Embeddings never leave the platform.
@@ -242,10 +257,13 @@ retried with exponential backoff (max 3 attempts).
 3. Extractions are merged across chunks: entities are deduplicated by name +
    similarity (embedding distance), conflicts resolved by majority or kept as
    separate mentions.
-4. Draft pages are created through `wiki-service` with `status=pending_review` and
-   a confidence score; cross-links between pages are proposed (`page_relations`).
-5. The DM reviews: **publish**, **edit & publish**, **discard**, or **hide**
-   (`visibility=dm_only`/`hidden` — players never see these).
+4. The DM reviews the proposed **change set** (the "git status" of the
+   session) and confirms it; the worker then writes the pages through
+   `wiki-service`'s internal apply endpoint as `status=published` (the
+   confirmation IS the approval) with a confidence score, plus the proposed
+   cross-links (`page_relations`) and timeline entries (`approved=true`).
+5. The DM can still edit, archive or hide any page afterwards
+   (`visibility=dm_only`/`hidden` — players never see those).
 
 **Prompt versioning**: `generation_jobs.prompt_version` pins the prompt template;
 bumping it invalidates old drafts so regenerations are reproducible.

@@ -189,8 +189,9 @@ and `chunk` are unchanged), and the artifacts at `transcript_uri` /
 
 ## speakers.assigned
 
-Emitted when the DM names a previously-unknown speaker (and optionally enrolls
-their voiceprint).
+Emitted when the DM names a previously-unknown speaker, or confirms the match
+the pipeline proposed (`POST /api/sessions/{id}/speakers/{label}/confirm`), and
+optionally enrolls their voiceprint.
 
 ```json
 {
@@ -350,8 +351,8 @@ the set.
 Published by content-service when the DM confirms the proposed changes. The
 worker then writes them through wiki-service's internal apply endpoint: the
 new pages are created PUBLISHED and new timeline entries APPROVED (the
-confirmation is the approval), so nothing pipeline-generated lands in
-"pending review".
+confirmation is the approval), so nothing pipeline-generated ever lands in a
+"pending review" state.
 
 ```json
 {
@@ -434,7 +435,9 @@ confirmation is the approval), so nothing pipeline-generated lands in
 ## notification events
 
 - `wiki.draft_ready` — payload `{campaign_id, session_id, draft_count}` → DM.
-- `speaker.pending` — payload `{campaign_id, session_id, pending_labels: []}` → DM.
+- `speaker.pending` — payload `{campaign_id, session_id, pending_labels: [], unconfirmed_labels: []}` → DM.
+  `pending_labels` are the labels that still need a NAME; `unconfirmed_labels`
+  is everything the DM has not accepted yet (auto matches included).
 - `session.published` — payload `{campaign_id, session_id, title}` → players.
 
 ---

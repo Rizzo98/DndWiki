@@ -16,6 +16,7 @@ from sqlalchemy.pool import StaticPool
 
 from app import deps
 from app.clients.campaigns import CampaignServiceClient, MembershipUnavailable
+from app.clients.content import ContentServiceClient, ContentServiceError, SessionNotDeletable
 from app.core.config import get_settings
 
 # ---------------------------------------------------------------- fakes
@@ -86,6 +87,40 @@ class FakeCampaignClient(CampaignServiceClient):
             raise ValueError("member not found in this campaign")
         return member
 
+    async def list_members(self, campaign_id: UUID) -> list[dict[str, Any]]:
+        if self.unavailable:
+            raise MembershipUnavailable("campaign-service down")
+        return [m for m in self.members.values() if m.get("campaign_id") == str(campaign_id)]
+
+
+class FakeContentClient(ContentServiceClient):
+    """content-service purge stand-in: records the calls, can refuse or fail.
+
+    'refuse' makes it answer like the real endpoint does when the session's
+    content is already in the wiki (409 -> SessionNotDeletable); 'unavailable'
+    simulates the service being down.
+    """
+
+    def __init__(self, refuse: str | None = None, unavailable: bool = False) -> None:
+        super().__init__("http://content.test", get_settings())
+        self.calls: list[str] = []
+        self.refuse = refuse
+        self.unavailable = unavailable
+
+    async def delete_session_data(self, session_id: str) -> dict:
+        self.calls.append(session_id)
+        if self.unavailable:
+            raise ContentServiceError("content-service unreachable")
+        if self.refuse:
+            raise SessionNotDeletable(self.refuse)
+        return {
+            "session_id": session_id,
+            "deleted": True,
+            "jobs": 2,
+            "summaries": 1,
+            "change_sets": 1,
+        }
+
 
 # ---------------------------------------------------------------- fixtures
 
@@ -124,6 +159,11 @@ def fake_campaign() -> FakeCampaignClient:
 
 
 @pytest.fixture
+def fake_content() -> FakeContentClient:
+    return FakeContentClient()
+
+
+@pytest.fixture
 def user_id() -> UUID:
     return UUID("11111111-1111-1111-1111-111111111111")
 
@@ -139,6 +179,7 @@ async def client(
     fake_publisher,
     fake_storage,
     fake_campaign,
+    fake_content,
     user_id,
 ) -> AsyncIterator[httpx.AsyncClient]:
     """ASGI client with all external dependencies faked."""
@@ -156,6 +197,7 @@ async def client(
     app.dependency_overrides[deps.get_publisher] = lambda: fake_publisher
     app.dependency_overrides[deps.get_storage] = lambda: fake_storage
     app.dependency_overrides[deps.get_campaign_client] = lambda: fake_campaign
+    app.dependency_overrides[deps.get_content_client] = lambda: fake_content
     app.dependency_overrides[deps.require_service] = lambda: None
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:

@@ -29,6 +29,26 @@ class ServiceSettings(Settings):
     # How much of a speaker's audio to pool per embedding (longest run, capped)
     speaker_pool_sec: float = 20.0
 
+    # --- voice samples from previous sessions' manual identifications ---
+    # The DM naming a speaker is a labelled sample: while identifying a
+    # session, the confirmed labels of earlier sessions in the same campaign
+    # are turned into extra voiceprints (see app.history). Idempotent: each
+    # (session, label, window) is enrolled at most once.
+    history_samples_enabled: bool = True
+    # Only turns at least this long become samples (ECAPA needs a few seconds)
+    history_sample_min_sec: float = 3.0
+    # ... and at most this much of a turn is embedded (one window per turn)
+    history_sample_max_sec: float = 20.0
+    # Turns whose diarization confidence is below this are not trusted as
+    # samples; segments without any confidence data are kept (some backends
+    # do not report one, and the DM did confirm the label).
+    history_sample_min_confidence: float = 0.8
+    # Windows kept per named label, and embeddings per identification run
+    history_max_windows_per_label: int = 3
+    history_max_windows_per_run: int = 24
+    # How many earlier sessions of the campaign to scan (newest first)
+    history_max_sessions: int = 5
+
     # --- LLM contextual refinement (refiner-service) ---
     # When the refiner is enabled, speaker-service ignores transcription.completed
     # (the refiner emits transcription.refined instead, with labels already fixed

@@ -34,6 +34,10 @@ RETRY edge: the worker marks the session failed, the message is redelivered
 and the same phase runs again. All other forward progress from 'failed' stays
 blocked, so a failed session never silently restarts.
 
+DELETION follows the same line: the DM may delete a session until the wiki
+part of it exists ('applying_wiki' and later block it), because the pages and
+timeline entries a session wrote must never outlive the session itself.
+
 The pipeline never goes backwards: a session that reached 'content_ready' or
 'published' can only move forward (or be unpublished back to 'reviewed').
 Re-generating a session's wiki content would duplicate what the campaign
@@ -122,6 +126,26 @@ ALLOWED_TRANSITIONS: dict[SessionStatus, set[SessionStatus]] = {
         SessionStatus.APPLYING_WIKI,
     },
 }
+
+
+#: Statuses a session can no longer be DELETED from. From 'applying_wiki' on,
+#: the pipeline is writing (or already wrote) the session's pages and timeline
+#: entries: the session record cannot disappear from under wiki content that
+#: points at it, so deletion stops here. Everything before it (including a
+#: failed session) can still be thrown away.
+DELETE_BLOCKED_STATUSES: frozenset[SessionStatus] = frozenset(
+    {
+        SessionStatus.APPLYING_WIKI,
+        SessionStatus.CONTENT_READY,
+        SessionStatus.REVIEWED,
+        SessionStatus.PUBLISHED,
+    }
+)
+
+
+def can_delete(status: SessionStatus) -> bool:
+    """Whether a session in this status may still be deleted by the DM."""
+    return status not in DELETE_BLOCKED_STATUSES
 
 
 def can_transition(current: SessionStatus, target: SessionStatus) -> bool:

@@ -162,6 +162,16 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
     return names;
   }, [members, userNames]);
 
+  // user_id -> member_id: an automatic match only carries the user, while the
+  // DM picks members — this lets the picker show the proposed member.
+  const memberByUserId = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const m of members ?? []) {
+      if (m.user_id) map[m.user_id] = m.id;
+    }
+    return map;
+  }, [members]);
+
   // speaker_label -> display name for the transcript chips.
   const speakerNames = useMemo(() => {
     const names: Record<string, string> = {};
@@ -436,6 +446,56 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
     }
   }
 
+  /** DM accepts the name the pipeline proposed for a label (auto -> confirmed).
+   *  A confirmed, user-linked assignment is what speaker-service learns the
+   *  voice from, so the match is reused in future sessions. */
+  async function confirmAssign(speakerLabel: string, name: string | null) {
+    if (!token) return;
+    setBusy(true);
+    setFormError(null);
+    try {
+      await sessionsApi.confirmSpeaker(token, params.sessionId, speakerLabel);
+      setNotice(`Speaker ${speakerLabel} confirmed${name ? ` as "${name}"` : ""}.`);
+      // the row now carries the confirmed member: drop any pending dropdown pick
+      setAssignForm((prev) => {
+        const next = { ...prev };
+        delete next[speakerLabel];
+        return next;
+      });
+      reloadSpeakers();
+    } catch (err) {
+      setFormError(errMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Accept every proposed match at once. The session only moves past
+   *  identification when no label is left unconfirmed, so a finished panel
+   *  should not take one click per speaker. */
+  async function confirmAll() {
+    if (!token) return;
+    const labels = (speakers ?? [])
+      .filter((s) => s.status === "auto")
+      .map((s) => s.speaker_label);
+    if (labels.length === 0) return;
+    setBusy(true);
+    setFormError(null);
+    try {
+      for (const label of labels) {
+        await sessionsApi.confirmSpeaker(token, params.sessionId, label);
+      }
+      setNotice(`${labels.length} match${labels.length === 1 ? "" : "es"} confirmed.`);
+      setAssignForm({});
+      reloadSpeakers();
+    } catch (err) {
+      setFormError(errMessage(err));
+      reloadSpeakers();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function assign(speakerLabel: string) {
     if (!token) return;
     const f = assignForm[speakerLabel];
@@ -468,6 +528,12 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
   // below), so the panel must stay reachable after every speaker has a name.
   const allSpeakersAssigned =
     (speakers?.length ?? 0) > 0 && (speakers ?? []).every((s) => s.member_id || s.user_id);
+
+  // What the DM still has to decide here: proposed matches to accept, labels
+  // without a name. The session stays on 'speaker_pending' until both are zero,
+  // so the summary (and the wiki after it) only starts from settled speakers.
+  const toConfirm = (speakers ?? []).filter((s) => s.status === "auto").length;
+  const toName = (speakers ?? []).filter((s) => !s.member_id && !s.user_id).length;
   const showSpeakersCard =
     (speakers?.length ?? 0) > 0 && (isDm || !allSpeakersAssigned);
 
@@ -605,19 +671,47 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
       {showSpeakersCard ? (
         <Card>
           <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-lg font-semibold">Speakers</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-semibold">Speakers</h2>
+              {isDm && toConfirm + toName > 0 ? (
+                <Badge tone="amber">{toConfirm + toName} awaiting you</Badge>
+              ) : null}
+            </div>
             <span className="text-xs text-slate-500">
-              Red labels have low diarization confidence — double-check them. The DM can change any assignment; naming a user-linked speaker also enrolls their voice.
+              Red labels have low diarization confidence — double-check them. Accept a proposed match to keep it (the voice is then learned for future
+              sessions), correct it from the dropdown, or name the speakers left without a match.
             </span>
           </div>
+          {isDm && toConfirm + toName > 0 ? (
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2">
+              <span className="text-xs text-slate-400">
+                {toName > 0
+                  ? `${toName} speaker${toName === 1 ? "" : "s"} still need a name`
+                  : "every speaker has a name"}
+                {toConfirm > 0 ? ` · ${toConfirm} match${toConfirm === 1 ? "" : "es"} to confirm` : ""}
+                {" — the next step starts once the panel is complete."}
+              </span>
+              {toConfirm > 1 ? (
+                <Button variant="secondary" onClick={confirmAll} disabled={busy}>
+                  Confirm all ({toConfirm})
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
           {speakers && speakers.length === 0 ? (
             <EmptyState>No diarized speakers yet — they appear after transcription.</EmptyState>
           ) : (
             <div className="divide-y divide-slate-800">
               {speakers?.map((s) => {
                 const unassigned = !s.member_id && !s.user_id;
-                const currentMember = s.member_id ?? "";
-                const f = assignForm[s.speaker_label] ?? { member_id: currentMember };
+                // The member behind the current assignment: the one the DM
+                // named, or the roster row of the user the pipeline proposed.
+                const assignedMember =
+                  s.member_id ?? (s.user_id ? memberByUserId[s.user_id] ?? "" : "");
+                const f = assignForm[s.speaker_label] ?? { member_id: assignedMember };
+                // A proposal (auto) or a stale match can be confirmed as is; a
+                // confirmed row has nothing left to accept.
+                const canConfirm = s.status !== "confirmed" && !unassigned;
                 const labelConf = labelConfidence[s.speaker_label];
                 const lowConfidence = labelConf !== undefined && labelConf < LOW_SPEAKER_CONFIDENCE;
                 const assignedName = s.user_id
@@ -649,6 +743,17 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
                     </div>
                     {isDm ? (
                       <div className="flex flex-wrap items-end gap-2">
+                        {/* Accept the proposed name: the assignment becomes
+                            confirmed and the voice is kept for later sessions. */}
+                        {canConfirm ? (
+                          <Button
+                            onClick={() => confirmAssign(s.speaker_label, assignedName)}
+                            disabled={busy}
+                            title="Accept this match — it becomes a confirmed assignment and the voice is learned for future sessions"
+                          >
+                            Confirm
+                          </Button>
+                        ) : null}
                         <Select
                           className="w-72"
                           value={f.member_id}
@@ -666,8 +771,9 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
                           ))}
                         </Select>
                         <Button
+                          variant={canConfirm && f.member_id === assignedMember ? "secondary" : "primary"}
                           onClick={() => assign(s.speaker_label)}
-                          disabled={busy || !f.member_id || f.member_id === currentMember}
+                          disabled={busy || !f.member_id || f.member_id === assignedMember}
                         >
                           {unassigned ? "Name speaker" : "Save assignment"}
                         </Button>

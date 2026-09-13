@@ -23,6 +23,7 @@ from app.schemas import (
     ChangeSetApply,
     ChangeSetApplyOut,
     ExistingPageOut,
+    SessionContentOut,
     TimelineEventOut,
     TimelineUpsert,
     TimelineUpsertOut,
@@ -110,6 +111,20 @@ async def upsert_timeline(
         source_session_id=body.source_session_id,
     )
     return TimelineUpsertOut(event=_timeline_out(event), created=created)
+
+@router.get("/sessions/{session_id}/content", response_model=SessionContentOut)
+async def session_content(
+    session_id: UUID,
+    db: AsyncSession = Depends(get_session),
+):
+    """Pages + timeline entries a session wrote into the wiki.
+
+    Read-only guard used before a session is deleted: the content-service
+    refuses the deletion while any of it exists, so a deleted session never
+    leaves wiki content behind that points at it.
+    """
+    return await services.session_content(db, session_id)
+
 
 @router.post("/changes/apply", response_model=ChangeSetApplyOut)
 async def apply_changes(

@@ -58,6 +58,7 @@ from app.clients.session_service import (
 )
 from app.core.config import ServiceSettings, get_settings
 from app.embedding import VoiceEmbedder
+from app.history import HistoryEntry, HistorySample, manual_samples
 from app.identify import match_label
 from app.qdrant import VoiceprintStore
 from app.relabel import RelabelResult, centroid, relabel_segments, speaker_turns
@@ -121,9 +122,19 @@ async def _finish(
     client: SessionServiceClient,
     publisher: Callable[[Event], Awaitable[None]],
 ) -> None:
-    """Move the session past identification and publish the results."""
-    pending = [a["speaker_label"] for a in assignments if a["status"] == "pending"]
-    if pending:
+    """Park the session on the DM's speaker decisions, then publish the result.
+
+    An 'auto' match is a *proposal*: the DM accepts it (or names someone else)
+    in the speaker panel. The session therefore stays on 'speaker_pending' until
+    every label is confirmed - that is what makes the names, and the voice
+    samples learned from them, trustworthy before the next pipeline step runs.
+    A session with nothing left to decide (no diarized labels at all) closes the
+    stage on its own.
+    """
+    unconfirmed = [a["speaker_label"] for a in assignments if a["status"] != "confirmed"]
+    # Only these need a NAME; the rest just need the DM to accept the match.
+    unnamed = [a["speaker_label"] for a in assignments if a["status"] == "pending"]
+    if unconfirmed:
         await client.update_status(session_id, STATUS_SPEAKER_PENDING)
         await publisher(
             Event(
@@ -131,7 +142,8 @@ async def _finish(
                 payload={
                     "campaign_id": campaign_id,
                     "session_id": session_id,
-                    "pending_labels": pending,
+                    "pending_labels": unnamed,
+                    "unconfirmed_labels": unconfirmed,
                 },
             )
         )
@@ -152,7 +164,7 @@ async def _finish(
                     }
                     for a in assignments
                 ],
-                "pending_assignment": bool(pending),
+                "pending_assignment": bool(unconfirmed),
             },
         )
     )
@@ -240,6 +252,19 @@ async def process_identified(
             staged = fh.name
 
         await storage.download_file(settings.minio_recordings_bucket, audio_uri, staged)
+
+        # Before matching: turn the DM's manual namings in earlier sessions of
+        # this campaign into voice samples, so this session is identified
+        # against them too (best effort - never fails the run).
+        await _enroll_history_samples(
+            settings,
+            storage,
+            client,
+            voiceprints,
+            embedder,
+            campaign_id,
+            session_id,
+        )
 
         if event.type == "transcription.refined":
             # Labels/text were already fixed by the LLM contextual pass
@@ -343,6 +368,163 @@ async def _load_anchors(
         {"user_id": uid, "embedding": centroid(vectors)}
         for uid, vectors in by_user.items()
     ]
+
+
+async def _enrolled_history_keys(voiceprints: VoiceprintStore, campaign_id: str) -> set[str]:
+    """Sample keys already in the campaign store (idempotency guard)."""
+    points = await voiceprints.list_campaign(campaign_id)
+    keys: set[str] = set()
+    for point in points:
+        payload = getattr(point, "payload", None) or {}
+        key = payload.get("history_key")
+        if key:
+            keys.add(str(key))
+    return keys
+
+
+def _history_point_id(key: str) -> str:
+    """Deterministic Qdrant id of one manual sample (re-runs overwrite it)."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"dnd:history-sample:{key}"))
+
+
+async def _enroll_history_samples(
+    settings: ServiceSettings,
+    storage: ObjectStorage,
+    client: SessionServiceClient,
+    voiceprints: VoiceprintStore,
+    embedder: VoiceEmbedder,
+    campaign_id: str,
+    session_id: str,
+) -> int:
+    """Enroll voice samples from the DM's manual namings in earlier sessions.
+
+    The DM naming a speaker is a labelled sample: the labelled, long-enough and
+    confident turns of earlier sessions of the same campaign (see app.history)
+    are embedded and stored as campaign voiceprints, so this session is matched
+    against every naming the campaign already has - not only against profile
+    enrollment and the print the naming event happened to write. Each
+    (session, label, window) is stored at most once (deterministic point id +
+    history_key payload marker), so re-identifying a session is cheap.
+
+    Best effort by design: a missing artifact, an unreachable session-service
+    or a failed embedding leaves the campaign voiceprints as they were and
+    never fails the identification run. Returns the number of prints written.
+    """
+    if not (settings.history_samples_enabled and campaign_id):
+        return 0
+    try:
+        already = await _enrolled_history_keys(voiceprints, campaign_id)
+        entries = await client.speaker_history(
+            campaign_id,
+            exclude_session_id=session_id,
+            limit_sessions=settings.history_max_sessions,
+        )
+    except Exception:
+        # History is an enhancement, not a requirement: identify as before.
+        logger.exception("could not read the campaign speaker history; continuing without it")
+        return 0
+
+    history: list[HistoryEntry] = []
+    audio_uris: dict[str, str] = {}
+    for entry in entries:
+        entry_session = str(entry.get("session_id") or "")
+        label = str(entry.get("speaker_label") or "")
+        user_id = entry.get("user_id")
+        audio_uri = entry.get("audio_uri")
+        if not (entry_session and label and user_id and audio_uri):
+            continue
+        history.append(
+            HistoryEntry(session_id=entry_session, label=label, user_id=str(user_id))
+        )
+        audio_uris[entry_session] = str(audio_uri)
+    if not history:
+        return 0
+
+    # The diarization artifacts tell which parts of those recordings the DM's
+    # labels actually cover (and how confident the diarizer was about them).
+    diarizations: dict[str, list[dict]] = {}
+    for history_session in {entry.session_id for entry in history}:
+        key = f"transcripts/{history_session}/diarization.json"
+        try:
+            document = await storage.read_json(settings.minio_transcripts_bucket, key)
+        except Exception:  # noqa: BLE001 - skip this session, keep the others
+            logger.warning("no diarization for session %s; its samples are skipped", history_session)
+            continue
+        diarizations[history_session] = document.get("segments") or []
+
+    samples = manual_samples(
+        history,
+        diarizations,
+        already_enrolled=already,
+        min_sec=settings.history_sample_min_sec,
+        max_sec=settings.history_sample_max_sec,
+        min_confidence=settings.history_sample_min_confidence,
+        max_windows_per_label=settings.history_max_windows_per_label,
+        max_windows_per_run=settings.history_max_windows_per_run,
+    )
+    if not samples:
+        return 0
+
+    workdir = Path(settings.work_dir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    by_session: dict[str, list[HistorySample]] = {}
+    for sample in samples:
+        by_session.setdefault(sample.session_id, []).append(sample)
+
+    written = 0
+    for history_session, session_samples in by_session.items():
+        staged: str | None = None
+        vectors: list[list[float] | None]
+        try:
+            suffix = Path(audio_uris[history_session]).suffix or ".audio"
+            with tempfile.NamedTemporaryFile(suffix=suffix, dir=workdir, delete=False) as fh:
+                staged = fh.name
+            await storage.download_file(
+                settings.minio_recordings_bucket, audio_uris[history_session], staged
+            )
+            windows = [(s.window.start, s.window.end) for s in session_samples]
+            # One decode, many windows: the recording is loaded once per session.
+            vectors = await asyncio.to_thread(embedder.embed_windows_sync, staged, windows)
+        except Exception:
+            # One unreadable session must not stop the others (or the run).
+            logger.exception("could not embed the labelled turns of session %s", history_session)
+            continue
+        finally:
+            if staged is not None:
+                try:
+                    os.unlink(staged)
+                except OSError:  # already gone / permission
+                    pass
+
+        for sample, vector in zip(session_samples, vectors):
+            if vector is None or sample.window.duration < settings.voice_sample_min_sec:
+                continue
+            await voiceprints.upsert(
+                _history_point_id(sample.key),
+                vector,
+                {
+                    "user_id": sample.user_id,
+                    "campaign_id": str(campaign_id),
+                    # pseudo-uri: recording + label + window the print came from
+                    "sample_uri": f"recordings/{sample.session_id}#{sample.label}#{sample.window.index}",
+                    "version": settings.embedding_version,
+                    "source": "history",
+                    "session_id": sample.session_id,
+                    "speaker_label": sample.label,
+                    "history_key": sample.key,
+                    "turn_confidence": sample.window.confidence,
+                },
+            )
+            written += 1
+
+    if written:
+        logger.info(
+            "enrolled %d voice sample(s) from %d named session(s) of campaign %s",
+            written,
+            len(by_session),
+            campaign_id,
+        )
+    return written
 
 
 async def _relabel(

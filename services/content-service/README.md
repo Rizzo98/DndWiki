@@ -159,6 +159,7 @@ state-machine 409, so a failed job is never re-run blindly or DLQ-spammed.
 | GET | `/api/content/sessions/{id}/plan` | DM or `dev` | the proposed changes (with the per-field diff of every update) |
 | PUT | `/api/content/sessions/{id}/plan` | DM or `dev` | save the review: edited payloads, dropped changes, dropped links |
 | POST | `/api/content/sessions/{id}/plan/confirm` | DM or `dev` | confirm the changes → write the pages/events (also the retry for a failed apply) |
+| DELETE | `/internal/content/sessions/{id}` | service token | purge a deleted session's rows (summary, jobs, change set); 409 while the session's content is already in the wiki |
 
 The endpoints only publish events; the state-machine transition (and its 409
 idempotency guard) happens in the worker, the single writer of
@@ -170,6 +171,16 @@ The web session page is the review UI, in two steps: (1) tick the summary
 lines, describe the change, *Regenerate*, then *Confirm summary*; (2) inspect
 the proposed changes — creations as a preview, updates as a field-by-field
 diff — edit or drop what is wrong, then *Confirm changes & update the wiki*.
+
+### Forgetting a session
+
+`DELETE /internal/content/sessions/{id}` is called by session-service when the
+DM deletes a session from the sessions tab (allowed only while the session has
+not generated its wiki updates — see services/session-service/app/status.py).
+It drops the session's draft summary, its generation jobs and its proposed
+change set, and it **refuses with 409** while the change set is applied or
+wiki-service reports pages/timeline entries attributed to the session: a
+deleted session must never leave wiki content behind that points at it.
 
 ### Why there is no "re-generate from scratch" button
 

@@ -30,10 +30,10 @@ phone recording ──▶ session-service ──▶ MinIO (raw audio)
                         ▼ RabbitMQ (content.generate)
                 content-service (LLM structured extraction → DRAFT session summary)
                         │  DM reviews/regenerates it on the session page
-                        │  summary confirmed (summary.confirmed) → wiki drafts
-                        │  drafts (pending_review)
+                        │  summary confirmed (summary.confirmed) → proposed change set
+                        │  DM reviews the changes ("git status") → plan.confirmed
                         ▼
-                wiki-service (DM approves/edits → published) ──▶ search-service
+                wiki-service (pages created published) ──▶ search-service
 ```
 
 ## Repository layout

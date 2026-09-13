@@ -12,7 +12,8 @@ caller's role (checked against campaign-service).
   the timeline view). Each kind has a validated `attributes` schema in
   `app/page_attributes.py` (e.g. character `npc|player`, location geospatial
   fields); unknown attribute keys are rejected with a 422.
-- Draft review loop: `draft → pending_review → published | archived` (DM only).
+- Draft review loop: `draft → published | archived` (DM only). There is no
+  'pending review' status (migration 0005 folded the legacy rows into drafts).
   Pages the pipeline generates do NOT go through it: they are written by the
   internal apply endpoint of a change set the DM already confirmed, and land
   **published** (see below).
@@ -36,10 +37,10 @@ caller's role (checked against campaign-service).
 | Method | Path | Who | Notes |
 |---|---|---|---|
 | GET | `/api/wiki/pages?campaign_id=…` | members | players: published+public only; `kind`, `status` (DM), `q`, `limit`/`offset` |
-| POST | `/api/wiki/pages` | DM **or** content-service (service token) | service tokens may only create `draft`/`pending_review` |
+| POST | `/api/wiki/pages` | DM **or** service token | service tokens may only create `draft` pages |
 | GET | `/api/wiki/pages/{id}` | members | visibility-filtered |
 | PATCH | `/api/wiki/pages/{id}` | DM | content edit writes a version; published → `wiki.updated` |
-| POST | `/api/wiki/pages/{id}/approve` | DM | `draft|pending_review → published`, emits `wiki.published` |
+| POST | `/api/wiki/pages/{id}/approve` | DM | `draft → published`, emits `wiki.published` |
 | POST | `/api/wiki/pages/{id}/archive` | DM | emits `wiki.archived`; terminal in v1 |
 | PATCH | `/api/wiki/pages/{id}/visibility` | DM | `public|dm_only|hidden` |
 | GET | `/api/wiki/pages/{id}/versions` | members | newest first |
@@ -55,6 +56,7 @@ caller's role (checked against campaign-service).
 | GET | `/internal/wiki/timeline?campaign_id=` | every timeline entry, approved or not |
 | POST | `/internal/wiki/timeline/upsert` | create/refresh the entry of an event page (created pending) |
 | POST | `/internal/wiki/changes/apply` | **write a DM-confirmed change set** |
+| GET | `/internal/wiki/sessions/{id}/content` | pages + timeline entries a session wrote (deletion guard for session-service) |
 
 `POST /internal/wiki/changes/apply` is the single path that publishes
 pipeline-generated content: content-service calls it after the DM confirmed

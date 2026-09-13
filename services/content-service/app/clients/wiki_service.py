@@ -1,10 +1,11 @@
 """Client for the wiki-service API (service-to-service, dnd-services token).
 
-Reads the campaign's page listing (cross-session dedupe input) and APPLIES the
-change set the DM confirmed: POST /internal/wiki/changes/apply creates the
-confirmed pages as published, updates the ones the campaign already has and
-writes the timeline entries. Regular page creation through the public API
-stays restricted to draft|pending_review for service tokens — the internal
+Reads the campaign's page listing (cross-session dedupe input), reports what a
+single SESSION wrote into the wiki (deletion guard) and APPLIES the change set
+the DM confirmed: POST /internal/wiki/changes/apply creates the confirmed pages
+as published, updates the ones the campaign already has and writes the timeline
+entries. Regular page creation through the public API
+stays restricted to draft pages for service tokens — the internal
 apply endpoint is the only publishing path, and it is reached only after the
 DM confirmed the proposed changes on the session page.
 """
@@ -48,6 +49,14 @@ class WikiServiceClient:
     async def list_timeline_events(self, campaign_id: str) -> list[dict[str, Any]]:
         """GET /internal/wiki/timeline — every entry (approved or not)."""
         return await self._get(f"/internal/wiki/timeline?campaign_id={campaign_id}")
+
+    async def session_content(self, session_id: str) -> dict[str, Any]:
+        """GET /internal/wiki/sessions/{id}/content — what a session wrote.
+
+        Read-only guard for session deletion: the pages (and timeline entries)
+        attributed to a session must not outlive it.
+        """
+        return await self._get(f"/internal/wiki/sessions/{session_id}/content")
 
     async def _get(self, path: str) -> Any:
         token = service_token(self._settings)

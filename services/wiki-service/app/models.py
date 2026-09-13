@@ -54,7 +54,7 @@ class WikiPage(Base):
         default=dict,
         server_default="{}",
     )
-    # draft | pending_review | published | archived
+    # draft | published | archived (never a 'pending review' state)
     status: Mapped[str] = mapped_column(
         String(24), nullable=False, default="draft", server_default="draft", index=True
     )

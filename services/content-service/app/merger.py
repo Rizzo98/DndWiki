@@ -42,8 +42,10 @@ import re
 from difflib import SequenceMatcher
 from typing import Any
 
-#: PageCreate statuses the content-service may create (wiki-service enforces).
-DRAFT_STATUS = "pending_review"
+#: Status of the payloads built here. They are PROPOSALS, not pages: the
+#: planner turns them into the change set the DM reviews, and only the
+#: confirmed set is written (published) by wiki-service.
+DRAFT_STATUS = "draft"
 DEFAULT_VISIBILITY = "public"
 
 #: Relation proposed when a fresh extraction looks like an existing page.
@@ -930,7 +932,7 @@ def build_page_drafts(
 
     Returns (drafts, relations, duplicates):
 
-    - drafts: pending_review PageCreate payloads. Characters always carry
+    - drafts: PageCreate-shaped payloads. Characters always carry
       content_json.attributes.character_type ('player' when they match the
       party's character names or the model's is_party hint, 'npc' otherwise).
     - relations: {'from_title', 'to_page_id', 'relation_type'} proposals for
@@ -1115,7 +1117,7 @@ def build_event_drafts(
 
     Returns (drafts, updates, timeline_events, duplicates):
 
-    - drafts: PageCreate payloads (kind='event', pending_review) for events
+    - drafts: PageCreate payloads (kind='event') for events
       the wiki does not document yet.
     - updates: {'page_id', 'title', 'content_json', 'change_note'} payloads
       for existing event pages: the fresh description/participants/date are

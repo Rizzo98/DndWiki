@@ -1,5 +1,7 @@
 // Sessions tab: list + create sessions; each row links to the detail page
-// where recordings are uploaded and the pipeline is tracked.
+// where recordings are uploaded and the pipeline is tracked. A session can be
+// DELETED until its wiki updates exist ('can_delete' from the API): once the
+// pages are written they would outlive the session that produced them.
 
 "use client";
 
@@ -12,6 +14,7 @@ import { errMessage, useAsyncData } from "@/lib/use-async";
 
 export function SessionsTab({ campaign }: { campaign: Campaign }) {
   const { token } = useAuth();
+  const isDm = campaign.my_role === "dm";
   const { data: sessions, error, loading, reload } = useAsyncData<Session[]>((t) => sessionsApi.list(t, campaign.id), [campaign.id]);
   const [form, setForm] = useState({ title: "", session_no: "" });
   const [busy, setBusy] = useState(false);
@@ -31,6 +34,30 @@ export function SessionsTab({ campaign }: { campaign: Campaign }) {
       });
       setNotice(`Session created — status ${session.status}.`);
       setForm({ title: "", session_no: "" });
+      reload();
+    } catch (err) {
+      setFormError(errMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteSession(session: Session) {
+    if (!token) return;
+    const label = session.title ?? "Untitled session";
+    if (
+      !window.confirm(
+        `Delete "${label}"?\n\nThe recording, the transcript and everything generated from this session are removed. This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setFormError(null);
+    setNotice(null);
+    try {
+      await sessionsApi.remove(token, session.id);
+      setNotice(`Session "${label}" deleted.`);
       reload();
     } catch (err) {
       setFormError(errMessage(err));
@@ -63,7 +90,12 @@ export function SessionsTab({ campaign }: { campaign: Campaign }) {
       </Card>
 
       <Card>
-        <h2 className="mb-4 text-lg font-semibold">Sessions</h2>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-lg font-semibold">Sessions</h2>
+          <p className="text-xs text-slate-500">
+            A session can be deleted until its wiki updates are generated.
+          </p>
+        </div>
         {loading ? (
           <p className="text-sm text-slate-400">Loading sessions…</p>
         ) : error ? (
@@ -73,8 +105,11 @@ export function SessionsTab({ campaign }: { campaign: Campaign }) {
         ) : (
           <div className="divide-y divide-slate-800">
             {sessions?.map((s) => (
-              <Link key={s.id} href={`/campaigns/${campaign.id}/sessions/${s.id}`} className="flex flex-wrap items-center justify-between gap-3 py-3 transition hover:bg-slate-800/40">
-                <div>
+              <div key={s.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+                <Link
+                  href={`/campaigns/${campaign.id}/sessions/${s.id}`}
+                  className="min-w-0 flex-1 rounded-lg transition hover:bg-slate-800/40"
+                >
                   <div className="text-sm font-medium text-slate-100">
                     {s.title ?? "Untitled session"}
                     {s.session_no ? <span className="ml-2 text-xs text-slate-500">#{s.session_no}</span> : null}
@@ -82,12 +117,24 @@ export function SessionsTab({ campaign }: { campaign: Campaign }) {
                   <div className="mt-0.5 text-xs text-slate-500">
                     recorded {fmtDate(s.recorded_at)} · {fmtDuration(s.duration_sec)}
                   </div>
-                </div>
+                </Link>
                 <div className="flex items-center gap-3">
                   <SessionStatusBadge status={s.status} />
-                  <span className="text-xs text-slate-600">→</span>
+                  {isDm && s.can_delete ? (
+                    <Button
+                      variant="danger"
+                      disabled={busy}
+                      onClick={() => deleteSession(s)}
+                      title="Delete this session (only possible until its wiki updates are generated)"
+                    >
+                      Delete
+                    </Button>
+                  ) : null}
+                  <Link href={`/campaigns/${campaign.id}/sessions/${s.id}`} className="text-xs text-slate-600 hover:text-slate-300">
+                    →
+                  </Link>
                 </div>
-              </Link>
+              </div>
             ))}
           </div>
         )}

@@ -13,10 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import services
 from app.broker import EventPublisher
 from app.clients.campaigns import CampaignServiceClient, MembershipUnavailable
+from app.clients.content import ContentServiceClient
 from app.core.config import ServiceSettings, get_settings
-from app.deps import get_campaign_client, get_publisher, get_storage
+from app.deps import get_campaign_client, get_content_client, get_publisher, get_storage
+from app.models import SpeakerAssignment
 from app.schemas import (
     SessionCreate,
+    SessionDeleteOut,
     SessionDetail,
     SessionOut,
     SessionUpdate,
@@ -178,6 +181,36 @@ async def update_session(
     return await services.update_session_meta(db, session_id, body.title, body.session_no)
 
 
+@router.delete("/{session_id}", response_model=SessionDeleteOut)
+async def delete_session(
+    session_id: UUID,
+    db: AsyncSession = Depends(get_session),
+    user: dict[str, Any] = Depends(current_user),
+    campaign_client: CampaignServiceClient = Depends(get_campaign_client),
+    content_client: ContentServiceClient = Depends(get_content_client),
+    storage: ObjectStorage = Depends(get_storage),
+    settings: ServiceSettings = Depends(get_settings),
+):
+    """Delete a session (DM only).
+
+    Only possible while the session has not generated its wiki updates yet:
+    once the pages and timeline entries exist, deleting the session would leave
+    them behind pointing at a session that is gone (409). The recording, the
+    generated rows (summary, jobs, proposed changes) and the session itself
+    with its uploads and speaker assignments are removed.
+    """
+    session = await services.get_session_or_404(db, session_id)
+    user_id = _user_id(user)
+    await _dm_or_403(campaign_client, session.campaign_id, user_id)
+    return await services.delete_session(
+        db,
+        session_id,
+        content_client=content_client,
+        storage=storage,
+        settings=settings,
+    )
+
+
 @router.get("/{session_id}/speakers", response_model=list[SpeakerAssignmentOut])
 async def list_speakers(
     session_id: UUID,
@@ -221,4 +254,68 @@ async def assign_speaker(
         assigned_by=user_id,
         publisher=publisher,
         enrolled_voiceprint=body.enrolled_voiceprint,
+    )
+
+
+
+async def _member_for_assignment(
+    campaign_client: CampaignServiceClient,
+    campaign_id: UUID,
+    assignment: SpeakerAssignment,
+) -> dict[str, Any] | None:
+    """The roster member an assignment belongs to, when it can be traced.
+
+    A DM naming resolves the member directly; an automatic match only carries
+    the user id, so the roster is searched for that account. Best effort: an
+    unknown member (removed from the campaign) leaves the assignment as is.
+    """
+    if assignment.member_id is not None:
+        try:
+            return await campaign_client.get_member(campaign_id, assignment.member_id)
+        except ValueError:
+            return None
+    if assignment.user_id is not None:
+        return await campaign_client.find_member_for_user(campaign_id, assignment.user_id)
+    return None
+
+
+@router.post(
+    "/{session_id}/speakers/{speaker_label}/confirm",
+    response_model=SpeakerAssignmentOut,
+)
+async def confirm_speaker(
+    session_id: UUID,
+    speaker_label: str,
+    db: AsyncSession = Depends(get_session),
+    user: dict[str, Any] = Depends(current_user),
+    campaign_client: CampaignServiceClient = Depends(get_campaign_client),
+    publisher: EventPublisher = Depends(get_publisher),
+):
+    """DM confirms a proposed (auto) speaker match (emits speakers.assigned).
+
+    Confirming is what turns a match into knowledge: the assignment becomes
+    'confirmed', the speaker-service learns the voice from it (voice samples
+    for later sessions) and generation gets the member + character names.
+    The DM can still change the name instead, with the assign endpoint.
+    """
+    session = await services.get_session_or_404(db, session_id)
+    user_id = _user_id(user)
+    await _dm_or_403(campaign_client, session.campaign_id, user_id)
+    assignment = await services.get_assignment(db, session_id, speaker_label)
+    if assignment is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No assignment for speaker {speaker_label}",
+        )
+    member = await _member_for_assignment(campaign_client, session.campaign_id, assignment)
+    member_id = UUID(member["id"]) if member else assignment.member_id
+    return await services.confirm_assignment(
+        db,
+        session_id,
+        speaker_label,
+        member_id=member_id,
+        display_name=(member or {}).get("player_name"),
+        character_name=(member or {}).get("character_name"),
+        assigned_by=user_id,
+        publisher=publisher,
     )

@@ -427,6 +427,13 @@ export const sessionsApi = {
   get: (token: string, id: string) => request<SessionDetail>(token, `/api/sessions/${id}`),
   update: (token: string, id: string, body: { title?: string | null; session_no?: number | null }) =>
     request<Session>(token, `/api/sessions/${id}`, jsonInit("PATCH", body)),
+  /** Delete a session (DM only, and only before its wiki updates exist). */
+  remove: (token: string, id: string) =>
+    request<{ session_id: string; title: string | null; deleted: boolean }>(
+      token,
+      `/api/sessions/${id}`,
+      { method: "DELETE" },
+    ),
   uploadRecording: (token: string, id: string, file: File, durationSec?: number) => {
     const fd = new FormData();
     fd.append("file", file);
@@ -440,6 +447,13 @@ export const sessionsApi = {
       token,
       `/api/sessions/${sessionId}/speakers/${encodeURIComponent(speakerLabel)}/assign`,
       jsonInit("POST", { member_id: memberId, enrolled_voiceprint: enrolledVoiceprint }),
+    ),
+  /** DM accepts the pipeline's proposed name for a label (auto -> confirmed). */
+  confirmSpeaker: (token: string, sessionId: string, speakerLabel: string) =>
+    request<SpeakerAssignment>(
+      token,
+      `/api/sessions/${sessionId}/speakers/${encodeURIComponent(speakerLabel)}/confirm`,
+      { method: "POST" },
     ),
 };
 
@@ -535,7 +549,9 @@ export interface PageAttributes {
   event_status?: "ongoing" | "resolved" | "unknown" | string;
   [key: string]: unknown;
 }
-export const PAGE_STATUSES: WikiPageStatus[] = ["draft", "pending_review", "published", "archived"];
+/** Statuses the DM can set/filter by. There is no 'pending review' state: the
+ * pipeline writes its pages only after the DM confirmed the proposed changes. */
+export const PAGE_STATUSES: WikiPageStatus[] = ["draft", "published", "archived"];
 export const VISIBILITIES: WikiVisibility[] = ["public", "dm_only", "hidden"];
 
 export const wikiApi = {
