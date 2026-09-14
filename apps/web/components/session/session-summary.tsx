@@ -12,11 +12,13 @@
 //   3. regenerate - the LLM rewrites the whole session record applying every
 //      queued change and the DM reviews the new revision,
 //
-// and only the CONFIRMED summary is turned into wiki pages and timeline
-// events. Timeline entries and events are click-to-seek into the recording
-// player, mirroring the transcript viewer. Entity names that resolve to
-// campaign wiki pages (created once the summary is confirmed) render as
-// clickable links.
+// and only the CONFIRMED summary is turned into wiki content: first as the
+// PROPOSED change set reviewed in the card below (pages, updates, timeline
+// entries), which the DM confirms before anything is written. Timeline
+// entries and events are click-to-seek into the recording player, mirroring
+// the transcript viewer. Entity names that resolve to campaign wiki pages
+// (they exist once the proposed changes are confirmed) render as clickable
+// links.
 
 "use client";
 
@@ -144,7 +146,7 @@ export function SessionSummaryCard({
   canReview?: boolean;
   /** Rebuild the summary applying the collected review requests. */
   onRegenerateSummary?: (edits: SummaryEdit[], lines: string[]) => void;
-  /** Accept the summary: the wiki pages and the events are created from it. */
+  /** Accept the summary: the proposed wiki changes are computed from it. */
   onConfirmSummary?: () => void;
   /** Which review action is in flight (disables the buttons). */
   reviewBusy?: "regenerate" | "confirm" | null;
@@ -303,7 +305,7 @@ export function SessionSummaryCard({
               <Badge tone="amber">draft · awaiting review</Badge>
             </span>
           ) : (
-            <span title="Confirmed: the wiki pages, the event pages and the timeline entries were created from this text.">
+            <span title="Confirmed: the wiki content of this session is built from this text — proposed below, and written to the wiki once you confirm that set.">
               <Badge tone="green">confirmed</Badge>
             </span>
           )}
@@ -326,7 +328,7 @@ export function SessionSummaryCard({
         <p className="mb-3 text-xs text-amber-300">
           {sessionStatus === "summarizing"
             ? "Rebuilding the summary…"
-            : "Summary confirmed — creating the wiki pages and the timeline events…"}
+            : "Summary confirmed — computing the proposed wiki changes you review next…"}
         </p>
       ) : null}
 
@@ -584,11 +586,11 @@ export function SessionSummaryCard({
           <Button
             variant="danger"
             disabled={Boolean(reviewBusy) || pipelineRunning}
-            title="Create the wiki pages and the timeline events from this summary"
+            title="Turn this summary into the proposed wiki changes you review before anything is written"
             onClick={() => {
               if (
                 !window.confirm(
-                  "Confirm this summary?\n\nThe wiki pages and the timeline events will be created from it. You can still regenerate the summary afterwards, but the pages will already exist.",
+                  "Confirm this summary?\n\nThe proposed wiki changes are computed from it — nothing is written to the wiki until you review that set and confirm it.",
                 )
               ) {
                 return;
@@ -596,7 +598,7 @@ export function SessionSummaryCard({
               onConfirmSummary?.();
             }}
           >
-            {reviewBusy === "confirm" ? "Creating pages…" : "Confirm summary & create wiki pages"}
+            {reviewBusy === "confirm" ? "Proposing changes…" : "Confirm summary & propose the wiki changes"}
           </Button>
         </div>
       ) : null}

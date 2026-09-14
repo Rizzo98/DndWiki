@@ -243,12 +243,32 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
     reloadPages();
   }, [session?.status, reloadPages]);
 
+  // The proposed wiki changes are computed while the session runs
+  // 'generating_wiki', and they are ready exactly when it parks on
+  // 'wiki_plan_ready'. That is a RESTING status — the pipeline poll above is
+  // off there — and a fast generation can land before its next 10 s tick, so
+  // the panel is refreshed on the status change itself: the proposed changes
+  // show up as soon as they exist, without a manual page reload.
+  useEffect(() => {
+    if (!session?.status) return;
+    reloadPlan();
+  }, [session?.status, reloadPlan]);
+
   // A summary review action moves the session through summarizing /
   // generating_wiki and back. While it runs, the page polls faster than the
-  // 10 s pipeline interval so the new revision (or the created pages) shows up
-  // promptly; the action ends once the queue picked the work up AND the
+  // 10 s pipeline interval so the new revision (or the proposed changes) shows
+  // up promptly; the action ends once the queue picked the work up AND the
   // session settled on its next resting state again.
-  const settleTarget = reviewBusy === "regenerate" ? "summary_ready" : reviewBusy === "confirm" ? "content_ready" : null;
+  //
+  // The resting state of a CONFIRMED summary is 'wiki_plan_ready': the summary
+  // is turned into the PROPOSED change set and nothing is written to the wiki
+  // yet, so that — not 'content_ready' — is what the wait below ends on.
+  const settleTarget =
+    reviewBusy === "regenerate"
+      ? "summary_ready"
+      : reviewBusy === "confirm"
+        ? "wiki_plan_ready"
+        : null;
   const sawWorking = useRef(false);
   useEffect(() => {
     if (!reviewBusy || !settleTarget) {
@@ -259,7 +279,12 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
     const t = window.setInterval(() => {
       reload();
       reloadSummary();
-      if (settleTarget === "content_ready") reloadPages();
+      // The confirmed summary becomes the proposed change set: ask for it on
+      // every tick so the panel below is filled the moment the session parks
+      // on 'wiki_plan_ready' — the status this wait ends on. No page is
+      // written yet (that happens when the DM confirms the change set), so
+      // the page index has nothing new to pick up here.
+      if (settleTarget === "wiki_plan_ready") reloadPlan();
       const status = session?.status;
       if (status === "summarizing" || status === "generating_wiki") sawWorking.current = true;
       const waited = Date.now() - started;
@@ -275,7 +300,7 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
       }
     }, 2_500);
     return () => window.clearInterval(t);
-  }, [reviewBusy, settleTarget, session?.status, reload, reloadSummary, reloadPages, reloadSpeakers]);
+  }, [reviewBusy, settleTarget, session?.status, reload, reloadSummary, reloadPlan, reloadSpeakers]);
 
   async function regenerateSummary(edits: SummaryEdit[], lines: string[]) {
     if (!token) return;
@@ -578,6 +603,7 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
           plan={plan}
           campaignId={params.id}
           linkIndex={linkIndex}
+          sessionStatus={session.status}
           canReview={canReviewSummary}
           busy={planBusy}
           error={planError}

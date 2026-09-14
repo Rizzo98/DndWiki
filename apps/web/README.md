@@ -97,6 +97,11 @@ assign the `player` and/or `dm` realm role, then sign in.
 ## Notes
 
 - Sessions poll `GET /api/sessions/{id}` every 10 s while the pipeline is
-  active (uploaded → … → published/failed).
+  active (uploaded → … → published/failed). The review layers add their own
+  wake-ups on top: a review action (confirm summary / confirm changes) is
+  followed by a 2.5 s poll until the session settles on its next resting
+  status, and the summary, the proposed changes and the page index are
+  re-fetched on every status change — so `summary_ready` and
+  `wiki_plan_ready` fill their panels without a manual reload.
 - `content_json` of wiki pages is rendered structurally (summary, aliases,
   facts, participants, timeline); arbitrary JSON falls back to a pretty print.

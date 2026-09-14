@@ -391,6 +391,7 @@ export function SessionPlanCard({
   plan,
   campaignId,
   linkIndex,
+  sessionStatus,
   canReview,
   busy,
   error,
@@ -400,6 +401,8 @@ export function SessionPlanCard({
   plan: SessionPlan | null;
   campaignId: string;
   linkIndex?: LinkIndex | null;
+  /** Session status: 'generating_wiki' is the moment the set is computed. */
+  sessionStatus?: string;
   /** DM (or dev): may edit and confirm the proposed changes. */
   canReview: boolean;
   /** Which action is in flight. */
@@ -524,13 +527,21 @@ export function SessionPlanCard({
   }
 
   if (!plan) {
+    // The set is computed while the session runs 'generating_wiki' and is
+    // ready when it parks on 'wiki_plan_ready': the panel says which of the
+    // two it is looking at instead of showing an empty review card.
+    const generating = sessionStatus === "generating_wiki";
     return (
       <Card>
-        <h2 className="text-lg font-semibold">Proposed wiki changes</h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-lg font-semibold">Proposed wiki changes</h2>
+          {generating ? <Badge tone="amber">computing…</Badge> : null}
+        </div>
         <div className="mt-4">
           <EmptyState>
-            Once you confirm the session summary, the pages and events it implies are proposed
-            here — nothing is written to the wiki before you confirm them.
+            {generating
+              ? "The confirmed summary is being turned into the pages and timeline entries it implies — they appear here as soon as they are ready. Nothing is written to the wiki before you confirm them."
+              : "Once you confirm the session summary, the pages and events it implies are proposed here — nothing is written to the wiki before you confirm them."}
           </EmptyState>
         </div>
       </Card>
