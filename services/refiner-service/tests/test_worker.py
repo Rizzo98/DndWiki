@@ -90,7 +90,7 @@ class FakeLLM:
 
     async def refine_window(
         self, turns, *, context_blocks, fixed_count, window_index, total_windows,
-        cast_lines=None, member_count=None
+        cast_lines=None, member_count=None, include_speakers=True
     ):
         self.calls.append(
             (
@@ -101,8 +101,13 @@ class FakeLLM:
                 total_windows,
                 list(cast_lines or []),
                 member_count,
+                include_speakers,
             )
         )
+        if not include_speakers:
+            # A text-only response has no speaker field; the labels must survive
+            # the whole pass untouched.
+            return {index: ("", text) for index, (_, text) in self.decisions.items()}
         return dict(self.decisions)
 
 
@@ -362,3 +367,76 @@ async def test_refine_windowing_respects_fixed_overlap(tmp_path):
     ]
     # the fixed turn (index 1) kept the decision from window 1
     assert refined.payload["segments"][1]["text"] == "second fixed"
+
+
+# ------------------------------------------------- text-only refinement mode
+# REFINER_SPEAKERS=false: the LLM fixes the text and leaves every speaker label
+# exactly as the diarizer produced it. The attribution engine consumes those
+# labels as measurements (docs/attribution-model.md S6.5), so a label the LLM
+# guessed would be a measurement thrown away.
+
+
+async def test_text_only_mode_preserves_the_diarizer_labels(tmp_path):
+    s = settings(refiner_speakers=False)
+    storage = FakeStorage(transcript={"segments": transcript_segments()})
+    llm = FakeLLM()
+    publisher = FakePublisher()
+
+    await process_job(completed_event(), s, storage, FakeClient(), llm, publisher)
+
+    refined = next(
+        obj for bucket, key, obj in storage.writes if key.endswith("diarization.json")
+    )
+    # 'Speaker A'/'Speaker B' would have been canonicalized to SPEAKER_00/01 in
+    # speaker mode; text-only mode must hand them through untouched.
+    assert [seg["speaker"] for seg in refined["segments"]] == ["Speaker A", "Speaker B"]
+    assert [seg["text"] for seg in refined["segments"]] == [
+        "we must find the relic",
+        "agreed let us go",
+    ]
+
+
+async def test_text_only_mode_tells_the_model_nothing_about_speakers(tmp_path):
+    s = settings(refiner_speakers=False)
+    llm = FakeLLM()
+
+    await process_job(
+        completed_event(), s, FakeStorage(), FakeClient(), llm, FakePublisher()
+    )
+
+    views, context_blocks, _, _, _, _, _, include_speakers = llm.calls[0]
+    assert include_speakers is False
+    assert all("speaker" not in view for view in views)
+    assert context_blocks == []  # the label rolodex is speaker mode only
+
+
+async def test_text_only_mode_marks_the_event_and_the_artifact(tmp_path):
+    s = settings(refiner_speakers=False)
+    storage = FakeStorage(transcript={"segments": transcript_segments()})
+    publisher = FakePublisher()
+
+    await process_job(
+        completed_event(), s, storage, FakeClient(), FakeLLM(), publisher
+    )
+
+    event = next(e for e in publisher.events if e.type == "transcription.refined")
+    assert event.payload["speakers_refined"] is False
+    assert event.payload["refiner"]["speakers_refined"] is False
+    assert event.payload["refiner"]["prompt_version"] == "v4"
+
+
+async def test_speaker_mode_still_canonicalizes_and_marks_itself(tmp_path):
+    s = settings()  # refiner_speakers defaults to true
+    storage = FakeStorage(transcript={"segments": transcript_segments()})
+    publisher = FakePublisher()
+
+    await process_job(
+        completed_event(), s, storage, FakeClient(), FakeLLM(), publisher
+    )
+
+    refined = next(
+        obj for bucket, key, obj in storage.writes if key.endswith("diarization.json")
+    )
+    assert [seg["speaker"] for seg in refined["segments"]] == ["SPEAKER_01", "SPEAKER_00"]
+    event = next(e for e in publisher.events if e.type == "transcription.refined")
+    assert event.payload["speakers_refined"] is True

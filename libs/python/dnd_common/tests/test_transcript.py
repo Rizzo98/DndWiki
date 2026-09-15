@@ -56,3 +56,43 @@ def test_turn_is_dataclass():
 
 def test_gap_tolerance_constant_positive():
     assert GAP_TOLERANCE_SEC > 0
+
+
+# --- declared chunk boundaries (the None == None hazard) --------------------
+
+
+def test_turns_merge_across_absent_chunk_keys_when_nothing_is_declared():
+    # Segments assembled from a single-pass diarizer carry no chunk key at all;
+    # grouping the whole file is correct there.
+    turns = speaker_turns(
+        [
+            {"start": 0.0, "end": 2.0, "speaker": "Speaker A"},
+            {"start": 2.5, "end": 4.0, "speaker": "Speaker A"},
+        ]
+    )
+    assert len(turns) == 1
+
+
+def test_turns_break_on_declared_chunk_boundaries_without_chunk_keys():
+    # The caller knows the segments came from two per-chunk responses but the
+    # segments carry no chunk key: without the declaration cur.chunk == chunk
+    # compares None == None and the two people merge into one turn.
+    segments = [
+        {"start": 0.0, "end": 2.0, "speaker": "Speaker A"},
+        {"start": 2.0, "end": 4.0, "speaker": "Speaker A"},
+        {"start": 4.0, "end": 6.0, "speaker": "Speaker A"},
+    ]
+    merged = speaker_turns(segments)
+    declared = speaker_turns(segments, chunk_boundaries=[0, 2])
+    assert len(merged) == 1
+    assert len(declared) == 2
+    assert declared[0].indices == [0, 1]
+    assert declared[1].indices == [2]
+
+
+def test_declared_boundary_at_index_zero_is_ignored():
+    turns = speaker_turns(
+        [seg(0.0, 2.0), seg(2.5, 4.0)], chunk_boundaries=[0]
+    )
+    assert len(turns) == 1
+

@@ -253,7 +253,6 @@ async def assign_speaker(
         character_name=member.get("character_name"),
         assigned_by=user_id,
         publisher=publisher,
-        enrolled_voiceprint=body.enrolled_voiceprint,
     )
 
 

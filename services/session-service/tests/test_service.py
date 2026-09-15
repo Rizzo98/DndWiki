@@ -250,7 +250,7 @@ async def test_upsert_and_assign_speaker(session_factory, fake_publisher):
             db, session.id, "SPEAKER_01",
             member_id=member_b, user_id=user_b, display_name="Bob",
             character_name="Bobblin the Brave",
-            assigned_by=dm, publisher=fake_publisher, enrolled_voiceprint=True,
+            assigned_by=dm, publisher=fake_publisher,
         )
         assert assigned.status == "confirmed"
         assert assigned.member_id == member_b
@@ -265,7 +265,6 @@ async def test_upsert_and_assign_speaker(session_factory, fake_publisher):
     assert event.payload["display_name"] == "Bob"
     assert event.payload["character_name"] == "Bobblin the Brave"
     assert event.payload["assigned_by"] == str(dm)
-    assert event.payload["enrolled_voiceprint"] is True
     # audio_uri lets speaker-service slice the voice out of the recording
     assert event.payload["audio_uri"] is None  # session has no recording yet
 

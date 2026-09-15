@@ -40,7 +40,13 @@ def _numeric_confidence(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def turn_view(turns: list[Turn], segments: list[dict[str, Any]], index: int) -> dict[str, Any]:
+def turn_view(
+    turns: list[Turn],
+    segments: list[dict[str, Any]],
+    index: int,
+    *,
+    include_speakers: bool = True,
+) -> dict[str, Any]:
     """The LLM-facing view of one turn (index, time span, chunk, raw label, text).
 
     The source segments may carry an optional per-sentence ASR probability
@@ -59,9 +65,12 @@ def turn_view(turns: list[Turn], segments: list[dict[str, Any]], index: int) -> 
         "start": round(turn.start, 3),
         "end": round(turn.end, 3),
         "chunk": turn.chunk,
-        "speaker": turn.label,
         "text": turn_text(segments, turn),
     }
+    if include_speakers:
+        # Text-only mode never shows the model a label: what it cannot see, it
+        # cannot rewrite (docs/attribution-model.md S6.5).
+        view["speaker"] = turn.label
     confidences = [
         float(segments[i].get("confidence"))
         for i in turn.indices
@@ -149,13 +158,37 @@ def build_context_blocks(
     return blocks
 
 
-def parse_decisions(raw: Any) -> dict[int, tuple[str, str]]:
+def keep_labels(
+    turns: list[Turn], decisions: dict[int, tuple[str, str]]
+) -> dict[int, tuple[str, str]]:
+    """Fill text-only decisions with the turn's ORIGINAL label.
+
+    In text-only mode the model returns no speaker at all, so the refined
+    segments must carry the diarizer's label through untouched - not a
+    first-appearance renumbering. Re-canonicalizing here would quietly relabel
+    the diarizer's output, which is exactly what the engine must not see.
+    """
+    out: dict[int, tuple[str, str]] = {}
+    for index, turn in enumerate(turns):
+        _, text = decisions.get(index, ("", ""))
+        # An empty text is meaningful: apply_refined keeps the original wording,
+        # so a turn the model dropped is left exactly as transcribed.
+        out[index] = (turn.label, (text or "").strip())
+    return out
+
+
+def parse_decisions(
+    raw: Any, *, include_speakers: bool = True
+) -> dict[int, tuple[str, str]]:
     """Normalize one LLM response into turn index -> (speaker, text).
 
     Lenient on count: turns missing from the response simply have no decision
     (the caller falls back to their original label/text) and unknown indexes
     are ignored. Raises RefineError when the response is structurally
     unusable (not an object with a 'turns' list).
+
+    In text-only mode 'speaker' is absent from the schema; the label is left
+    empty here and filled from the turn by keep_labels().
     """
     if not isinstance(raw, dict) or not isinstance(raw.get("turns"), list):
         raise RefineError("LLM output must be a JSON object with a 'turns' list")
@@ -167,7 +200,7 @@ def parse_decisions(raw: Any) -> dict[int, tuple[str, str]]:
             index = int(item.get("index"))
         except (TypeError, ValueError):
             continue
-        speaker = str(item.get("speaker") or "").strip()
+        speaker = str(item.get("speaker") or "").strip() if include_speakers else ""
         text = str(item.get("text") or "").strip()
         decisions[index] = (speaker, text)
     return decisions

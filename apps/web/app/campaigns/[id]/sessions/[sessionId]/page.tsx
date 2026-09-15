@@ -7,8 +7,10 @@
 
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Badge, Button, Card, EmptyState, Field, FileInput, Select, SessionStatusBadge, TextInput, fmtDate, fmtDuration, fmtPercent } from "@/components/ui";
+import { Alert, Badge, Button, Card, Collapsible, EmptyState, Field, FileInput, Select, SessionStatusBadge, TextInput, fmtDate, fmtDuration, fmtPercent } from "@/components/ui";
 import { AudioPlayer } from "@/components/session/audio-player";
+import { SessionReviewCard } from "@/components/session/review";
+import { VoicesPanel } from "@/components/session/voices-panel";
 import { SessionPlanCard } from "@/components/session/session-plan";
 import { SessionSummaryCard } from "@/components/session/session-summary";
 import { LOW_SPEAKER_CONFIDENCE, TranscriptViewer, speakerConfidenceByLabel } from "@/components/session/transcript";
@@ -27,6 +29,9 @@ const ACTIVE_STATUSES = new Set([
   "identifying_speakers",
   "speakers_identified",
   "speaker_pending",
+  // the attribution stage is work too: keep polling while the engine runs
+  "attributing",
+  "attribution_ready",
   "summarizing",
   "generating_wiki",
   "applying_wiki",
@@ -48,6 +53,13 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
   const { data: session, error, loading, reload } = useAsyncData<SessionDetail>((t) => sessionsApi.get(t, params.sessionId), [params.sessionId]);
   const { data: speakers, reload: reloadSpeakers } = useAsyncData<SpeakerAssignment[]>((t) => sessionsApi.speakers(t, params.sessionId), [params.sessionId]);
   const { data: members } = useAsyncData<CampaignMember[]>((t) => campaignsApi.members(t, params.id), [params.id]);
+  // Which interface is this? With the engine on the review card and "Voices we
+  // found" are the controls; with it off the page is exactly what it always was.
+  const { data: attribution } = useAsyncData<{ enabled: boolean }>(
+    (t) => sessionsApi.attributionConfig(t),
+    [],
+  );
+  const attributionOn = attribution?.enabled === true;
   const { data: summary, reload: reloadSummary } = useAsyncData<SessionSummary | null>(
     async (t) => {
       try {
@@ -559,8 +571,17 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
   // so the summary (and the wiki after it) only starts from settled speakers.
   const toConfirm = (speakers ?? []).filter((s) => s.status === "auto").length;
   const toName = (speakers ?? []).filter((s) => !s.member_id && !s.user_id).length;
+  // The legacy panel is NOT offered while the engine is on.
+  //
+  // It is not merely redundant: it asserts SPEAKER_00 = a person, which is the
+  // exact claim the redesign exists because of (a label can be two people, and
+  // one person can be two labels). It is also inert - confirming or naming a
+  // label writes speaker_assignments, and the wiki gate reads the attributed
+  // transcript, never that table - so the DM would be doing work that changes
+  // nothing. "Voices we found" is the control that replaces it, and it speaks
+  // in the engine's own units.
   const showSpeakersCard =
-    (speakers?.length ?? 0) > 0 && (isDm || !allSpeakersAssigned);
+    !attributionOn && (speakers?.length ?? 0) > 0 && (isDm || !allSpeakersAssigned);
 
   // The summary review is the DM's job (developer accounts keep the escape
   // hatch); players read the summary and the links it produces.
@@ -584,6 +605,24 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
 
       {notice ? <Alert tone="success">{notice}</Alert> : null}
       {formError ? <Alert tone="error">{formError}</Alert> : null}
+
+      {/*
+        The session page now LEADS with what needs the DM (docs/attribution-ux.md
+        S2). The review is the first thing after the header, the summary follows,
+        and the plumbing - the raw transcript and the voice/speaker machinery -
+        is collapsed at the bottom. This card renders nothing at all when the
+        attribution engine is off, so the page is unchanged with the flag down.
+      */}
+      <SessionReviewCard
+        token={token}
+        sessionId={params.sessionId}
+        sessionStatus={session.status}
+        onSeek={seek}
+        onFinished={() => {
+          reload();
+          reloadSummary();
+        }}
+      />
 
       <SessionSummaryCard
         summary={summary}
@@ -682,8 +721,22 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
         </Card>
       </div>
 
-      <Card>
-        <h2 className="mb-4 text-lg font-semibold">Transcript</h2>
+      {/*
+        The raw transcript is an audit artifact, not the main UX. It stays fully
+        available, one click down, and it is where a DM goes to check a moment -
+        not where the page starts.
+      */}
+      <Collapsible
+        tone="subtle"
+        summary={
+          <span>
+            Raw transcript
+            <span className="ml-2 font-normal text-slate-500">
+              the diarized, text-corrected lines everything else is derived from
+            </span>
+          </span>
+        }
+      >
         <TranscriptViewer
           transcriptUrl={TRANSCRIPT_PENDING_STATUSES.has(session.status) ? null : session.transcript_url}
           pendingHint={TRANSCRIPT_PENDING_STATUSES.has(session.status)
@@ -692,11 +745,35 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
           speakerNames={speakerNames}
           onSeek={seek}
         />
-      </Card>
+      </Collapsible>
 
-      {showSpeakersCard ? (
-        <Card>
-          <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+      {/*
+        The old speaker panel, demoted. Naming labels by hand is the ESCAPE
+        HATCH, not the required path: the review above is how a session gets its
+        speakers now, and this section is what a DM reaches for when the engine
+        got something wrong.
+      */}
+      <Collapsible
+        tone="subtle"
+        summary={
+          <span>
+            Voices we found
+            <span className="ml-2 font-normal text-slate-500">
+              the anonymous voice groups behind the transcript, and how to correct them
+            </span>
+          </span>
+        }
+      >
+        <div className="space-y-6">
+          <VoicesPanel
+            token={token}
+            sessionId={params.sessionId}
+            members={members ?? []}
+            sessionStatus={session.status}
+          />
+          {showSpeakersCard ? (
+            <div>
+              <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <h2 className="text-lg font-semibold">Speakers</h2>
               {isDm && toConfirm + toName > 0 ? (
@@ -812,8 +889,10 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
               })}
             </div>
           )}
-        </Card>
-      ) : null}
+            </div>
+          ) : null}
+        </div>
+      </Collapsible>
     </div>
     </AuthGate>
   );

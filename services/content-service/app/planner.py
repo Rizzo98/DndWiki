@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.attribution import strip_raw_labels_from_drafts
 from app.merger import build_event_drafts, build_page_drafts
 
 
@@ -36,6 +37,12 @@ def _lookup_page(existing_pages: list[dict[str, Any]], page_id: str) -> dict[str
         if str(page.get("id") or "") == page_id:
             return page
     return None
+
+
+def _is_raw_label(name: str) -> bool:
+    from app.attribution import is_raw_label
+
+    return is_raw_label(name)
 
 
 def build_change_set(
@@ -63,6 +70,20 @@ def build_change_set(
     event_drafts, event_updates, timeline_events, event_duplicates = build_event_drafts(
         merged, campaign_id, session_id, existing_pages=existing_pages
     )
+    # Belt and braces at the boundary where payloads become pages: no change may
+    # carry a raw diarization label as a title or an alias, whatever the merger
+    # did upstream. A page named 'SPEAKER_00' is the visible symptom of the old
+    # design and the last place it could still appear.
+    drafts = strip_raw_labels_from_drafts(drafts)
+    event_drafts = strip_raw_labels_from_drafts(event_drafts)
+    timeline_events = [
+        {
+            **entry,
+            "title": entry.get("title"),
+        }
+        for entry in timeline_events
+        if not _is_raw_label(str(entry.get("title") or ""))
+    ]
 
     # Every event (new or updated) backs a timeline entry; index them so the
     # event changes can carry theirs.

@@ -44,6 +44,55 @@ def build_view_lines(segments: list[dict[str, Any]], speaker_names: dict[str, st
     return lines
 
 
+#: How an uncertain or unresolved line is rendered into the view (S14.2).
+VIEW_UNATTRIBUTED = "(unattributed)"
+
+
+def build_view_lines_from_artifact(artifact: dict[str, Any]) -> list[str]:
+    """View lines from the ATTRIBUTED transcript, not from a label map.
+
+    Each line carries the utterance reference the extraction must echo back in
+    its source_refs, plus the certainty IN THE TEXT ITSELF:
+
+        [u_00412 00:41:15] Aramil: I cast fireball on the three goblins
+        [u_00413 00:41:19] Aramil?: wait, do I still get my attack?
+        [u_00414 00:41:24] (unattributed): ok so I move up to the door
+
+    The '?' is not decoration: the prompt rule that goes with it is "facts stated
+    BY an uncertain speaker may be recorded, but must not be attributed to that
+    character", and the '(unattributed)' rule is "describe this at party level or
+    omit it". That single change is what makes every fact on every page traceable
+    back to a timestamp and an audio span.
+    """
+    lines: list[str] = []
+    for utterance in artifact.get("utterances") or []:
+        text = (utterance.get("text") or "").strip()
+        if not text:
+            continue
+        ref = str(utterance.get("id") or "")
+        stamp = format_timestamp(float(utterance.get("start") or 0.0))
+        status = str(utterance.get("status") or "unresolved")
+        speaker = utterance.get("speaker") or {}
+        name = (speaker.get("character_name") or speaker.get("label") or "").strip()
+        if status == "unresolved" or not name:
+            head = VIEW_UNATTRIBUTED
+        elif status == "auto_low":
+            head = f"{name}?"
+        else:
+            head = name
+        lines.append(f"[{ref} {stamp}] {head}: {text}")
+    return lines
+
+
+def chunk_artifact(
+    artifact: dict[str, Any], *, max_tokens: int, overlap: float
+) -> list[list[str]]:
+    """Chunk the attributed view (the content pass's input after the redesign)."""
+    return chunk_lines(
+        build_view_lines_from_artifact(artifact), max_tokens, overlap
+    )
+
+
 def chunk_lines(
     lines: list[str],
     max_tokens: int,

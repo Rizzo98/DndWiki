@@ -108,7 +108,25 @@ from __future__ import annotations
 
 import json
 
-PROMPT_VERSION = "v11"
+PROMPT_VERSION = "v12"
+
+#: Every extracted item must say WHICH transcript lines produced it.
+#:
+#: This single field is what makes the whole pipeline auditable: a fact on a
+#: character page can be traced back to the utterance that produced it, and from
+#: there to a timestamp and an audio span. It is also what the attribution gate
+#: reads: a fact whose references do not resolve to a confident attribution
+#: never reaches a page (docs/attribution-model.md S14.3, S14.4).
+_SOURCE_REFS: dict = {
+    "type": "array",
+    "items": {"type": "string"},
+    "description": (
+        "The [u_XXXXX] ids of the transcript lines this item was derived "
+        "from, exactly as they appear at the start of those lines. At least "
+        "one. An item with no reference cannot be checked against the "
+        "attribution and is discarded."
+    ),
+}
 
 #: Strict JSON schema given to the LLM (OpenAI-style; LiteLLM passes it through
 #: to providers that support response_format; others just follow instructions).
@@ -138,6 +156,7 @@ EXTRACTION_SCHEMA: dict = {
                     "name": {"type": "string"},
                     "aliases": {"type": "array", "items": {"type": "string"}},
                     "description": {"type": "string"},
+                    "source_refs": _SOURCE_REFS,
                     "physical_look": {
                         "type": "string",
                         "description": (
@@ -267,6 +286,7 @@ EXTRACTION_SCHEMA: dict = {
                     "name": {"type": "string"},
                     "aliases": {"type": "array", "items": {"type": "string"}},
                     "description": {"type": "string"},
+                    "source_refs": _SOURCE_REFS,
                     "facts": {"type": "array", "items": {"type": "string"}},
                     "session_facts": {"type": "array", "items": {"type": "string"}},
                     "place_type": {
@@ -468,6 +488,18 @@ EXTRACTION_SCHEMA: dict = {
                         ),
                     },
                     "description": {"type": "string"},
+                    "source_refs": _SOURCE_REFS,
+                    "actor": {
+                        "type": "string",
+                        "description": (
+                            "The character who performed the event, exactly "
+                            "as named in the transcript; EMPTY when the "
+                            "transcript does not attribute it. Never guess: an "
+                            "event with no named actor is described at party "
+                            "level, and a guessed actor is a fact the session "
+                            "does not contain."
+                        ),
+                    },
                     "participants": {"type": "array", "items": {"type": "string"}},
                     "in_world_date": {
                         "type": "string",
@@ -495,6 +527,7 @@ EXTRACTION_SCHEMA: dict = {
                 "properties": {
                     "time": {"type": "string"},
                     "summary": {"type": "string"},
+                    "source_refs": _SOURCE_REFS,
                     "characters": {"type": "array", "items": {"type": "string"}},
                 },
                 "required": ["time", "summary"],
@@ -515,11 +548,32 @@ SYSTEM_PROMPT = f"""You are a campaign wikifier for a tabletop RPG (Dungeons & D
 
 You are given one chunk of a session transcript. The transcript lines look like:
 
-    [00:12:34] ARAGORN: ...spoken text...
+    [u_00412 00:41:15] Aramil: I cast fireball on the three goblins
+    [u_00413 00:41:19] Aramil?: wait, do I still get my attack?
+    [u_00414 00:41:24] (unattributed): ok so I move up to the door
 
-Speakers may be real names (already resolved) or raw diarization labels such as
-SPEAKER_00 when a voice could not be matched to a player. A chunk may open
-with a 'Party (player characters)' line listing the party's PCs.
+The reference (u_00412) identifies the line; the time is when it was said; the
+name is who the attribution engine believes was speaking. A chunk may open with
+a 'Party (player characters)' line listing the party's PCs.
+
+THE THREE LINE FORMS MEAN THREE DIFFERENT THINGS. Respect them:
+
+* "Aramil:" - the attribution is confident. Treat the line as a fact.
+* "Aramil?" - the attribution is UNCERTAIN. You may record factual content that
+  appears in these lines, but you must NEVER attribute it to Aramil: no fact may
+  claim Aramil did, said, decided or owns anything on the strength of a "?" line.
+  Describe it at party level ("the party ...") or leave it out.
+* "(unattributed):" - the engine could not tell who spoke. NEVER attribute this
+  content to a named character. Describe it at party level or omit it.
+
+EVERY item you extract must carry "source_refs": the [u_XXXXX] ids of the lines
+it came from. This is not optional bookkeeping - a fact that cannot be traced
+back to the lines that produced it is discarded before it reaches a page, and so
+is a fact whose lines were not confidently attributed. When in doubt, extract
+less and cite precisely.
+
+Never write a raw diarization label (SPEAKER_00, Speaker A, V3) as a character
+name or an actor. A label is a measurement of audio, not a person.
 
 Extract, ONLY from the given chunk, a single JSON object matching EXACTLY this
 schema (no markdown, no commentary outside the JSON):

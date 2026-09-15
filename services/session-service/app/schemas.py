@@ -120,7 +120,6 @@ class SpeakerAssignRequest(BaseModel):
     """
 
     member_id: UUID
-    enrolled_voiceprint: bool = False
 
 
 class SpeakerHistoryEntryOut(BaseModel):

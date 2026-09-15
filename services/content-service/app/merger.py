@@ -42,6 +42,8 @@ import re
 from difflib import SequenceMatcher
 from typing import Any
 
+from app.attribution import is_raw_label
+
 #: Status of the payloads built here. They are PROPOSALS, not pages: the
 #: planner turns them into the change set the DM reviews, and only the
 #: confirmed set is written (published) by wiki-service.
@@ -185,7 +187,14 @@ def is_generic_name(name: str, kind: str) -> bool:
     Only WHOLE-generic names are rejected ("Citta", "the city", "la citta",
     "Strada Maestra"), so legitimate proper names that merely contain such
     words survive ("Old Town", "Citta di Fatumastra").
+
+    A DIARIZATION LABEL is rejected outright. is_generic_name("SPEAKER_00",
+    "character") used to be False, so nothing stopped the model from emitting one
+    and the merger from drafting a character page for it - the single most
+    visible symptom of the old design (docs/attribution-model.md S13).
     """
+    if is_raw_label(name):
+        return True
     normalized = _normalize(name)
     if kind == "location" and normalized in _GENERIC_LOCATION_PHRASES:
         return True

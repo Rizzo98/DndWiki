@@ -3,12 +3,22 @@
 import pytest
 from dnd_common.transcript import Turn, speaker_turns
 
+from app.prompts import (
+    PROMPT_VERSION,
+    REFINE_SCHEMA,
+    TEXT_ONLY_SCHEMA,
+    TEXT_ONLY_SYSTEM_PROMPT,
+    build_schema,
+    build_window_message,
+    system_prompt,
+)
 from app.refine import (
     RefineError,
     apply_refined,
     build_cast_block,
     build_context_blocks,
     canonicalize,
+    keep_labels,
     parse_decisions,
     rewrite_transcript,
     split_text,
@@ -331,3 +341,130 @@ def test_rewrite_transcript_leaves_unmatched_spans():
     transcript = {"segments": [{"start": 9.0, "end": 10.0, "speaker": "X", "text": "t"}]}
     out = rewrite_transcript(transcript, [])
     assert out["segments"] == [{"start": 9.0, "end": 10.0, "speaker": "X", "text": "t"}]
+
+
+# --- text-only mode (REFINER_SPEAKERS=false) --------------------------------
+
+
+def turns_of(segments):
+    return speaker_turns(segments)
+
+
+def test_prompt_version_is_declared_once():
+    assert PROMPT_VERSION == "v4"
+
+
+def test_text_only_schema_has_no_speaker_field():
+    item = TEXT_ONLY_SCHEMA["properties"]["turns"]["items"]
+    assert "speaker" not in item["properties"]
+    assert item["required"] == ["index", "text"]
+    speaker_item = REFINE_SCHEMA["properties"]["turns"]["items"]
+    assert speaker_item["properties"]["speaker"] == {"type": "string"}
+    assert "speaker" in speaker_item["required"]
+
+
+def test_build_schema_modes_share_the_index_contract():
+    for schema in (REFINE_SCHEMA, TEXT_ONLY_SCHEMA):
+        item = schema["properties"]["turns"]["items"]
+        assert item["properties"]["index"] == {"type": "integer"}
+        assert item["properties"]["text"] == {"type": "string"}
+        assert "index" in item["required"]
+    assert build_schema(include_speakers=False) == TEXT_ONLY_SCHEMA
+
+
+def test_system_prompt_selects_the_mode():
+    assert system_prompt(include_speakers=True) != TEXT_ONLY_SYSTEM_PROMPT
+    assert system_prompt(include_speakers=False) == TEXT_ONLY_SYSTEM_PROMPT
+    # the text-only prompt must forbid the one thing the engine depends on
+    assert "DO NOT change, add or remove speaker information" in TEXT_ONLY_SYSTEM_PROMPT
+    assert "{schema}" in TEXT_ONLY_SYSTEM_PROMPT
+
+
+def test_turn_view_hides_the_label_in_text_only_mode():
+    segments = [seg(0.0, 4.0)]
+    turns = turns_of(segments)
+    assert turn_view(turns, segments, 0)["speaker"] == "SPEAKER_00"
+    assert "speaker" not in turn_view(turns, segments, 0, include_speakers=False)
+    # everything else survives: the model still needs time and text
+    hidden = turn_view(turns, segments, 0, include_speakers=False)
+    assert hidden["index"] == 0 and hidden["text"] == "hello world"
+
+
+def test_window_message_drops_every_speaker_instruction():
+    message = build_window_message(
+        [{"index": 0, "text": "hi"}],
+        context_blocks=["SPEAKER_00: \"hi\""],
+        fixed_count=3,
+        window_index=0,
+        total_windows=1,
+        cast_lines=["- Aramil (Alice)"],
+        member_count=5,
+        include_speakers=False,
+    )
+    assert "SPEAKER_00" not in message
+    assert "canonical SPEAKER_XX" not in message
+    assert "already finalized" not in message
+    assert "People at the table" not in message
+    assert "Correct the text only" in message
+    assert "with no speaker field" in message
+    assert "- Aramil (Alice)" in message  # the cast still fixes misheard names
+
+
+def test_window_message_keeps_speaker_instructions_in_speaker_mode():
+    message = build_window_message(
+        [{"index": 0, "speaker": "SPEAKER_00", "text": "hi"}],
+        context_blocks=[],
+        fixed_count=0,
+        window_index=0,
+        total_windows=1,
+        member_count=5,
+    )
+    assert "canonical SPEAKER_XX" in message
+    assert "People at the table" in message
+
+
+def test_parse_decisions_in_text_only_mode_ignores_a_stray_speaker():
+    raw = {"turns": [{"index": 0, "text": "fixed", "speaker": "SPEAKER_09"}]}
+    assert parse_decisions(raw) == {0: ("SPEAKER_09", "fixed")}
+    assert parse_decisions(raw, include_speakers=False) == {0: ("", "fixed")}
+
+
+def test_keep_labels_restores_the_diarizer_label_verbatim():
+    segments = [
+        seg(0.0, 4.0, speaker="Speaker A", text="one"),
+        seg(5.0, 9.0, speaker="Speaker B", text="two"),
+    ]
+    turns = turns_of(segments)
+    decisions = parse_decisions(
+        {"turns": [{"index": 0, "text": "one fixed"}]}, include_speakers=False
+    )
+    kept = keep_labels(turns, decisions)
+    assert kept[0] == ("Speaker A", "one fixed")
+    # a turn the model dropped keeps BOTH its label and its wording
+    assert kept[1] == ("Speaker B", "")
+
+
+def test_text_only_round_trip_leaves_labels_untouched():
+    """The end-to-end guarantee of the text-only mode: text changes, labels do
+    not. This is what makes the engine's labels measurements."""
+    segments = [
+        seg(0.0, 4.0, speaker="Speaker A", text="i cast firebal"),
+        seg(5.0, 9.0, speaker="Speaker B", text="ok"),
+    ]
+    turns = turns_of(segments)
+    raw = {"turns": [{"index": 0, "text": "I cast Fireball"}, {"index": 1, "text": "OK"}]}
+    decisions = keep_labels(turns, parse_decisions(raw, include_speakers=False))
+    refined = apply_refined(segments, turns, decisions)
+    assert [s["speaker"] for s in refined] == ["Speaker A", "Speaker B"]
+    assert refined[0]["text"] == "I cast Fireball"
+
+
+def test_canonicalize_would_have_renamed_them_which_is_why_it_is_skipped():
+    """Guards the reason keep_labels exists: canonicalize renumbers a
+    non-canonical label, so running it in text-only mode would quietly rewrite
+    the diarizer's output."""
+    segments = [seg(0.0, 4.0, speaker="Speaker A"), seg(5.0, 9.0, speaker="Zed")]
+    turns = turns_of(segments)
+    renamed = canonicalize(turns, {})
+    assert [renamed[i][0] for i in range(2)] == ["SPEAKER_00", "SPEAKER_01"]
+    assert [keep_labels(turns, {})[i][0] for i in range(2)] == ["Speaker A", "Zed"]

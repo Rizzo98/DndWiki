@@ -12,8 +12,35 @@ from app.prompts import (
 )
 
 
-def test_prompt_version_is_v11():
-    assert PROMPT_VERSION == "v11"
+def test_prompt_version_is_v12():
+    # v12 adds source_refs to every extracted item and an explicit actor to
+    # every event, which is what lets the attribution gate VERIFY a fact
+    # instead of trusting it (docs/attribution-model.md S14.3).
+    assert PROMPT_VERSION == "v12"
+
+
+def test_every_extractable_item_carries_source_refs():
+    schema = EXTRACTION_SCHEMA["properties"]
+    for kind in ("characters", "locations", "events", "timeline_entries"):
+        item = schema[kind]["items"]["properties"]
+        assert "source_refs" in item, kind
+        assert item["source_refs"]["type"] == "array"
+
+
+def test_events_carry_an_explicit_actor_that_may_be_empty():
+    actor = EXTRACTION_SCHEMA["properties"]["events"]["items"]["properties"]["actor"]
+    assert actor["type"] == "string"
+    assert "EMPTY" in actor["description"]
+
+
+def test_the_prompt_explains_the_three_line_forms():
+    """A '?' line and an '(unattributed)' line mean different things, and the
+    model must be told so: they are the whole point of the attributed view."""
+    assert "Aramil?" in SYSTEM_PROMPT
+    assert "(unattributed)" in SYSTEM_PROMPT
+    assert "NEVER attribute" in SYSTEM_PROMPT
+    assert "source_refs" in SYSTEM_PROMPT
+    assert "SPEAKER_00" in SYSTEM_PROMPT  # ... and never write one as a name
 
 
 def test_summary_is_a_list_of_lines():

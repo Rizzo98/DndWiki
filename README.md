@@ -26,8 +26,11 @@ phone recording ──▶ session-service ──▶ MinIO (raw audio)
                 refiner-service (LLM contextual diarization: corrected text, stable speaker labels)
                         ▼ RabbitMQ (speakers.identify)
                 speaker-service (ECAPA-TDNN embeddings ↔ voiceprints in Qdrant)
-                        │  unknown speakers flagged for DM assignment
-                        ▼ RabbitMQ (content.generate)
+                        │  per-turn voice observations + similarity evidence
+                        ▼ RabbitMQ (speakers.identified)
+                attribution-service (evidence-first attribution: who said what, and how sure)
+                        │  DM answers a few questions about moments (attribution_review)
+                        ▼ RabbitMQ (attribution.review.completed)
                 content-service (LLM structured extraction → DRAFT session summary)
                         │  DM reviews/regenerates it on the session page
                         │  summary confirmed (summary.confirmed) → proposed change set
@@ -35,6 +38,14 @@ phone recording ──▶ session-service ──▶ MinIO (raw audio)
                         ▼
                 wiki-service (pages created published) ──▶ search-service
 ```
+
+> **Speaker attribution.** With `ATTRIBUTION_ENABLED=true`,
+> `attribution-service` owns *who said what*: it keeps a posterior per utterance
+> instead of mapping each diarization label to one person, asks the DM only about
+> moments an answer would actually change, and gates what may reach a wiki page
+> on how sure it is. With the flag off (the default) the pipeline above behaves
+> exactly as it did before. See `docs/attribution-model.md` for the design and
+> §12 of `docs/attribution-plan.md` for what is built and measured.
 
 ## Repository layout
 
@@ -52,13 +63,16 @@ DnDWiki/
 │   ├── transcription-deepgram-service/  # Cloud API variant (Deepgram Nova 3 + diarization)
 │   ├── transcription-assemblyai-service/  # Cloud API variant (AssemblyAI Universal-3.5 Pro + diarization)
 │   ├── refiner-service/   #   LLM contextual diarization (transcript + speaker-label fixes)
-│   ├── speaker-service/   #   Speaker identification from voiceprints
+│   ├── speaker-service/   #   Voice embeddings, per-turn observations, member voice models
+│   ├── attribution-service/  #  Utterance-level speaker attribution + the DM review
 │   ├── content-service/   #   LLM transcript → session summary → wiki drafts
 │   ├── wiki-service/      #   Wiki CRUD, versions, visibility, approval
 │   ├── search-service/    #   Meilisearch indexing
 │   └── notification-service/   # Emails / webhooks / push
 ├── libs/                  # Shared code
-│   ├── python/dnd_common/ #   FastAPI/JWT/RabbitMQ/SQLAlchemy common layer
+│   ├── python/dnd_common/ #   FastAPI/JWT/RabbitMQ/SQLAlchemy common layer,
+│   │                      #   plus the clustering/transcript/purity primitives the
+│   │                      #   speaker and attribution services share
 │   └── typescript/dnd-sdk/#   Typed client + shared types for frontends
 ├── infrastructure/        # Infra configs (postgres, rabbitmq, keycloak, monitoring)
 ├── ml/                    # Model notes (WhisperX, pyannote, ECAPA-TDNN)

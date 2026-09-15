@@ -15,12 +15,14 @@
     { "name": "transcripts.refine", "vhost": "/", "durable": true, "auto_delete": false, "arguments": { "x-dead-letter-exchange": "dnd.events", "x-dead-letter-routing-key": "transcripts.refine.dlq", "x-consumer-timeout": 7200000 } },
     { "name": "speakers.identify", "vhost": "/", "durable": true, "auto_delete": false, "arguments": { "x-dead-letter-exchange": "dnd.events", "x-dead-letter-routing-key": "speakers.identify.dlq", "x-consumer-timeout": 7200000 } },
     { "name": "content.generate", "vhost": "/", "durable": true, "auto_delete": false, "arguments": { "x-dead-letter-exchange": "dnd.events", "x-dead-letter-routing-key": "content.generate.dlq", "x-consumer-timeout": 7200000 } },
+    { "name": "attribution.jobs", "vhost": "/", "durable": true, "auto_delete": false, "arguments": { "x-dead-letter-exchange": "dnd.events", "x-dead-letter-routing-key": "attribution.jobs.dlq", "x-consumer-timeout": 7200000 } },
     { "name": "search.events", "vhost": "/", "durable": true, "auto_delete": false, "arguments": {} },
     { "name": "notification.events", "vhost": "/", "durable": true, "auto_delete": false, "arguments": {} },
     { "name": "transcription.jobs.dlq", "vhost": "/", "durable": true, "auto_delete": false, "arguments": {} },
     { "name": "transcripts.refine.dlq", "vhost": "/", "durable": true, "auto_delete": false, "arguments": {} },
     { "name": "speakers.identify.dlq", "vhost": "/", "durable": true, "auto_delete": false, "arguments": {} },
-    { "name": "content.generate.dlq", "vhost": "/", "durable": true, "auto_delete": false, "arguments": {} }
+    { "name": "content.generate.dlq", "vhost": "/", "durable": true, "auto_delete": false, "arguments": {} },
+    { "name": "attribution.jobs.dlq", "vhost": "/", "durable": true, "auto_delete": false, "arguments": {} }
   ],
   "bindings": [
     { "source": "dnd.events", "vhost": "/", "destination": "transcription.jobs", "destination_type": "queue", "routing_key": "session.recorded", "arguments": {} },
@@ -28,6 +30,10 @@
     { "source": "dnd.events", "vhost": "/", "destination": "speakers.identify", "destination_type": "queue", "routing_key": "transcription.completed", "arguments": {} },
     { "source": "dnd.events", "vhost": "/", "destination": "speakers.identify", "destination_type": "queue", "routing_key": "transcription.refined", "arguments": {} },
     { "source": "dnd.events", "vhost": "/", "destination": "speakers.identify", "destination_type": "queue", "routing_key": "speakers.assigned", "arguments": {} },
+    { "source": "dnd.events", "vhost": "/", "destination": "attribution.jobs", "destination_type": "queue", "routing_key": "speakers.identified", "arguments": {} },
+    { "source": "dnd.events", "vhost": "/", "destination": "attribution.jobs", "destination_type": "queue", "routing_key": "attribution.answered", "arguments": {} },
+    { "source": "dnd.events", "vhost": "/", "destination": "attribution.jobs", "destination_type": "queue", "routing_key": "attribution.recompute", "arguments": {} },
+    { "source": "dnd.events", "vhost": "/", "destination": "content.generate", "destination_type": "queue", "routing_key": "attribution.review.completed", "arguments": {} },
     { "source": "dnd.events", "vhost": "/", "destination": "content.generate", "destination_type": "queue", "routing_key": "speakers.identified", "arguments": {} },
     { "source": "dnd.events", "vhost": "/", "destination": "content.generate", "destination_type": "queue", "routing_key": "speakers.assigned", "arguments": {} },
     { "source": "dnd.events", "vhost": "/", "destination": "content.generate", "destination_type": "queue", "routing_key": "summary.regenerate", "arguments": {} },
@@ -38,6 +44,7 @@
     { "source": "dnd.events", "vhost": "/", "destination": "search.events", "destination_type": "queue", "routing_key": "wiki.archived", "arguments": {} },
     { "source": "dnd.events", "vhost": "/", "destination": "notification.events", "destination_type": "queue", "routing_key": "wiki.draft_ready", "arguments": {} },
     { "source": "dnd.events", "vhost": "/", "destination": "notification.events", "destination_type": "queue", "routing_key": "speaker.pending", "arguments": {} },
+    { "source": "dnd.events", "vhost": "/", "destination": "notification.events", "destination_type": "queue", "routing_key": "attribution.review.ready", "arguments": {} },
     { "source": "dnd.events", "vhost": "/", "destination": "notification.events", "destination_type": "queue", "routing_key": "session.published", "arguments": {} },
     { "source": "dnd.events", "vhost": "/", "destination": "notification.events", "destination_type": "queue", "routing_key": "wiki.published", "arguments": {} }
   ]

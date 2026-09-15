@@ -6,12 +6,18 @@
 
 import {
   ApiError,
+  AttributionStatus,
   Campaign,
   CampaignMember,
+  ReviewAnswerResult,
+  ReviewQuestion,
+  ReviewStatus,
+  ReviewStop,
   Role,
   Session,
   SessionStatus,
   User,
+  VoiceIdentitySummary,
   WikiPage,
   WikiPageKind,
   WikiPageStatus,
@@ -20,12 +26,19 @@ import {
 
 export { ApiError } from "@dnd-wiki/sdk";
 export type {
+  AttributedTranscript,
+  AttributionStatus,
   Campaign,
   CampaignMember,
+  ReviewAnswerResult,
+  ReviewQuestion,
+  ReviewStatus,
+  ReviewStop,
   Role,
   Session,
   SessionStatus,
   User,
+  VoiceIdentitySummary,
   WikiPage,
   WikiPageKind,
   WikiPageStatus,
@@ -442,11 +455,11 @@ export const sessionsApi = {
   },
   speakers: (token: string, sessionId: string) =>
     request<SpeakerAssignment[]>(token, `/api/sessions/${sessionId}/speakers`),
-  assignSpeaker: (token: string, sessionId: string, speakerLabel: string, memberId: string, enrolledVoiceprint = false) =>
+  assignSpeaker: (token: string, sessionId: string, speakerLabel: string, memberId: string) =>
     request<SpeakerAssignment>(
       token,
       `/api/sessions/${sessionId}/speakers/${encodeURIComponent(speakerLabel)}/assign`,
-      jsonInit("POST", { member_id: memberId, enrolled_voiceprint: enrolledVoiceprint }),
+      jsonInit("POST", { member_id: memberId }),
     ),
   /** DM accepts the pipeline's proposed name for a label (auto -> confirmed). */
   confirmSpeaker: (token: string, sessionId: string, speakerLabel: string) =>
@@ -454,6 +467,108 @@ export const sessionsApi = {
       token,
       `/api/sessions/${sessionId}/speakers/${encodeURIComponent(speakerLabel)}/confirm`,
       { method: "POST" },
+    ),
+
+  // -------------------------------------------------------------------------
+  // The attribution review (docs/attribution-model.md S15.4)
+  //
+  // The DM answers QUESTIONS about moments, never "confirm this label": the
+  // engine reports how much of the session it is confident about and asks only
+  // where an answer changes something.
+  // -------------------------------------------------------------------------
+
+  // NOTE the /api/attribution prefix. These routes are served by
+  // attribution-service, and the gateway publishes that service under
+  // /api/attribution - NOT under /api/sessions, which belongs to
+  // session-service. A missing prefix is not a 404 the caller can recover
+  // from: session-service answers it, so the error reads "Not Found" and says
+  // nothing about attribution at all.
+
+  /**
+   * Whether the attribution engine is running, and with what thresholds.
+   *
+   * The session page needs this to know WHICH interface it is showing: with the
+   * engine on, the review card and "Voices we found" are the controls, and the
+   * legacy per-label Speakers panel is not offered at all - confirming a label
+   * there settles nothing, because the wiki gate reads the attributed
+   * transcript and never that table. Public endpoint, so it answers even before
+   * the first authenticated call.
+   */
+  attributionConfig: (token: string) =>
+    request<{ enabled: boolean; engine_version: string; max_questions: number }>(
+      token,
+      "/api/attribution/config",
+    ),
+  /** Review status: coverage, buckets, planned question count, run status. */
+  review: (token: string, sessionId: string) =>
+    request<ReviewStatus>(token, `/api/attribution/sessions/${sessionId}/review`),
+  /** The top-ranked question, or null with the reason the review is over. */
+  nextQuestion: (token: string, sessionId: string) =>
+    request<{ question: ReviewQuestion | null; stop: ReviewStop }>(
+      token,
+      `/api/attribution/sessions/${sessionId}/review/next-question`,
+    ),
+  /** Answer one question; the response reports what ELSE it resolved. */
+  answerQuestion: (token: string, sessionId: string, question: string, option: string) =>
+    request<ReviewAnswerResult>(
+      token,
+      `/api/attribution/sessions/${sessionId}/review/answer`,
+      jsonInit("POST", { question, option }),
+    ),
+  /** Never ask this one again. */
+  skipQuestion: (token: string, sessionId: string, question: string) =>
+    request<{ skipped: string }>(
+      token,
+      `/api/attribution/sessions/${sessionId}/review/skip`,
+      jsonInit("POST", { question }),
+    ),
+  /** Stop reviewing: the session moves on (the review is never blocking). */
+  finishReview: (token: string, sessionId: string) =>
+    request<Record<string, unknown>>(
+      token,
+      `/api/attribution/sessions/${sessionId}/review/finish`,
+      { method: "POST" },
+    ),
+  /** Per-utterance attribution, for the provenance chips and the transcript. */
+  attribution: (token: string, sessionId: string, limit = 2000, offset = 0) =>
+    request<{
+      session_id: string;
+      coverage: number;
+      engine_version: string | null;
+      utterances: Array<{
+        ref: string;
+        start: number;
+        end: number;
+        text: string;
+        status: AttributionStatus;
+        confidence: number | null;
+        best_candidate: string | null;
+        decided_by: string | null;
+        revision: number;
+      }>;
+    }>(
+      token,
+      `/api/attribution/sessions/${sessionId}/attribution?limit=${limit}&offset=${offset}`,
+    ),
+  /** The "Voices we found" panel: anonymous identities, never people. */
+  voices: (token: string, sessionId: string) =>
+    request<{ session_id: string; voices: VoiceIdentitySummary[] }>(
+      token,
+      `/api/attribution/sessions/${sessionId}/voices`,
+    ),
+  /** Power-user direct fix for one utterance. */
+  attributeUtterance: (token: string, sessionId: string, ref: string, candidate: string) =>
+    request<{ ref: string; candidate: string; coverage: number }>(
+      token,
+      `/api/attribution/sessions/${sessionId}/utterances/${encodeURIComponent(ref)}/attribute`,
+      jsonInit("POST", { candidate }),
+    ),
+  /** "This voice is two people": the manual structural fix the engine cannot make. */
+  splitVoice: (token: string, sessionId: string, voiceId: string) =>
+    request<{ voice_id: string; split: boolean }>(
+      token,
+      `/api/attribution/sessions/${sessionId}/voices/${encodeURIComponent(voiceId)}/split`,
+      jsonInit("POST", {}),
     ),
 };
 

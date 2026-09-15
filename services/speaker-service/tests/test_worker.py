@@ -8,6 +8,7 @@ from dnd_common.events import Event
 
 from app.clients.session_service import ConflictTransition
 from app.core.config import ServiceSettings
+from app.embedding import WindowAnalysis
 from app.workers.identify import _finish, process_assigned, process_identified
 
 SESSION_ID = "11111111-1111-1111-1111-111111111111"
@@ -147,24 +148,59 @@ class FakeVoiceprints:
 
 
 class FakeEmbedder:
-    def __init__(self, vectors=None, duration=5.0, raise_on=False):
+    def __init__(
+        self, vectors=None, duration=5.0, raise_on=False, snr_db=None, overlap_ratio=0.0
+    ):
         self.vectors = vectors
         self.duration = duration
         self.raise_on = raise_on
+        self.snr_db = snr_db
+        self.overlap_ratio = overlap_ratio
         self.windows_calls = []
+        self.full_calls = []
 
     def embed_windows_sync(self, audio_path, windows):
+        return [a.embedding for a in self.embed_windows_full_sync(audio_path, windows)]
+
+    def embed_windows_full_sync(self, audio_path, windows):
         self.windows_calls.append((audio_path, list(windows)))
+        self.full_calls.append((audio_path, list(windows)))
         if self.raise_on:
             raise RuntimeError("embed failed")
-        if self.vectors is not None:
-            return list(self.vectors)
-        return [[0.1] * 192 for _ in windows]
+        vectors = (
+            list(self.vectors) if self.vectors is not None else [[0.1] * 192] * len(windows)
+        )
+        return [
+            WindowAnalysis(embedding=v, snr_db=self.snr_db, overlap_ratio=self.overlap_ratio)
+            for v in vectors
+        ]
 
     async def embed_bytes(self, data, suffix=".wav"):
         if self.raise_on:
             raise RuntimeError("embed failed")
         return [0.1] * 192, self.duration
+
+
+class FakeMemberModels:
+    def __init__(self, hits=None):
+        self.hits = hits or []
+        self.searches = []
+        self.upserted = []
+
+    async def search(self, embedding, campaign_id, limit=8):
+        self.searches.append((list(embedding), campaign_id, limit))
+        return self.hits
+
+    async def upsert(self, point_id, vector, payload):
+        self.upserted.append((point_id, list(vector), payload))
+
+
+class FakeObservations:
+    def __init__(self):
+        self.batches = []
+
+    async def upsert_many(self, points):
+        self.batches.append(list(points))
 
 
 class FakePublisher:
@@ -182,6 +218,10 @@ def settings(tmp_path, **overrides):
         "work_dir": str(tmp_path),
         "speaker_match_threshold": 0.75,
         "refiner_enabled": False,
+        # The per-observation evidence pass is opt-in here: the legacy tests
+        # below assert the pooled-window behaviour the redesign replaces, and
+        # the observation path has its own tests further down.
+        "observations_enabled": False,
     }
     kwargs.update(overrides)
     return ServiceSettings(**kwargs)
@@ -736,20 +776,97 @@ def assigned_event(**overrides):
     return Event(type="speakers.assigned", payload=payload)
 
 
-async def test_enroll_userless_member_skips(tmp_path):
-    """A member without a linked user is named, but there is no user-keyed
-    voiceprint to enroll — the assignment stands, enrollment is skipped."""
+MEMBER_A = "44444444-4444-4444-4444-444444444444"
+
+
+async def test_enroll_userless_member_learns_a_member_keyed_centroid(tmp_path):
+    """A member with no linked account used to be unlearnable: enrollment keyed
+    on user_id, so the worker logged 'skipping voiceprint enrollment' and that
+    voice could never auto-match in any later session, however often the DM
+    named it (attribution-model S12.3 defect 4).
+
+    Now the print is keyed on member_id, so it is written even with no user: the
+    legacy user-keyed collection is skipped (there is no user to key it on), the
+    member voice model is not.
+    """
     s = settings(tmp_path)
     storage = FakeStorage()
     voiceprints = FakeVoiceprints()
+    member_models = FakeMemberModels()
     embedder = FakeEmbedder(duration=8.0)
 
     await process_assigned(
-        assigned_event(user_id=None, member_id="44444444-4444-4444-4444-444444444444"),
+        assigned_event(user_id=None, member_id=MEMBER_A),
         s, storage, voiceprints, embedder,
+        member_models=member_models,
     )
-    assert voiceprints.upserted == []
+    assert voiceprints.upserted == []  # nothing to key a legacy print on
+    assert len(member_models.upserted) == 1
+    _, _, payload = member_models.upserted[0]
+    assert payload["member_id"] == MEMBER_A
+    assert "user_id" not in payload
+    assert storage.downloads != []
+
+
+async def test_enroll_without_any_identity_link_skips(tmp_path):
+    s = settings(tmp_path)
+    storage = FakeStorage()
+    voiceprints = FakeVoiceprints()
+    member_models = FakeMemberModels()
+
+    await process_assigned(
+        assigned_event(user_id=None, member_id=None),
+        s, storage, voiceprints, FakeEmbedder(),
+        member_models=member_models,
+    )
+    assert voiceprints.upserted == [] and member_models.upserted == []
     assert storage.downloads == []
+
+
+async def test_enroll_writes_both_the_member_model_and_the_legacy_print(tmp_path):
+    """The transition needs no big-bang re-enrollment: everything that still
+    reads the user-keyed voiceprints collection keeps seeing new samples."""
+    s = settings(tmp_path)
+    member_models = FakeMemberModels()
+    voiceprints = FakeVoiceprints()
+
+    await process_assigned(
+        assigned_event(member_id=MEMBER_A),
+        s, FakeStorage(), voiceprints, FakeEmbedder(),
+        member_models=member_models,
+    )
+    assert len(member_models.upserted) == 1
+    assert len(voiceprints.upserted) == 1
+    assert member_models.upserted[0][2]["member_id"] == MEMBER_A
+
+
+async def test_enroll_refuses_a_mixture_print(tmp_path):
+    """A label holding two people used to enroll a pooled mixture that matched
+    neither of them, poisoning every later session (S12.3 defect 1). Now the
+    identity's purity gates the whole enrollment."""
+    s = settings(tmp_path)
+    member_models = FakeMemberModels()
+    voiceprints = FakeVoiceprints()
+
+    await process_assigned(
+        assigned_event(member_id=MEMBER_A, identity_purity=0.2),
+        s, FakeStorage(), voiceprints, FakeEmbedder(),
+        member_models=member_models,
+    )
+    assert member_models.upserted == [] and voiceprints.upserted == []
+
+
+async def test_enroll_takes_the_purity_hint_over_its_own_estimate(tmp_path):
+    s = settings(tmp_path)
+    member_models = FakeMemberModels()
+
+    await process_assigned(
+        assigned_event(member_id=MEMBER_A, identity_purity=0.95),
+        s, FakeStorage(), FakeVoiceprints(), FakeEmbedder(),
+        member_models=member_models,
+    )
+    assert len(member_models.upserted) == 1
+    assert member_models.upserted[0][2]["identity_purity"] == 0.95
 
 
 async def test_enroll_upserts_voiceprint(tmp_path):
@@ -795,11 +912,177 @@ async def test_enroll_unknown_label_skips(tmp_path):
     assert voiceprints.upserted == []
 
 
-async def test_enroll_too_short_clip_skips(tmp_path):
+async def test_enroll_too_short_turn_skips(tmp_path):
+    """A turn shorter than voice_sample_min_sec is not embedded at all: a short
+    clip is not weak evidence, it is no evidence."""
     s = settings(tmp_path)
+    storage = FakeStorage(
+        diarization={"segments": [{"start": 0.0, "end": 1.0, "speaker": "SPEAKER_00"}]}
+    )
+    voiceprints = FakeVoiceprints()
+
+    await process_assigned(assigned_event(), s, storage, voiceprints, FakeEmbedder())
+    assert voiceprints.upserted == []
+
+
+async def test_enroll_skips_observations_below_the_quality_floor(tmp_path):
+    """Quality is per observation, not per label: a clean turn of a named label
+    still enrolls when a noisy one beside it does not."""
+    s = settings(tmp_path, enroll_min_quality=0.9)
     storage = FakeStorage()
     voiceprints = FakeVoiceprints()
-    embedder = FakeEmbedder(duration=1.0)
 
-    await process_assigned(assigned_event(), s, storage, voiceprints, embedder)
+    await process_assigned(
+        assigned_event(), s, storage, voiceprints, FakeEmbedder(snr_db=None)
+    )
     assert voiceprints.upserted == []
+
+
+# ------------------------------------------------- observations and evidence
+
+
+def observations_settings(tmp_path, **overrides):
+    return settings(tmp_path, observations_enabled=True, **overrides)
+
+
+def vpoint(pid, score, **payload):
+    return SimpleNamespace(id=pid, score=score, payload=payload)
+
+
+async def test_identify_publishes_per_turn_voice_evidence(tmp_path):
+    """The evidence block replaces 'one pooled cosine, one verdict': every turn
+    gets its own vector, quality and nearest-centroid list."""
+    s = observations_settings(tmp_path)
+    storage = FakeStorage()
+    member_models = FakeMemberModels(
+        [vpoint("p1", 0.83, member_id="m-member", source="session")]
+    )
+    observations = FakeObservations()
+
+    await process_identified(
+        completed_event(), s, storage, FakeClient(), FakeVoiceprints(),
+        FakeEmbedder(vectors=[VA, VB], snr_db=25.0), FakePublisher(),
+        member_models=member_models, observations_store=observations,
+    )
+
+    assert len(observations.batches) == 1
+    points = observations.batches[0]
+    # The observation id is '<label>#<turn position in the session>': the turn
+    # index is global, so the key stays unique however the turns are labelled.
+    assert [p[2]["observation_id"] for p in points] == ["SPEAKER_00#0", "SPEAKER_01#1"]
+    # 4 s of a 6 s saturation ramp, clean SNR: high but not perfect.
+    assert all(p[2]["quality"] > 0.7 for p in points)
+    assert points[0][2]["session_id"] == SESSION_ID
+
+
+async def test_identify_evidence_lists_nearest_centroids(tmp_path):
+    s = observations_settings(tmp_path)
+    member_models = FakeMemberModels(
+        [
+            vpoint("c1", 0.81, member_id="m-1", source="session"),
+            vpoint("c2", 0.55, user_id="u-2", source="enrollment"),
+        ]
+    )
+    publisher = FakePublisher()
+
+    await process_identified(
+        completed_event(), s, FakeStorage(), FakeClient(), FakeVoiceprints(),
+        FakeEmbedder(vectors=[VA, VB]), publisher,
+        member_models=member_models, observations_store=FakeObservations(),
+    )
+    identified = next(e for e in publisher.events if e.type == "speakers.identified")
+    evidence = identified.payload["evidence"]
+    assert evidence["model_version"] == s.voice_embedding_model
+    assert len(evidence["observations"]) == 2
+    nearest = evidence["observations"][0]["nearest_centroids"]
+    assert nearest[0]["member_id"] == "m-1"
+    assert nearest[0]["cosine"] == 0.81
+    assert nearest[1]["user_id"] == "u-2"
+
+
+async def test_identify_evidence_is_absent_when_the_flag_is_off(tmp_path):
+    publisher = FakePublisher()
+    await process_identified(
+        completed_event(), settings(tmp_path), FakeStorage(), FakeClient(),
+        FakeVoiceprints(), FakeEmbedder(vectors=[VA, VB]), publisher,
+    )
+    identified = next(e for e in publisher.events if e.type == "speakers.identified")
+    assert "evidence" not in identified.payload
+
+
+async def test_identify_survives_an_unreadable_recording(tmp_path):
+    """No embeddings is a degraded run, not a failed one: the text channels must
+    still get their chance (attribution-model S16)."""
+    publisher = FakePublisher()
+    # The refined path is the one that tolerates an embedding failure (the raw
+    # labels are matched directly, per label, best-effort); the re-clustering
+    # path cannot, because clustering IS the embedding step.
+    await process_identified(
+        refined_event(), observations_settings(tmp_path), FakeStorage(),
+        FakeClient(), FakeVoiceprints(), FakeEmbedder(raise_on=True), publisher,
+        member_models=FakeMemberModels(), observations_store=FakeObservations(),
+    )
+    identified = next(e for e in publisher.events if e.type == "speakers.identified")
+    evidence = identified.payload["evidence"]
+    assert len(evidence["observations"]) == 2
+    assert all(o["quality"] is None for o in evidence["observations"])
+    assert all(o["nearest_centroids"] == [] for o in evidence["observations"])
+
+
+async def test_identify_survives_an_unreachable_observation_store(tmp_path):
+    class ExplodingObservations:
+        async def upsert_many(self, points):
+            raise RuntimeError("qdrant down")
+
+    publisher = FakePublisher()
+    await process_identified(
+        completed_event(), observations_settings(tmp_path), FakeStorage(),
+        FakeClient(), FakeVoiceprints(), FakeEmbedder(vectors=[VA, VB]), publisher,
+        member_models=FakeMemberModels(), observations_store=ExplodingObservations(),
+    )
+    identified = next(e for e in publisher.events if e.type == "speakers.identified")
+    assert len(identified.payload["evidence"]["observations"]) == 2
+
+
+def test_anchor_match_below_the_threshold_stays_pending(tmp_path):
+    """The anchor path used to emit 'auto' unconditionally, so a 0.60 snap was
+    auto-assigned where the direct path demanded 0.75 (S12.3 defect 2)."""
+    from app.identify import anchor_verdict
+
+    s = settings(tmp_path)
+    weak = anchor_verdict("SPEAKER_00", user_id=USER_A, score=0.62, settings=s)
+    strong = anchor_verdict("SPEAKER_01", user_id=USER_A, score=0.80, settings=s)
+    assert weak["status"] == "pending" and weak["user_id"] is None
+    assert weak["confidence"] == 0.62  # the DM still sees how close it was
+    assert strong["status"] == "auto" and strong["user_id"] == USER_A
+
+
+async def test_observation_quality_penalises_overlap(tmp_path):
+    s = observations_settings(tmp_path)
+    observations = FakeObservations()
+    await process_identified(
+        completed_event(), s, FakeStorage(), FakeClient(), FakeVoiceprints(),
+        FakeEmbedder(vectors=[VA, VB], snr_db=25.0, overlap_ratio=0.45),
+        FakePublisher(),
+        member_models=FakeMemberModels(), observations_store=observations,
+    )
+    # Down-weighted, not discarded: overlap is a prior, never a veto.
+    qualities = [p[2]["quality"] for p in observations.batches[0]]
+    assert all(0.0 < q < 0.7 for q in qualities)
+
+
+async def test_observations_use_the_relabelled_segments(tmp_path):
+    """Re-clustering overrides the raw labels; the observations must be filed
+    under the new ones, or the engine's voice evidence points at labels nothing
+    else uses."""
+    s = observations_settings(tmp_path)
+    observations = FakeObservations()
+    await process_identified(
+        completed_event(segments=cross_chunk_segments()), s,
+        FakeStorage(diarization={"segments": cross_chunk_segments()}),
+        FakeClient(), FakeVoiceprints(), FakeEmbedder(vectors=[VA, VA]), FakePublisher(),
+        member_models=FakeMemberModels(), observations_store=observations,
+    )
+    ids = [p[2]["observation_id"] for p in observations.batches[0]]
+    assert ids == ["SPEAKER_00#0", "SPEAKER_00#1"]
+    assert {p[2]["label"] for p in observations.batches[0]} == {"SPEAKER_00"}

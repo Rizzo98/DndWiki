@@ -24,7 +24,12 @@ from typing import Any
 from json_repair import loads as repair_loads
 
 from app.core.config import ServiceSettings
-from app.prompts import REFINE_SCHEMA, SYSTEM_PROMPT, build_window_message
+from app.prompts import (
+    REFINE_SCHEMA,
+    TEXT_ONLY_SCHEMA,
+    build_window_message,
+    system_prompt,
+)
 from app.refine import RefineError, parse_decisions
 
 logger = logging.getLogger(__name__)
@@ -77,17 +82,26 @@ class RefinerLLM:
         total_windows: int,
         cast_lines: list[str] | None = None,
         member_count: int | None = None,
+        include_speakers: bool = True,
     ) -> dict[int, tuple[str, str]]:
-        """Refine one window of turns (raises RefineError on unusable output)."""
+        """Refine one window of turns (raises RefineError on unusable output).
+
+        'include_speakers' selects the prompt AND the schema together: the model
+        must never be shown a speaker field it has been told not to fill, and
+        must never be asked for one it was told not to produce.
+        """
         import litellm  # lazy: heavy dependency, only needed at runtime
 
         litellm.drop_params = True  # ignore params unsupported by the provider
         self._export_provider_env()
 
+        schema = REFINE_SCHEMA if include_speakers else TEXT_ONLY_SCHEMA
         messages = [
             {
                 "role": "system",
-                "content": SYSTEM_PROMPT.format(schema=json.dumps(REFINE_SCHEMA)),
+                "content": system_prompt(include_speakers=include_speakers).format(
+                    schema=json.dumps(schema)
+                ),
             },
             {
                 "role": "user",
@@ -99,6 +113,7 @@ class RefinerLLM:
                     total_windows=total_windows,
                     cast_lines=cast_lines,
                     member_count=member_count,
+                    include_speakers=include_speakers,
                 ),
             },
         ]
@@ -112,7 +127,9 @@ class RefinerLLM:
             )
             content = response.choices[0].message.content
             try:
-                return parse_decisions(self._load_json(content))
+                return parse_decisions(
+                    self._load_json(content), include_speakers=include_speakers
+                )
             except RefineError as exc:
                 if attempt >= self._settings.refiner_json_retries:
                     raise

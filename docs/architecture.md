@@ -204,6 +204,21 @@ retried with exponential backoff (max 3 attempts).
 
 ## 6. Voiceprint enrollment & identification
 
+> **Superseded — implemented behind `ATTRIBUTION_ENABLED`.** The label-to-member
+> model and the `speaker_pending` gate described below are replaced by the
+> evidence-first attribution redesign — see
+> `docs/adr/0002-evidence-first-speaker-attribution.md`,
+> `docs/attribution-model.md`, `docs/attribution-ux.md` and
+> `docs/attribution-plan.md`.
+>
+> With the flag **off** (the default) the behaviour documented in this section is
+> exactly what runs, byte for byte. With it **on**, `services/attribution-service`
+> owns speaker attribution: it consumes the per-observation voice evidence that
+> `speaker-service` now publishes alongside its legacy verdicts, keeps a
+> posterior per utterance in `dnd_attribution`, and replaces the blocking
+> `speaker_pending` stage with a skippable `attribution_review`. The services
+> below keep their roles otherwise; what changes is who decides.
+
 **Enrollment (first time, DM-driven)**
 
 1. DM opens the campaign → *Players* → *Add voiceprint* for a member.

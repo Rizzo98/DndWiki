@@ -130,6 +130,14 @@ session_recordings
   created_at    timestamptz
 
 speaker_assignments                 -- diarized label -> campaign member per session
+                                    -- SUPERSEDED (implemented): replaced by the
+                                    -- utterance-level model in
+                                    -- docs/attribution-model.md (dnd_attribution).
+                                    -- This table is now a DERIVED VIEW: the
+                                    -- attribution engine is its only writer, via
+                                    -- PUT /internal/sessions/{id}/speaker-assignments,
+                                    -- and the old upsert path is retired because it
+                                    -- silently downgraded confirmed rows.
   id            uuid PK
   session_id    uuid FK -> sessions
   speaker_label text NOT NULL       -- SPEAKER_00, ...

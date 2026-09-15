@@ -186,7 +186,7 @@ async def test_speaker_assign_flow(client, fake_campaign, user_id, fake_publishe
     # DM assigns the pending one by member id (member carries the user link)
     resp = await client.post(
         f"/api/sessions/{session.id}/speakers/SPEAKER_01/assign",
-        json={"member_id": str(member), "enrolled_voiceprint": True},
+        json={"member_id": str(member)},
     )
     assert resp.status_code == 200
     body = resp.json()

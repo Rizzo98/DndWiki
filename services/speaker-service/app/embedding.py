@@ -14,9 +14,11 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from app.core.config import ServiceSettings
+from app.quality import estimate_overlap_ratio, estimate_snr_db
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,15 @@ logger = logging.getLogger(__name__)
 # already 16 kHz mono (slice_wav_bytes), but normalize explicitly so raw
 # uploads/stereo clips are embedded identically to user-service enrollment.
 SAMPLE_RATE = 16000
+
+
+@dataclass(frozen=True)
+class WindowAnalysis:
+    """One embedded window plus the quality measurements taken from its audio."""
+
+    embedding: list[float] | None
+    snr_db: float | None
+    overlap_ratio: float
 
 
 class EmbeddingUnavailable(RuntimeError):
@@ -61,6 +72,50 @@ class VoiceEmbedder:
             )
         return self._classifier
 
+    def embed_windows_full_sync(
+        self, audio_path: str, windows: list[tuple[float, float]]
+    ) -> list[WindowAnalysis]:
+        """Embed windows AND measure their quality from the same decode.
+
+        The redesign scores every observation's voice evidence by the quality of
+        the audio behind it (attribution-model S12.3), which needs the waveform,
+        not just the embedding. Decoding the recording twice (once to embed, once
+        to measure) would double the cost of a four-hour session for no reason,
+        so both are produced here from one load.
+
+        Blocking - call from a worker thread.
+        """
+        import numpy as np  # lazy
+        import torchaudio  # lazy
+
+        signal, sr = torchaudio.load(audio_path)
+        if signal.shape[0] > 1:
+            signal = signal.mean(dim=0, keepdim=True)
+        if sr != SAMPLE_RATE:
+            signal = torchaudio.transforms.Resample(sr, SAMPLE_RATE)(signal)
+
+        classifier = self._load_classifier()
+        out: list[WindowAnalysis] = []
+        for start, end in windows:
+            s = max(0, int(start * SAMPLE_RATE))
+            e = min(signal.shape[1], int(end * SAMPLE_RATE))
+            if e <= s:
+                out.append(WindowAnalysis(embedding=None, snr_db=None, overlap_ratio=0.0))
+                continue
+            clip = signal[:, s:e]
+            emb = classifier.encode_batch(clip).squeeze().tolist()
+            if not isinstance(emb, list):
+                emb = [emb]  # single-channel edge case
+            samples = np.asarray(clip.squeeze(0).numpy(), dtype=np.float64)
+            out.append(
+                WindowAnalysis(
+                    embedding=emb,
+                    snr_db=estimate_snr_db(samples, SAMPLE_RATE),
+                    overlap_ratio=estimate_overlap_ratio(samples, SAMPLE_RATE),
+                )
+            )
+        return out
+
     def embed_windows_sync(
         self, audio_path: str, windows: list[tuple[float, float]]
     ) -> list[list[float] | None]:
@@ -71,27 +126,8 @@ class VoiceEmbedder:
         list aligned to ``windows``; a window that resolves to zero samples
         yields ``None``. Blocking — call from a worker thread.
         """
-        import torchaudio  # lazy
-
-        signal, sr = torchaudio.load(audio_path)
-        if signal.shape[0] > 1:
-            signal = signal.mean(dim=0, keepdim=True)
-        if sr != SAMPLE_RATE:
-            signal = torchaudio.transforms.Resample(sr, SAMPLE_RATE)(signal)
-
-        classifier = self._load_classifier()
-        out: list[list[float] | None] = []
-        for start, end in windows:
-            s = max(0, int(start * SAMPLE_RATE))
-            e = min(signal.shape[1], int(end * SAMPLE_RATE))
-            if e <= s:
-                out.append(None)
-                continue
-            emb = classifier.encode_batch(signal[:, s:e]).squeeze().tolist()
-            if not isinstance(emb, list):
-                emb = [emb]  # single-channel edge case
-            out.append(emb)
-        return out
+        analyses = self.embed_windows_full_sync(audio_path, windows)
+        return [a.embedding for a in analyses]
 
     async def embed_bytes(self, data: bytes, suffix: str = ".wav") -> tuple[list[float], float]:
         """Return (embedding, duration_sec) for a raw audio clip.

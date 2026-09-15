@@ -9,34 +9,65 @@ The refiner works at turn level: the LLM receives the session's speaker turns
 object per turn (same index) with a corrected speaker label and text. Fidelity
 is explicitly secondary to narrative consistency - this stage produces the
 "finalized raw transcript" that voiceprint matching then names.
+
+Two modes:
+
+- **speaker mode** (REFINER_SPEAKERS=true, the legacy default): the LLM
+  corrects the text AND reassigns the speaker labels.
+- **text-only mode** (REFINER_SPEAKERS=false): the LLM corrects the text and
+  must not touch, add or report speakers at all.
+
+Text-only mode exists because the attribution engine consumes the *diarizer's*
+labels as measurements (docs/attribution-model.md S6.5). A label the LLM
+guessed is not a measurement, and the engine would be building its evidence on
+top of someone else's inference.
 """
 
 from __future__ import annotations
 
 import json
 
-PROMPT_VERSION = "v3"
+PROMPT_VERSION = "v4"
 
 #: Strict JSON schema given to the LLM (OpenAI-style; LiteLLM passes it through
 #: to providers that support response_format; others just follow instructions).
-REFINE_SCHEMA: dict = {
-    "type": "object",
-    "properties": {
-        "turns": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "index": {"type": "integer"},
-                    "speaker": {"type": "string"},
-                    "text": {"type": "string"},
+def build_schema(*, include_speakers: bool) -> dict:
+    """The response schema for one refinement mode.
+
+    Both modes return the same turn list keyed by 'index'; the speaker mode adds
+    a 'speaker' field. Building them from one function keeps the two modes from
+    drifting apart - the failure that let docker-compose pin
+    REFINER_PROMPT_VERSION to a prompt the code no longer shipped.
+    """
+    properties: dict = {
+        "index": {"type": "integer"},
+        "text": {"type": "string"},
+    }
+    required = ["index", "text"]
+    if include_speakers:
+        properties["speaker"] = {"type": "string"}
+        required.append("speaker")
+    return {
+        "type": "object",
+        "properties": {
+            "turns": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
                 },
-                "required": ["index", "speaker", "text"],
-            },
-        }
-    },
-    "required": ["turns"],
-}
+            }
+        },
+        "required": ["turns"],
+    }
+
+
+#: Speaker mode: the LLM corrects text AND reassigns speaker labels.
+REFINE_SCHEMA: dict = build_schema(include_speakers=True)
+#: Text-only mode: the LLM corrects text and leaves every label exactly as the
+#: diarizer produced it.
+TEXT_ONLY_SCHEMA: dict = build_schema(include_speakers=False)
 
 SYSTEM_PROMPT = """You are the transcript editor for a tabletop RPG (Dungeons & Dragons) session recording.
 
@@ -595,6 +626,93 @@ no commentary outside the JSON):
 """
 
 
+TEXT_ONLY_SYSTEM_PROMPT = """You are the transcript editor for a tabletop RPG (Dungeons & Dragons) session recording.
+
+You receive the raw automatic transcript of a game session, produced by a
+speech-to-text engine. The text is imperfect: wrong or dropped words, misheard
+names and terms, missing punctuation, run-on sentences.
+
+Your job is to produce a corrected version of the TEXT. Nothing else.
+
+Rules:
+
+* Fix transcription errors: spelling, names, grammar, punctuation, and flow.
+  You do NOT need to be 100% faithful to the exact words spoken; the goal is
+  that the text reads naturally and tells one coherent, consistent story.
+  Never invent content that was not said; if a turn is unintelligible, keep the
+  original text.
+
+* DO NOT change, add or remove speaker information. The speaker labels are
+  produced by a dedicated diarization system and a separate attribution engine
+  consumes them; a label you rewrite here is a measurement thrown away. The
+  output objects must not contain a speaker field at all.
+
+* Keep the exact same number of turns, in the same order: return exactly one
+  output object per input turn, identified by its "index". Timestamps and chunk
+  numbers are fixed and must never be repeated or reordered. Never merge,
+  split, remove or add turns.
+
+* A CAMPAIGN CAST is provided: the characters at the table, with the players
+  behind them and, when available, each character's physical description. Use
+  it to correct misheard character names. Do not invent characters outside it.
+
+### TRANSCRIPT REFINEMENT
+
+Correct transcription errors using the surrounding context and CAMPAIGN CAST.
+
+Pay particular attention to: character names, player names, locations, NPC
+names, monsters, D&D terminology, spells, abilities, items, and proper nouns.
+
+When a misheard word clearly corresponds to a known campaign-specific name or
+term, correct it. Use context from surrounding turns to resolve homophones,
+missing words, incorrect punctuation, and speech-to-text errors.
+
+However, do not invent dialogue, actions, events, or information that was not
+actually present in the transcript. Do not use generic D&D knowledge to fill in
+missing content. If a turn is genuinely unintelligible, preserve the original
+wording as much as possible.
+
+### CONFIDENCE-AWARE EDITING
+
+Each turn may carry the ASR engine's own confidence in the transcribed text:
+
+* "confidence" (0..1) is the turn-level mean of the per-sentence probabilities
+  reported by the speech engine for that utterance.
+* When a turn groups several source segments, "sentences" lists each segment's
+  text and its individual confidence.
+
+Confidence is OPTIONAL. When it is present, use it to decide what to edit:
+high confidence (~0.9 or more) means the engine is very sure of the words, so
+keep them unless the context or the CAMPAIGN CAST shows a concrete error. Low
+confidence means the words may have been misheard: rewrite only when the
+context really pins down the correct wording, otherwise keep the original. An
+invented correction is worse than a faithful low-confidence transcript.
+
+### OUTPUT CONSTRAINTS
+
+Keep the exact same number of turns as the input, in exactly the same order.
+Each output turn must preserve the original "index".
+
+Respond with a single JSON object matching EXACTLY this schema (no markdown,
+no commentary outside the JSON), and with NO "speaker" field:
+
+{schema}
+"""
+
+
+def system_prompt(*, include_speakers: bool) -> str:
+    """The system prompt for one refinement mode.
+
+    Speaker mode keeps the long contextual-identity prompt; text-only mode uses
+    a prompt that is deliberately short and explicitly forbids touching labels.
+    The attribution engine needs the DIARIZER's labels
+    (docs/attribution-model.md S6.5), so once the engine is on the LLM must not
+    rewrite them: a label the LLM guessed is not a measurement, and the engine
+    would be building its evidence on top of someone else's inference.
+    """
+    return SYSTEM_PROMPT if include_speakers else TEXT_ONLY_SYSTEM_PROMPT
+
+
 def build_window_message(
     turns: list[dict],
     *,
@@ -604,6 +722,7 @@ def build_window_message(
     total_windows: int,
     cast_lines: list[str] | None = None,
     member_count: int | None = None,
+    include_speakers: bool = True,
 ) -> str:
     """User message for one refinement window.
 
@@ -616,7 +735,11 @@ def build_window_message(
     lines.append(
         f"Session transcript refinement, window {window_index + 1}/{total_windows}."
     )
-    if member_count:
+    if not include_speakers:
+        lines.append(
+            "Correct the text only. Do not report, invent or change speakers."
+        )
+    if member_count and include_speakers:
         lines.append("")
         lines.append(
             f"People at the table: {member_count} (the campaign roster: DM + players).",
@@ -639,19 +762,25 @@ def build_window_message(
             "physical description after the dash):"
         )
         lines.extend(cast_lines)
-        lines.append(
-            "Use these names and descriptions to correct misheard names and to "
-            "attribute each turn to the right character. Speaker labels stay "
-            "canonical SPEAKER_XX values."
-        )
-    if context_blocks:
+        if include_speakers:
+            lines.append(
+                "Use these names and descriptions to correct misheard names and to "
+                "attribute each turn to the right character. Speaker labels stay "
+                "canonical SPEAKER_XX values."
+            )
+        else:
+            lines.append(
+                "Use these names to correct misheard names in the text. Do not "
+                "touch speaker labels."
+            )
+    if context_blocks and include_speakers:
         lines.append("")
         lines.append(
             "Speakers already finalized in earlier turns (keep these labels for the same people):"
         )
         for block in context_blocks:
             lines.append("- " + block)
-    if fixed_count > 0:
+    if fixed_count > 0 and include_speakers:
         lines.append("")
         lines.append(
             f"The first {fixed_count} turn(s) are already finalized - keep their speaker labels "
@@ -661,5 +790,9 @@ def build_window_message(
     lines.append("Turns to refine (JSON):")
     lines.append(json.dumps(turns, ensure_ascii=False))
     lines.append("")
-    lines.append('Return the refined turns as a single JSON object: {"turns": [...]}.')
+    lines.append(
+        'Return the refined turns as a single JSON object: {"turns": [...]}'
+        + ("" if include_speakers else " with no speaker field")
+        + "."
+    )
     return "\n".join(lines)

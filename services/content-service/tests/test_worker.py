@@ -321,7 +321,7 @@ async def test_process_job_happy_path(session_factory, settings):
         jobs = (await db.execute(select(GenerationJob))).scalars().all()
     apply_job = next(j for j in jobs if j.phase == "apply")
     assert apply_job.status == "done"
-    assert apply_job.prompt_version == "v11"
+    assert apply_job.prompt_version == "v12"
     assert float(apply_job.confidence) == 1.0
     assert _draft_ids_from(apply_job) == {
         PAGE_UUIDS["Aragorn"], PAGE_UUIDS["Moria"], PAGE_UUIDS["Entering Moria"],
@@ -407,6 +407,132 @@ async def test_process_job_skips_entities_already_documented(session_factory, se
     ready = next(ev for ev in publisher.events if ev.type == "content.plan.ready")
     assert ready.payload["skipped"] == 1
     assert ready.payload["create"] == 2
+
+
+def _attributed_storage() -> "FakeStorage":
+    """A storage holding a (minimal) ATTRIBUTED transcript.
+
+    With the engine on the worker reads transcripts/<id>/attributed.json instead
+    of the label map, so a test that only hands it the old transcript fails one
+    step later and hides what it meant to check.
+    """
+    return FakeStorage(
+        transcript={
+            "session_id": SESSION_ID,
+            "language": "en",
+            "roster": [
+                {
+                    "member_id": "m1",
+                    "player_name": "Alice",
+                    "character_name": "Aramil",
+                    "role": "player",
+                }
+            ],
+            "utterances": [
+                {
+                    "id": "u_00001",
+                    "start": 0.0,
+                    "end": 4.0,
+                    "text": "The gate opens.",
+                    "status": "auto_high",
+                    "speaker": {
+                        "member_id": "m1",
+                        "character_name": "Aramil",
+                        "label": "Alice — Aramil",
+                    },
+                }
+            ],
+        }
+    )
+
+
+async def test_the_review_is_what_starts_the_summary_when_attribution_is_on(
+    session_factory, settings
+):
+    """'attribution.review.completed' is the redesigned trigger (plan S5).
+
+    The gate only knew the OLD statuses, so the DM pressing Finish was answered
+    with "skipping: the summary phase only starts from speakers_identified" and
+    the session stayed on 'attribution_review' forever.
+    """
+    settings.attribution_enabled = True
+    session_client = FakeSessionClient(status="attribution_review")
+
+    await _run_phase1(
+        session_factory,
+        settings,
+        storage=_attributed_storage(),
+        session_client=session_client,
+        publisher=FakePublisher(),
+        event=Event(
+            type="attribution.review.completed",
+            payload={"session_id": SESSION_ID, "campaign_id": CAMPAIGN_ID},
+        ),
+    )
+
+    assert session_client.status_calls == [
+        (SESSION_ID, "summarizing", None),
+        (SESSION_ID, "summary_ready", None),
+    ]
+
+
+async def test_attribution_ready_starts_the_summary_too(session_factory, settings):
+    """The engine publishes the same event when there was nothing worth asking;
+    otherwise the session sat on 'attribution_ready', a status no event could
+    leave."""
+    settings.attribution_enabled = True
+    session_client = FakeSessionClient(status="attribution_ready")
+
+    await _run_phase1(
+        session_factory,
+        settings,
+        storage=_attributed_storage(),
+        session_client=session_client,
+        publisher=FakePublisher(),
+        event=Event(
+            type="attribution.review.completed",
+            payload={"session_id": SESSION_ID, "campaign_id": CAMPAIGN_ID},
+        ),
+    )
+
+    assert session_client.status_calls[0] == (SESSION_ID, "summarizing", None)
+
+
+async def test_speaker_identification_no_longer_starts_the_summary(session_factory, settings):
+    """Both services subscribe to 'speakers.identified'. With the engine on,
+    content-service must stand down and let the review happen - otherwise the
+    two race for the session and whichever loses is silently dropped."""
+    settings.attribution_enabled = True
+    session_client = FakeSessionClient(status="speakers_identified")
+    storage = FakeStorage()
+
+    await _run_phase1(
+        session_factory,
+        settings,
+        storage=storage,
+        session_client=session_client,
+        publisher=FakePublisher(),
+    )
+
+    assert session_client.status_calls == []
+    assert storage.downloads == []
+
+
+async def test_the_old_path_still_works_with_the_engine_off(session_factory, settings):
+    """ATTRIBUTION_ENABLED=false stays a real kill switch: the summary starts
+    from speaker identification, exactly as before the redesign."""
+    settings.attribution_enabled = False
+    session_client = FakeSessionClient(status="speakers_identified")
+
+    await _run_phase1(
+        session_factory,
+        settings,
+        storage=FakeStorage(),
+        session_client=session_client,
+        publisher=FakePublisher(),
+    )
+
+    assert session_client.status_calls[0] == (SESSION_ID, "summarizing", None)
 
 
 async def test_process_job_ignores_late_speaker_assignment(session_factory, settings):

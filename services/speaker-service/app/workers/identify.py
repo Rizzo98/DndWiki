@@ -46,6 +46,7 @@ from pathlib import Path
 
 import aio_pika
 from dnd_common.events import Event, connect_rabbitmq, consume, publish
+from dnd_common.purity import assess_purity
 
 from app.audio import slice_wav_bytes, speaker_windows
 from app.clients.session_service import (
@@ -57,10 +58,19 @@ from app.clients.session_service import (
     SessionServiceClient,
 )
 from app.core.config import ServiceSettings, get_settings
-from app.embedding import VoiceEmbedder
+from app.embedding import VoiceEmbedder, WindowAnalysis
+from app.evidence import (
+    CentroidHit,
+    aggregate_candidate_scores,
+    evidence_payload,
+    hits_from_points,
+    observation_evidence,
+)
 from app.history import HistoryEntry, HistorySample, manual_samples
-from app.identify import match_label
-from app.qdrant import VoiceprintStore
+from app.identify import anchor_verdict, match_label
+from app.observations import Observation, observation_point_id, plan_observations
+from app.qdrant import MemberVoiceModelStore, VoiceObservationStore, VoiceprintStore
+from app.quality import assess
 from app.relabel import RelabelResult, centroid, relabel_segments, speaker_turns
 from app.storage import ObjectStorage
 
@@ -71,6 +81,8 @@ _storage: ObjectStorage | None = None
 _client: SessionServiceClient | None = None
 _voiceprints: VoiceprintStore | None = None
 _embedder: VoiceEmbedder | None = None
+_member_models: MemberVoiceModelStore | None = None
+_observations: VoiceObservationStore | None = None
 
 
 def _get_settings() -> ServiceSettings:
@@ -108,6 +120,20 @@ def get_embedder(settings: ServiceSettings) -> VoiceEmbedder:
     return _embedder
 
 
+def get_member_models(settings: ServiceSettings) -> MemberVoiceModelStore:
+    global _member_models
+    if _member_models is None:
+        _member_models = MemberVoiceModelStore(settings)
+    return _member_models
+
+
+def get_observations(settings: ServiceSettings) -> VoiceObservationStore:
+    global _observations
+    if _observations is None:
+        _observations = VoiceObservationStore(settings)
+    return _observations
+
+
 def _embed_sync(audio_path: str, start: float, end: float, embedder: VoiceEmbedder) -> tuple[list[float], float]:
     """Slice + embed inside a worker thread (torchaudio/speechbrain block)."""
     clip = slice_wav_bytes(audio_path, start, end)
@@ -121,6 +147,7 @@ async def _finish(
     assignments: list[dict],
     client: SessionServiceClient,
     publisher: Callable[[Event], Awaitable[None]],
+    evidence: dict | None = None,
 ) -> None:
     """Park the session on the DM's speaker decisions, then publish the result.
 
@@ -149,25 +176,26 @@ async def _finish(
         )
     else:
         await client.update_status(session_id, STATUS_SPEAKERS_IDENTIFIED)
-    await publisher(
-        Event(
-            type="speakers.identified",
-            payload={
-                "session_id": session_id,
-                "campaign_id": campaign_id,
-                "speakers": [
-                    {
-                        "label": a["speaker_label"],
-                        "user_id": a["user_id"],
-                        "confidence": a["confidence"],
-                        "status": a["status"],
-                    }
-                    for a in assignments
-                ],
-                "pending_assignment": bool(unconfirmed),
-            },
-        )
-    )
+    payload: dict = {
+        "session_id": session_id,
+        "campaign_id": campaign_id,
+        "speakers": [
+            {
+                "label": a["speaker_label"],
+                "user_id": a["user_id"],
+                "confidence": a["confidence"],
+                "status": a["status"],
+            }
+            for a in assignments
+        ],
+        "pending_assignment": bool(unconfirmed),
+    }
+    if evidence is not None:
+        # The redesign's consumers read 'evidence' (per-observation nearest
+        # centroids); the legacy 'speakers' verdicts stay for one release so the
+        # old path keeps working unchanged (docs/attribution-plan.md S8).
+        payload["evidence"] = evidence
+    await publisher(Event(type="speakers.identified", payload=payload))
 
 
 async def process_identified(
@@ -178,6 +206,9 @@ async def process_identified(
     voiceprints: VoiceprintStore,
     embedder: VoiceEmbedder,
     publisher: Callable[[Event], Awaitable[None]],
+    *,
+    member_models: MemberVoiceModelStore | None = None,
+    observations_store: VoiceObservationStore | None = None,
 ) -> None:
     """Identify every diarized speaker of a session; raises on failure.
 
@@ -266,6 +297,11 @@ async def process_identified(
             session_id,
         )
 
+        # The observations must carry the SAME labels the verdicts and the
+        # rewritten artifacts use. Re-clustering overrides the raw diarizer
+        # labels, so observing the original segments would file the engine's
+        # voice evidence under labels that no longer exist anywhere else.
+        observed_segments = segments
         if event.type == "transcription.refined":
             # Labels/text were already fixed by the LLM contextual pass
             # (refiner-service): match the refined labels directly against the
@@ -281,17 +317,34 @@ async def process_identified(
                 storage, settings, session_id, diarization, transcript, result
             )
             assignments = await _match_relabeled(result, settings, voiceprints, campaign_id)
+            observed_segments = result.segments
         else:
             assignments = await _match_raw(
                 segments, staged, settings, voiceprints, embedder, campaign_id
             )
 
+        evidence = None
+        if settings.observations_enabled:
+            evidence = await _observe(
+                staged,
+                observed_segments,
+                settings=settings,
+                session_id=session_id,
+                campaign_id=campaign_id,
+                voiceprints=voiceprints,
+                embedder=embedder,
+                member_models=member_models,
+                observations_store=observations_store,
+            )
+            assignments = _refine_assignments(assignments, evidence, settings=settings)
+
         await client.upsert_speakers(session_id, assignments)
-        await _finish(session_id, campaign_id, assignments, client, publisher)
+        await _finish(session_id, campaign_id, assignments, client, publisher, evidence)
         logger.info(
-            "session %s speakers identified (%d labels)",
+            "session %s speakers identified (%d labels, %d observations)",
             session_id,
             len(assignments),
+            len((evidence or {}).get("observations", [])),
         )
     except Exception as exc:
         logger.exception("speaker identification failed for session %s", session_id)
@@ -621,12 +674,7 @@ async def _match_relabeled(
         if label in result.anchors:
             user_id, score = result.anchors[label]
             assignments.append(
-                {
-                    "speaker_label": label,
-                    "user_id": user_id,
-                    "confidence": round(score, 4),
-                    "status": "auto",
-                }
+                anchor_verdict(label, user_id=user_id, score=score, settings=settings)
             )
             continue
         embedding = result.label_embeddings.get(label)
@@ -682,36 +730,284 @@ async def _match_raw(
     return assignments
 
 
+def _refine_assignments(
+    assignments: list[dict], evidence: dict, *, settings: ServiceSettings
+) -> list[dict]:
+    """Re-derive each legacy verdict from the per-observation evidence.
+
+    A pooled label average and the label's best observation can disagree: a
+    label holding one clear speaker and one badly captured guest averages to a
+    mediocre cosine, while its best observation is a confident match. Since the
+    engine sees observations, the compatibility verdicts are computed the same
+    way, so the panel the DM still uses shows the number the engine actually
+    acted on and the two cannot drift apart.
+    """
+    records = evidence.get("observations") or []
+    if not records:
+        return assignments
+    by_label = _observation_label_scores(
+        records,
+        top_k=settings.member_score_top_k,
+        mode=settings.member_score_mode,
+    )
+    if not by_label:
+        return assignments
+
+    refined: list[dict] = []
+    for assignment in assignments:
+        bucket = by_label.get(str(assignment.get("speaker_label")))
+        if not bucket:
+            refined.append(assignment)
+            continue
+        candidate, score = max(bucket.items(), key=lambda item: item[1])
+        # Only a user-keyed candidate can be expressed in the legacy
+        # speaker_assignments shape (it stores user_id, not member_id).
+        user_id = candidate.split(":", 1)[1] if candidate.startswith("user:") else None
+        matched = score >= settings.speaker_match_threshold
+        refined.append(
+            {
+                **assignment,
+                "user_id": user_id if matched else assignment.get("user_id"),
+                "confidence": round(score, 4),
+                "status": "auto" if matched and user_id else assignment.get("status", "pending"),
+            }
+        )
+    return refined
+
+
+async def _centroid_hits(
+    embedding: list[float],
+    *,
+    settings: ServiceSettings,
+    voiceprints: VoiceprintStore,
+    member_models: MemberVoiceModelStore | None,
+    campaign_id: str,
+) -> list[CentroidHit]:
+    """Every campaign centroid that could own this observation, best first.
+
+    Both stores are searched on purpose. member_voice_models holds the
+    per-centroid models written from now on (member-keyed, multi-centroid);
+    voiceprints holds the legacy account-keyed prints plus the history samples.
+    Merging them means the transition needs no re-enrollment, and an old print
+    keeps contributing until a better one supersedes it.
+    """
+    hits: list[CentroidHit] = []
+    if member_models is not None and campaign_id:
+        try:
+            points = await member_models.search(
+                embedding, campaign_id, limit=settings.evidence_max_centroids
+            )
+            hits.extend(hits_from_points(points, centroid_prefix="model"))
+        except Exception:
+            logger.exception("member voice model search failed; using voiceprints only")
+    if campaign_id:
+        try:
+            points = await voiceprints.search(
+                embedding, campaign_id, limit=settings.evidence_max_centroids
+            )
+            hits.extend(hits_from_points(points, centroid_prefix="voiceprint"))
+        except Exception:
+            logger.exception("voiceprint search failed for campaign %s", campaign_id)
+    return hits
+
+
+async def _observe(
+    audio_path: str,
+    segments: list[dict],
+    *,
+    settings: ServiceSettings,
+    session_id: str,
+    campaign_id: str,
+    voiceprints: VoiceprintStore,
+    embedder: VoiceEmbedder,
+    member_models: MemberVoiceModelStore | None = None,
+    observations_store: VoiceObservationStore | None = None,
+) -> dict:
+    """Embed every speaker turn, store it, and report what each one matches.
+
+    This is the phase-0 replacement for 'one pooled window per label, one
+    cosine, one verdict' (docs/attribution-plan.md S2). Each turn becomes an
+    observation with its own vector, its own quality score and its own list of
+    nearest centroids; the noise a label-level average used to hide (one label
+    holding several people, one person spread over several labels) is exactly
+    what the engine now has the data to detect.
+
+    Returns the 'evidence' block of the speakers.identified payload. Never
+    raises: a missing store or an unreadable recording downgrades the evidence
+    to 'no voice data' rather than failing an otherwise good identification.
+    """
+    empty = evidence_payload(
+        [],
+        model_version=settings.voice_embedding_model,
+        embedding_version=settings.embedding_version,
+    )
+    batch = plan_observations(segments, min_sec=settings.observation_min_sec)
+    if not batch.observations:
+        return empty
+
+    windows = [
+        (batch.observations[index].start, batch.observations[index].end)
+        for index in batch.embeddable
+    ]
+    analyses: list[WindowAnalysis] = []
+    if windows:
+        try:
+            analyses = await asyncio.to_thread(
+                embedder.embed_windows_full_sync, audio_path, windows
+            )
+        except Exception:
+            logger.exception(
+                "could not embed the observations of session %s; text evidence only",
+                session_id,
+            )
+            analyses = []
+    analysis_by_index = {index: a for index, a in zip(batch.embeddable, analyses)}
+
+    points: list[tuple[str, list[float], dict]] = []
+    records: list[dict] = []
+    for observation in batch.observations:
+        analysis = analysis_by_index.get(observation.index)
+        embedding = analysis.embedding if analysis is not None else None
+        quality: float | None = None
+        hits: list[CentroidHit] = []
+        if embedding is not None and analysis is not None:
+            verdict = assess(
+                observation.duration,
+                snr_db=analysis.snr_db,
+                overlap_ratio=analysis.overlap_ratio,
+                min_sec=settings.observation_min_sec,
+                full_sec=settings.observation_full_sec,
+                floor=settings.observation_quality_floor,
+            )
+            quality = verdict.score
+            hits = await _centroid_hits(
+                embedding,
+                settings=settings,
+                voiceprints=voiceprints,
+                member_models=member_models,
+                campaign_id=campaign_id,
+            )
+            points.append(
+                (
+                    observation_point_id(session_id, observation.label, observation.index),
+                    embedding,
+                    {
+                        "campaign_id": str(campaign_id),
+                        "session_id": str(session_id),
+                        "observation_id": observation.key,
+                        "label": observation.label,
+                        "index": observation.index,
+                        "start_sec": round(observation.start, 3),
+                        "end_sec": round(observation.end, 3),
+                        "diar_confidence": observation.diar_confidence,
+                        "model_version": settings.voice_embedding_model,
+                        "embedding_version": settings.embedding_version,
+                        **verdict.as_payload(),
+                    },
+                )
+            )
+        records.append(
+            observation_evidence(
+                observation_id=observation.key,
+                label=observation.label,
+                index=observation.index,
+                start=observation.start,
+                end=observation.end,
+                quality=quality,
+                hits=hits,
+                limit=settings.evidence_max_centroids,
+                floor=settings.evidence_cosine_floor,
+            )
+        )
+
+    if observations_store is not None and points:
+        try:
+            await observations_store.upsert_many(points)
+        except Exception:
+            logger.exception(
+                "could not store the voice observations of session %s", session_id
+            )
+    return evidence_payload(
+        records,
+        model_version=settings.voice_embedding_model,
+        embedding_version=settings.embedding_version,
+    )
+
+
+def _observation_label_scores(
+    records: list[dict], *, top_k: int, mode: str
+) -> dict[str, dict[str, float]]:
+    """Per-input-label aggregate of a member's evidence, for the legacy verdicts.
+
+    The legacy panel still needs one number per diarized label. Instead of the
+    pooled cosine it used to compute, the number is now the top-k aggregate of
+    every observation inside that label, which is the same evidence the engine
+    consumes - so the panel and the engine can no longer disagree about how good
+    a match is.
+    """
+    scores: dict[str, dict[str, float]] = {}
+    for record in records:
+        hits = [
+            CentroidHit(
+                centroid_id=str(hit.get("centroid_id", "?")),
+                cosine=float(hit.get("cosine", 0.0)),
+                member_id=hit.get("member_id"),
+                user_id=hit.get("user_id"),
+                quality=hit.get("quality"),
+                source=hit.get("source"),
+            )
+            for hit in record.get("nearest_centroids", [])
+        ]
+        if not hits:
+            continue
+        per_observation = aggregate_candidate_scores(hits, top_k=top_k, mode=mode)
+        bucket = scores.setdefault(str(record.get("label", "")), {})
+        for candidate, score in per_observation.items():
+            bucket[candidate] = max(bucket.get(candidate, 0.0), score)
+    return scores
+
+
 async def process_assigned(
     event: Event,
     settings: ServiceSettings,
     storage: ObjectStorage,
     voiceprints: VoiceprintStore,
     embedder: VoiceEmbedder,
+    *,
+    member_models: MemberVoiceModelStore | None = None,
 ) -> None:
-    """DM named a speaker: enroll a session-derived voiceprint for that user.
+    """DM named a speaker: enroll what that name is worth as voice evidence.
 
-    The enrolled point becomes one of the "old, named" embeddings that later
-    sessions are compared against, so the name is reused automatically.
+    The old contract was 'one user-keyed voiceprint per named label, embedded
+    from the label's pooled window'. Two defects made that poison later sessions
+    (attribution-model S12.3):
+
+    1. a pooled window of a label that held two people enrolls a *mixture* that
+       matches neither of them, and every later session inherits the error;
+    2. the print was keyed on user_id, so a campaign member without a linked
+       account was logged as 'skipping voiceprint enrollment' and could never
+       auto-match in any later session, however often the DM named them.
+
+    Now every observation of the named label is embedded, gated on its own
+    quality and on the identity's purity, and stored as its own centroid keyed
+    on member_id. A member with several voice modes accumulates several
+    centroids and is scored against the best of them (S12.2).
     """
     payload = event.payload
     session_id = str(payload.get("session_id", ""))
     campaign_id = str(payload.get("campaign_id", ""))
     label = str(payload.get("label", ""))
     user_id = payload.get("user_id")
+    member_id = payload.get("member_id")
     audio_uri = payload.get("audio_uri")
+    purity_hint = payload.get("identity_purity")
 
     if not (session_id and campaign_id and label and audio_uri):
         logger.warning("speakers.assigned missing fields; skipping enrollment: %s", payload)
         return
-    if not user_id:
-        # A userless member (no linked account) was named: there is no
-        # user-keyed voiceprint to enroll, so later sessions cannot
-        # auto-match this voice by name yet. The assignment itself is
-        # already stored; only the enrollment step is skipped.
-        logger.info(
-            "speaker %s named without a linked user; skipping voiceprint enrollment",
-            label,
+    if not (user_id or member_id):
+        logger.warning(
+            "speaker %s named without a member or user link; nothing to enroll", label
         )
         return
 
@@ -727,41 +1023,32 @@ async def process_assigned(
         diarization = await storage.read_json(
             settings.minio_transcripts_bucket, f"transcripts/{session_id}/diarization.json"
         )
-        windows = speaker_windows(diarization.get("segments", []), settings.speaker_pool_sec)
-        if label not in windows:
-            logger.warning(
-                "no diarized window for label %s in session %s; skipping enrollment", label, session_id
-            )
-            return
-        start, end = windows[label]
-
-        embedding, duration = await asyncio.to_thread(_embed_sync, staged, start, end, embedder)
-        if duration < settings.voice_sample_min_sec:
-            logger.warning(
-                "clip for label %s too short (%.1fs); skipping enrollment", label, duration
-            )
-            return
-
-        await voiceprints.upsert(
-            str(uuid.uuid4()),
-            embedding,
-            {
-                "user_id": str(user_id),
-                "campaign_id": str(campaign_id),
-                # pseudo-uri: the session recording + label the print was derived from
-                "sample_uri": f"recordings/{session_id}#{label}",
-                "version": settings.embedding_version,
-                "source": "session",
-                "session_id": session_id,
-                "speaker_label": label,
-            },
+        written = await _enroll_observations(
+            staged,
+            diarization.get("segments", []),
+            label=label,
+            session_id=session_id,
+            campaign_id=campaign_id,
+            user_id=str(user_id) if user_id else None,
+            member_id=str(member_id) if member_id else None,
+            purity_hint=(
+                float(purity_hint)
+                if isinstance(purity_hint, (int, float)) and not isinstance(purity_hint, bool)
+                else None
+            ),
+            settings=settings,
+            voiceprints=voiceprints,
+            embedder=embedder,
+            member_models=member_models,
         )
-        logger.info(
-            "enrolled session-derived voiceprint for user %s (label %s, session %s)",
-            user_id,
-            label,
-            session_id,
-        )
+        if written:
+            logger.info(
+                "enrolled %d observation centroid(s) for member %s (label %s, session %s)",
+                written,
+                member_id or user_id,
+                label,
+                session_id,
+            )
     finally:
         if staged is not None:
             try:
@@ -770,15 +1057,137 @@ async def process_assigned(
                 pass
 
 
+async def _enroll_observations(
+    audio_path: str,
+    segments: list[dict],
+    *,
+    label: str,
+    session_id: str,
+    campaign_id: str,
+    user_id: str | None,
+    member_id: str | None,
+    purity_hint: float | None,
+    settings: ServiceSettings,
+    voiceprints: VoiceprintStore,
+    embedder: VoiceEmbedder,
+    member_models: MemberVoiceModelStore | None,
+) -> int:
+    """Embed and store the gated observations of one DM-named label.
+
+    Gate order (cheapest first): the label must exist, its observations must be
+    long enough to embed, the identity must look pure, and each individual
+    observation must clear the quality floor. An impure identity enrolls
+    NOTHING: a mixture print is worse than no print, because it silently
+    poisons every later session of the campaign.
+    """
+    batch = plan_observations(segments, min_sec=settings.voice_sample_min_sec)
+    mine = [o for o in batch.observations if o.label == label]
+    embeddable = [o for o in mine if o.index in set(batch.embeddable)]
+    if not embeddable:
+        logger.warning(
+            "no diarized turn long enough for label %s in session %s; skipping enrollment",
+            label,
+            session_id,
+        )
+        return 0
+
+    windows = [(o.start, o.end) for o in embeddable]
+    analyses = await asyncio.to_thread(embedder.embed_windows_full_sync, audio_path, windows)
+
+    vectors: list[list[float]] = []
+    durations: list[float] = []
+    graded: list[tuple[Observation, WindowAnalysis, float]] = []
+    for observation, analysis in zip(embeddable, analyses):
+        if analysis.embedding is None:
+            continue
+        verdict = assess(
+            observation.duration,
+            snr_db=analysis.snr_db,
+            overlap_ratio=analysis.overlap_ratio,
+            min_sec=settings.voice_sample_min_sec,
+            full_sec=settings.observation_full_sec,
+            floor=settings.enroll_min_quality,
+        )
+        vectors.append(analysis.embedding)
+        durations.append(observation.duration)
+        graded.append((observation, analysis, verdict.score))
+
+    if not vectors:
+        logger.warning("nothing embeddable for label %s in session %s", label, session_id)
+        return 0
+
+    purity = purity_hint
+    if purity is None:
+        purity = assess_purity(vectors, durations=durations).purity
+    if purity < settings.enroll_min_purity:
+        logger.warning(
+            "label %s in session %s looks impure (purity %.2f); enrolling nothing "
+            "rather than poisoning the campaign with a mixture print",
+            label,
+            session_id,
+            purity,
+        )
+        return 0
+
+    written = 0
+    for observation, analysis, quality in graded:
+        if quality < settings.enroll_min_quality:
+            logger.info(
+                "skipping observation %s (quality %.2f below the enrollment floor)",
+                observation.key,
+                quality,
+            )
+            continue
+        assert analysis.embedding is not None
+        payload = {
+            "campaign_id": campaign_id,
+            "source": "session",
+            "session_id": session_id,
+            "speaker_label": label,
+            "observation_id": observation.key,
+            "sample_uri": f"recordings/{session_id}#{observation.key}",
+            "version": settings.embedding_version,
+            "quality": round(quality, 4),
+            "weight": round(quality, 4),
+            "identity_purity": round(purity, 4),
+            "start_sec": round(observation.start, 3),
+            "end_sec": round(observation.end, 3),
+        }
+        if member_id:
+            payload["member_id"] = member_id
+        if user_id:
+            payload["user_id"] = user_id
+
+        if member_models is not None and member_id:
+            point_id = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"dnd:member-voice-model:{campaign_id}:{member_id}:{session_id}:{observation.key}",
+                )
+            )
+            await member_models.upsert(point_id, analysis.embedding, payload)
+        if user_id:
+            # Legacy collection: still written so the transition needs no
+            # big-bang re-enrollment, and so anything still reading voiceprints
+            # (the history backfill, the old panel) sees the new samples.
+            await voiceprints.upsert(str(uuid.uuid4()), analysis.embedding, payload)
+        written += 1
+    return written
+
+
 async def handle(event: Event, connection: aio_pika.abc.AbstractConnection) -> None:
     """Consume handler: dispatch on event type with process-level singletons."""
     settings = _get_settings()
     storage = get_storage(settings)
     voiceprints = get_voiceprints(settings)
     embedder = get_embedder(settings)
+    member_models = get_member_models(settings)
+    observations_store = get_observations(settings)
 
     if event.type == "speakers.assigned":
-        await process_assigned(event, settings, storage, voiceprints, embedder)
+        await process_assigned(
+            event, settings, storage, voiceprints, embedder, member_models=member_models
+        )
         return
 
     client = get_client(settings)
@@ -786,7 +1195,17 @@ async def handle(event: Event, connection: aio_pika.abc.AbstractConnection) -> N
     async def publisher(ev: Event) -> None:
         await publish(connection, ev)
 
-    await process_identified(event, settings, storage, client, voiceprints, embedder, publisher)
+    await process_identified(
+        event,
+        settings,
+        storage,
+        client,
+        voiceprints,
+        embedder,
+        publisher,
+        member_models=member_models,
+        observations_store=observations_store,
+    )
 
 
 async def main() -> None:

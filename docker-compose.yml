@@ -367,6 +367,9 @@ services:
       # When true, transcription.completed is left to refiner-service (LLM
       # contextual pass); speaker-service identifies from transcription.refined
       REFINER_ENABLED: ${REFINER_ENABLED:-true}
+      # Lets this service warn when it is asked to build evidence from labels the
+      # LLM rewrote (see REFINER_SPEAKERS in the refiner block).
+      ATTRIBUTION_ENABLED: ${ATTRIBUTION_ENABLED:-false}
       HF_TOKEN: ${HF_TOKEN:-}
       # HF's Xet CDN is flaky on some networks; classic HTTP is more reliable
       HF_HUB_DISABLE_XET: "1"
@@ -400,7 +403,10 @@ services:
       LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.2}
       LLM_CHUNK_CONCURRENCY: ${LLM_CHUNK_CONCURRENCY:-4}
       LLM_JSON_RETRIES: ${LLM_JSON_RETRIES:-1}
-      PROMPT_VERSION: ${PROMPT_VERSION:-v11}
+      PROMPT_VERSION: ${PROMPT_VERSION:-v12}
+      # With the engine on, generation reads the attributed transcript and the
+      # attribution gate filters what may reach a character page.
+      ATTRIBUTION_ENABLED: ${ATTRIBUTION_ENABLED:-false}
       CHUNK_TOKENS: ${CHUNK_TOKENS:-4000}
       CHUNK_OVERLAP: ${CHUNK_OVERLAP:-0.1}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
@@ -449,7 +455,18 @@ services:
       REFINER_TEMPERATURE: ${REFINER_TEMPERATURE:-0.0}
       REFINER_MAX_TOKENS: ${REFINER_MAX_TOKENS:-4096}
       REFINER_JSON_RETRIES: ${REFINER_JSON_RETRIES:-1}
-      REFINER_PROMPT_VERSION: ${REFINER_PROMPT_VERSION:-v2}
+      # MUST match refiner-service/app/prompts.py PROMPT_VERSION. It defaulted
+      # to v2 while the code declared v3, so the version recorded on every
+      # refined transcript (and in generation_jobs.prompt_version downstream)
+      # did not identify the prompt that actually ran - which makes every
+      # version-pinned claim about a transcript unverifiable.
+      REFINER_PROMPT_VERSION: ${REFINER_PROMPT_VERSION:-v4}
+      # true  = the pass corrects the text AND reassigns speaker labels (legacy)
+      # false = TEXT ONLY: labels stay exactly as the diarizer produced them.
+      # Set false when the attribution engine is on (ATTRIBUTION_ENABLED=true):
+      # the engine consumes the diarizer's labels as measurements, and a label
+      # the LLM guessed is not a measurement (attribution-model S6.5).
+      REFINER_SPEAKERS: ${REFINER_SPEAKERS:-true}
       # Turns per LLM call + overlap used to carry labels across windows
       REFINER_WINDOW_TURNS: ${REFINER_WINDOW_TURNS:-100}
       REFINER_WINDOW_OVERLAP: ${REFINER_WINDOW_OVERLAP:-15}
@@ -468,6 +485,84 @@ services:
       minio-init: { condition: service_completed_successfully }
       session-service: { condition: service_started }
       campaign-service: { condition: service_started }
+    networks: [dnd-net]
+
+  # ------------------------------------------------------ attribution-service
+  # The evidence-first speaker attribution engine (docs/attribution-model.md).
+  # It takes over from speaker-service once the speakers are identified, holds
+  # the session on 'attribution_review' (a RESTING state the DM can skip), and
+  # writes transcripts/{id}/attributed.json for content-service to read instead
+  # of a label map. ATTRIBUTION_ENABLED=false keeps the old path byte-identical.
+  attribution-service:
+    build:
+      context: .
+      dockerfile: services/attribution-service/Dockerfile
+    environment:
+      <<: *common-env
+      SERVICE_NAME: attribution-service
+      SERVICE_DB_NAME: dnd_attribution
+      # kill switch: with it off nothing in this service runs and speaker-service
+      # / the session page behave exactly as they did before the redesign
+      ATTRIBUTION_ENABLED: ${ATTRIBUTION_ENABLED:-false}
+      ENGINE_VERSION: ${ATTR_ENGINE_VERSION:-attr-1}
+      # status thresholds (S7.1). auto_high needs BOTH a high posterior and a
+      # wide margin AND a second corroborating channel: a single channel never
+      # yields high confidence, which is how a bare cosine of 0.76 reached the
+      # wiki before.
+      AUTO_HIGH_PMIN: ${ATTR_AUTO_HIGH_PMIN:-0.90}
+      AUTO_HIGH_MARGIN: ${ATTR_AUTO_HIGH_MARGIN:-0.50}
+      AUTO_LOW_PMIN: ${ATTR_AUTO_LOW_PMIN:-0.60}
+      PROPAGATED_PMIN: ${ATTR_PROPAGATED_PMIN:-0.95}
+      PROPAGATED_MARGIN: ${ATTR_PROPAGATED_MARGIN:-0.75}
+      # review budget and stopping rule (S9, S11)
+      GAIN_FLOOR_BITS: ${ATTR_GAIN_FLOOR_BITS:-0.15}
+      TARGET_UNRESOLVED: ${ATTR_TARGET_UNRESOLVED:-0.10}
+      MAX_QUESTIONS: ${ATTR_MAX_QUESTIONS:-8}
+      EVENT_STAKES_THRESHOLD: ${ATTR_EVENT_STAKES:-0.7}
+      # Ranking cost. The expected gain is MEASURED - a propagation per option
+      # per candidate - and a four-hour session offers hundreds of candidates,
+      # so only the most promising ATTR_SIMULATION_BUDGET of them are simulated
+      # and only the ATTR_SIMULATED_OPTIONS most likely answers of each. Raise
+      # both for a more thorough ranking and a slower pass.
+      SIMULATION_BUDGET: ${ATTR_SIMULATION_BUDGET:-24}
+      MAX_SIMULATED_OPTIONS: ${ATTR_SIMULATED_OPTIONS:-3}
+      # structure (S5)
+      PURITY_SPLIT_THRESHOLD: ${ATTR_PURITY_SPLIT_THRESHOLD:-0.80}
+      LOCAL_REDIARIZE_WINDOW: ${ATTR_LOCAL_REDIARIZE_WINDOW:-1.5}
+      # inference (S4.3/S4.4): the same-voice coupling of an identity MEASURED
+      # pure (purity 1.0). An identity whose purity was never measured gets the
+      # neutral 0.5, so this knob only prices the measured case. Lower = the
+      # cluster is trusted harder, and one utterance's evidence spreads further.
+      SAME_VOICE_EPS: ${ATTR_SAME_VOICE_EPS:-0.05}
+      SAME_VOICE_NEIGHBOURS: ${ATTR_SAME_VOICE_NEIGHBOURS:-8}
+      # identity-evidence pass (S6): a DIFFERENT, earlier and cheaper question
+      # than the wiki extraction, on the cheap model, with a small output
+      EVIDENCE_CHUNK_TOKENS: ${ATTR_EVIDENCE_CHUNK_TOKENS:-8000}
+      EVIDENCE_MODEL: ${ATTR_EVIDENCE_MODEL:-}
+      PROMPT_VERSION: ${ATTR_PROMPT_VERSION:-attr-ev-v2}
+      LLM_PROVIDER: ${LLM_PROVIDER:-deepseek}
+      LLM_MODEL: ${LLM_MODEL:-deepseek/deepseek-chat}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
+      SESSION_SERVICE_URL: http://session-service:8000
+      CAMPAIGN_SERVICE_URL: http://campaign-service:8000
+      WIKI_SERVICE_URL: http://wiki-service:8000
+      SPEAKER_SERVICE_URL: http://speaker-service:8000
+    ports:
+      - "8011:8000"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.attribution.rule=(Host(`api.dnd.localhost`) || Host(`gateway`)) && PathPrefix(`/api/attribution`)
+      - traefik.http.routers.attribution.entrypoints=web
+      - traefik.http.services.attribution.loadbalancer.server.port=8000
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      minio-init: { condition: service_completed_successfully }
+      session-service: { condition: service_started }
+      speaker-service: { condition: service_started }
     networks: [dnd-net]
 
   # ------------------------------------------------------------ wiki-service

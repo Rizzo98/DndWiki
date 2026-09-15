@@ -38,14 +38,32 @@ class ServiceSettings(Settings):
     anthropic_api_key: str = ""
     ollama_base_url: str = ""
     # Version of app/prompts.py shipped with this deployment; recorded per job.
-    prompt_version: str = "v11"
+    # KEEP IN SYNC with prompts.PROMPT_VERSION. v12 adds source_refs to every
+    # extracted item and an explicit actor to every event, which is what lets
+    # the attribution gate verify a fact instead of trusting it.
+    prompt_version: str = "v12"
     # Parallel per-chunk LLM calls per session job.
     llm_chunk_concurrency: int = 4
     # Corrective retries per chunk when the LLM returns malformed JSON
     # (0 disables retries; each retry re-asks the model with the parse error).
     llm_json_retries: int = 1
     # Safety cap: refuse to generate when a session yields more chunks than this.
-    max_chunks_per_session: int = 16
+    # Raised from 16 for the redesign: the '[u_XXXXX]' reference on every view
+    # line adds roughly 2.5 tokens per line, which on a four-hour session is one
+    # to two extra chunks - and exceeding the cap raises ValueError and fails the
+    # job, so the old ceiling would have turned a correct change into an outage.
+    max_chunks_per_session: int = 24
+
+    # --- attribution (docs/attribution-model.md) ---
+    # When true, generation reads transcripts/{id}/attributed.json instead of
+    # transcript.json + the speakers.identified label map, and the attribution
+    # gate filters what may reach a character page. False keeps the old path.
+    attribution_enabled: bool = False
+    # NOTE: there is deliberately no attribution_service_url here. Generation
+    # reads transcripts/{id}/attributed.json from MinIO - the same artifact the
+    # engine writes and the audit trail the DM can inspect - rather than asking
+    # the service over HTTP, so a down attribution-service cannot stall a session
+    # whose attribution is already computed.
 
     # --- transcript -> chunking ---
     chunk_tokens: int = 4000

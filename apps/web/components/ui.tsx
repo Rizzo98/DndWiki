@@ -136,7 +136,12 @@ export const SESSION_STATUS_TONE: Record<string, BadgeTone> = {
   refined: "blue",
   identifying_speakers: "violet",
   speakers_identified: "violet",
+  // retired as a blocking state; shown only for in-flight sessions
   speaker_pending: "orange",
+  attributing: "violet",
+  attribution_ready: "violet",
+  // the resting review state: the pipeline is waiting for the DM, not working
+  attribution_review: "blue",
   summarizing: "amber",
   summary_ready: "violet",
   generating_wiki: "violet",
@@ -183,6 +188,44 @@ export function Alert({ tone = "error", children }: { tone?: "error" | "success"
     info: "border-slate-700 bg-slate-800/60 text-slate-300",
   };
   return <div className={`rounded-lg border px-4 py-3 text-sm ${tones[tone]}`}>{children}</div>;
+}
+
+/**
+ * A collapsed disclosure, closed by default.
+ *
+ * The redesign's main UX change is that the plumbing moves DOWN the page: the
+ * raw transcript and the speaker/voice machinery are things the DM reaches for
+ * when they want them, not what the page leads with (docs/attribution-ux.md S2,
+ * S7). <details> is used rather than a JS disclosure so the content is still in
+ * the DOM (searchable, and reachable without JavaScript).
+ */
+export function Collapsible({
+  summary,
+  children,
+  defaultOpen = false,
+  tone = "slate",
+}: {
+  summary: ReactNode;
+  children: ReactNode;
+  defaultOpen?: boolean;
+  tone?: "slate" | "subtle";
+}) {
+  return (
+    <details
+      open={defaultOpen}
+      className={`group rounded-xl border p-5 ${
+        tone === "subtle" ? "border-slate-800/60 bg-slate-900/40" : "border-slate-800 bg-slate-900"
+      }`}
+    >
+      <summary className="cursor-pointer list-none text-sm font-semibold text-slate-200 marker:hidden">
+        <span className="inline-flex items-center gap-2">
+          <span className="text-slate-500 transition-transform group-open:rotate-90">▶</span>
+          {summary}
+        </span>
+      </summary>
+      <div className="mt-4">{children}</div>
+    </details>
+  );
 }
 
 export function EmptyState({ children }: { children: ReactNode }) {

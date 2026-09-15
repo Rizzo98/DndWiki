@@ -57,7 +57,15 @@ export type SessionStatus =
   | "refined"
   | "identifying_speakers"
   | "speakers_identified"
+  /** @deprecated retired as a BLOCKING state by the attribution redesign and
+   * accepted for one release as an alias of "attribution_review". */
   | "speaker_pending"
+  /** The attribution engine is computing a revision. */
+  | "attributing"
+  /** The belief is written down; the review is about to be offered. */
+  | "attribution_ready"
+  /** RESTING: the DM answers the engine's questions. Skippable, NEVER blocking. */
+  | "attribution_review"
   /** The session summary is being (re)built from the transcript. */
   | "summarizing"
   /** Draft summary waiting for the DM's review: the wiki is not generated yet. */
@@ -120,6 +128,175 @@ export interface WikiPage {
   updated_by: string | null;
   created_at: string;
   updated_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Speaker attribution (docs/attribution-model.md)
+// ---------------------------------------------------------------------------
+
+/**
+ * How sure the engine is about one utterance, and therefore what the wiki may
+ * do with it. The order is the monotonicity rule: a consumer may never promote
+ * an utterance to a status it was not assigned.
+ *
+ * - `user_confirmed`  the DM answered a question covering this utterance
+ * - `auto_high`       high posterior AND a wide margin AND a second channel
+ * - `propagated`      inferred from somebody else's answer (stricter bar)
+ * - `auto_low`        plausible, but not enough to write a character fact
+ * - `unresolved`      the engine does not know; describe at party level
+ */
+export type AttributionStatus =
+  | "user_confirmed"
+  | "auto_high"
+  | "propagated"
+  | "auto_low"
+  | "unresolved";
+
+/** The statuses that may back a character-level fact on a page. */
+export const CONFIDENT_ATTRIBUTION_STATUSES: readonly AttributionStatus[] = [
+  "user_confirmed",
+  "auto_high",
+  "propagated",
+];
+
+export interface AttributionSpeaker {
+  member_id: string | null;
+  character_name: string | null;
+  player_name: string | null;
+  role: Role;
+  mode: string | null;
+  label: string | null;
+}
+
+export interface AttributedUtterance {
+  id: string;
+  start: number;
+  end: number;
+  text: string;
+  speaker: AttributionSpeaker | null;
+  status: AttributionStatus;
+  confidence: number | null;
+  kind: string | null;
+  stakes: number;
+  decided_by: string | null;
+}
+
+export interface AttributedTranscript {
+  session_id: string;
+  campaign_id: string;
+  language: string;
+  attribution_revision: number;
+  coverage: number;
+  unresolved_stakes: number;
+  roster: Array<{
+    member_id: string;
+    player_name: string | null;
+    character_name: string | null;
+    role: Role;
+    label: string;
+  }>;
+  utterances: AttributedUtterance[];
+}
+
+/** One thing the DM can pick. *I don't know* is always the last option. */
+export interface ReviewOption {
+  key: string;
+  label: string;
+  why?: string;
+}
+
+export type ReviewQuestionKind =
+  | "who_did"
+  | "who_said"
+  | "same_voice"
+  | "different_voice"
+  | "who_is_voice"
+  | "new_person";
+
+export interface ReviewQuestion {
+  id: string | null;
+  kind: ReviewQuestionKind;
+  prompt_text: string;
+  options: ReviewOption[];
+  target_utterances: string[];
+  target_voices: string[];
+  hook: {
+    quote?: string;
+    audio?: { start: number; end: number };
+    audio_a?: { start: number; end: number };
+    audio_b?: { start: number; end: number };
+    ref?: string;
+    note?: string;
+  };
+  cost: number;
+  mean_stakes: number;
+  expected_gain?: number;
+  score?: number;
+}
+
+export interface ReviewStop {
+  stop: boolean;
+  reason: string;
+  detail: Record<string, unknown>;
+}
+
+export interface ReviewStatus {
+  coverage: number;
+  unresolved: number;
+  buckets: Partial<Record<AttributionStatus, number>>;
+  questions_asked: number;
+  questions_planned: number;
+  finished: boolean;
+  /** The DM's own progress: what was asked, what was answered, and whether the
+   *  plan is an estimate or a LOWER BOUND (the simulation stops at the cap). */
+  plan: {
+    questions: number | null;
+    answered: number;
+    max_questions: number;
+    is_lower_bound: boolean;
+  };
+  run: {
+    status: string;
+    questions_planned: number | null;
+    questions_asked: number;
+    coverage_before: number | null;
+    coverage_after: number | null;
+    stop_reason: string | null;
+    engine_version: string | null;
+  };
+}
+
+export interface ReviewAnswerResult {
+  resolved_utterances: number;
+  resolved_sec: number;
+  coverage: number;
+  learned: { capabilities: number; voice_centroids: number };
+  next_question: { prompt_text: string; kind: ReviewQuestionKind } | null;
+  stop: ReviewStop;
+}
+
+/** A voice identity: anonymous, session-scoped, and NEVER shown as a person.
+ *
+ * The guess fields are what the ENGINE makes of this voice right now - a guess
+ * with a number, which is exactly the kind of claim the DM is allowed to
+ * disagree with. They are absent when the engine has not run, which is why they
+ * are optional rather than zero-filled.
+ */
+export interface VoiceIdentitySummary {
+  id: string;
+  handle: string;
+  speech_sec: number;
+  purity: number | null;
+  observations: number;
+  status: string;
+  /** Candidate key the engine leans towards ('member:<id>' or 'unknown'). */
+  guess?: string;
+  /** That candidate as a name the DM recognises. */
+  guess_label?: string;
+  /** Pooled posterior of the voice's own utterances, 0..1. */
+  guess_confidence?: number;
+  /** Set when the DM placed this voice by hand; null when they have not. */
+  confirmed?: string | null;
 }
 
 /** Typed API error. */

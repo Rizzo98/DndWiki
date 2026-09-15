@@ -29,6 +29,15 @@ class ServiceSettings(Settings):
     # as before the refiner existed.
     refiner_enabled: bool = True
 
+    # --- what the LLM is allowed to change ---
+    # True  (legacy): the pass corrects the text AND reassigns speaker labels.
+    # False: text only - the labels stay exactly as the diarizer produced them.
+    # The attribution redesign needs the DIARIZER's labels as measurements
+    # (docs/attribution-model.md S6.5), so a deployment with the engine on sets
+    # REFINER_SPEAKERS=false; the refiner stamps 'speakers_refined' on the event
+    # either way, so downstream consumers can tell which mode ran.
+    refiner_speakers: bool = True
+
     # --- LLM (via LiteLLM, same provider config as content-service) ---
     # The model string is LiteLLM's "provider/model", which selects the API.
     llm_provider: str = "deepseek"
@@ -40,7 +49,12 @@ class ServiceSettings(Settings):
     refiner_json_retries: int = 1
     # Version of app/prompts.py shipped with this deployment; recorded on the
     # rewritten artifacts so the DM can see which prompt produced a transcript.
-    prompt_version: str = "v3"
+    # KEEP IN SYNC with prompts.PROMPT_VERSION and with the REFINER_PROMPT_VERSION
+    # default in docker-compose.yml: this string is what makes a transcript
+    # auditable, and it silently drifted (compose pinned v2 while the code
+    # declared v3), which made every version-pinned claim in the design
+    # unverifiable.
+    prompt_version: str = "v4"
     # Optional per-stage model override (e.g. a bigger editor model); empty
     # falls back to llm_model.
     refiner_model: str = ""

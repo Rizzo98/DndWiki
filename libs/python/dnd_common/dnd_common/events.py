@@ -42,12 +42,25 @@ TOPOLOGY: dict[str, list[str]] = {
         "transcription.refined",
         "speakers.assigned",
     ],
+    # attribution.jobs: the evidence-first attribution engine. It takes over
+    # from speaker-service once the speakers are identified, recomputes on an
+    # answer, and can be asked for an explicit recompute (a later review of an
+    # earlier session, a calibration refit).
+    "attribution.jobs": [
+        "speakers.identified",
+        "attribution.answered",
+        "attribution.recompute",
+    ],
     # content.generate drives the whole content pipeline: the summary phase
-    # (speakers.identified / speakers.assigned -> draft summary), the DM's
+    # (attribution.review.completed, and -- during the transition --
+    # speakers.identified / speakers.assigned -> draft summary), the DM's
     # summary review loop (summary.regenerate), the change-set proposal built
     # from the confirmed summary (summary.confirmed) and the write of the
     # change set the DM confirmed (plan.confirmed)
     "content.generate": [
+        # the redesign's trigger: the review is over (finished, skipped or
+        # waived) and the attributed artifact is final
+        "attribution.review.completed",
         "speakers.identified",
         "speakers.assigned",
         "summary.regenerate",
@@ -58,6 +71,7 @@ TOPOLOGY: dict[str, list[str]] = {
     "notification.events": [
         "wiki.draft_ready",
         "speaker.pending",
+        "attribution.review.ready",
         "session.published",
         "wiki.published",
     ],
@@ -69,6 +83,7 @@ JOB_QUEUES: frozenset[str] = frozenset(
         "transcription.jobs",
         "transcripts.refine",
         "speakers.identify",
+        "attribution.jobs",
         "content.generate",
     }
 )

@@ -6,9 +6,19 @@ accidentally jump the pipeline forward or backward.
 
     uploaded -> recorded -> transcribing -> transcribed -> refining -> refined
         -> identifying_speakers -> speakers_identified
-        -> (speaker_pending: DM assigns) -> summarizing -> summary_ready
+        -> attributing -> attribution_ready
+        -> attribution_review   (RESTING, skippable, non-blocking)
+        -> summarizing -> summary_ready
         -> generating_wiki -> wiki_plan_ready -> applying_wiki -> content_ready
         -> reviewed -> published
+
+'attributing'/'attribution_ready'/'attribution_review' is the ATTRIBUTION stage
+(attribution-service). The engine computes a per-utterance belief about who said
+what; 'attribution_review' is where the DM answers its questions. It replaces
+'speaker_pending' - which BLOCKED the pipeline until every diarized label was
+confirmed by hand - with a resting state the DM can skip, because the engine
+reports how much of the session it is actually confident about and the rest is
+recorded as unresolved rather than invented.
 
 'refining'/'refined' is the LLM contextual-diarization stage (refiner-service,
 between transcription and speaker identification). When the refiner is
@@ -58,7 +68,16 @@ class SessionStatus(str, Enum):
     REFINED = "refined"
     IDENTIFYING_SPEAKERS = "identifying_speakers"
     SPEAKERS_IDENTIFIED = "speakers_identified"
+    # Retired as a BLOCKING state by the attribution redesign; still accepted so
+    # in-flight sessions survive the deploy (see LEGACY_STATUS_ALIASES below).
     SPEAKER_PENDING = "speaker_pending"
+    # The attribution stage: 'attributing' is the engine computing a revision,
+    # 'attribution_ready' is the belief being written down, and
+    # 'attribution_review' is the RESTING state where the DM answers the
+    # engine's questions. It is skippable and never blocks the pipeline.
+    ATTRIBUTING = "attributing"
+    ATTRIBUTION_READY = "attribution_ready"
+    ATTRIBUTION_REVIEW = "attribution_review"
     SUMMARIZING = "summarizing"
     SUMMARY_READY = "summary_ready"
     GENERATING_WIKI = "generating_wiki"
@@ -83,13 +102,42 @@ ALLOWED_TRANSITIONS: dict[SessionStatus, set[SessionStatus]] = {
     SessionStatus.REFINED: {SessionStatus.IDENTIFYING_SPEAKERS, SessionStatus.FAILED},
     SessionStatus.IDENTIFYING_SPEAKERS: {
         SessionStatus.SPEAKERS_IDENTIFIED,
-        SessionStatus.SPEAKER_PENDING,
+        SessionStatus.SPEAKER_PENDING,  # legacy: pre-redesign identification
         SessionStatus.FAILED,
     },
-    SessionStatus.SPEAKER_PENDING: {SessionStatus.SPEAKERS_IDENTIFIED, SessionStatus.FAILED},
+    SessionStatus.SPEAKER_PENDING: {
+        SessionStatus.SPEAKERS_IDENTIFIED,
+        SessionStatus.ATTRIBUTING,  # a session parked here can still be attributed
+        SessionStatus.FAILED,
+    },
     SessionStatus.SPEAKERS_IDENTIFIED: {
-        SessionStatus.SUMMARIZING,
-        SessionStatus.SPEAKER_PENDING,
+        SessionStatus.ATTRIBUTING,  # the engine takes over
+        SessionStatus.SUMMARIZING,  # attribution disabled / engine unavailable
+        SessionStatus.SPEAKER_PENDING,  # legacy blocking panel
+        SessionStatus.FAILED,
+    },
+    # The attribution stage. 'attribution_review' is the resting state: the DM
+    # may leave it at any time (Finish / Skip), and nothing downstream waits for
+    # it -- unlike the old 'speaker_pending', which blocked the pipeline until
+    # every label was confirmed.
+    SessionStatus.ATTRIBUTING: {
+        SessionStatus.ATTRIBUTION_READY,
+        SessionStatus.ATTRIBUTION_REVIEW,
+        SessionStatus.FAILED,
+    },
+    SessionStatus.ATTRIBUTION_READY: {
+        SessionStatus.ATTRIBUTION_REVIEW,
+        SessionStatus.SUMMARIZING,  # nothing worth asking; go straight on
+        # An explicit recompute: 'attribution.recompute' exists so a session can
+        # be re-attributed after the DM enrolled a voiceprint or answered the
+        # questions that made it worth asking. Without this edge that event did
+        # nothing at all on a session that had finished attributing once.
+        SessionStatus.ATTRIBUTING,
+        SessionStatus.FAILED,
+    },
+    SessionStatus.ATTRIBUTION_REVIEW: {
+        SessionStatus.ATTRIBUTING,  # a new answer triggers a recompute
+        SessionStatus.SUMMARIZING,  # DM pressed Finish / the engine stopped
         SessionStatus.FAILED,
     },
     # The session summary is the reviewable intermediate layer: 'summarizing'
@@ -99,6 +147,11 @@ ALLOWED_TRANSITIONS: dict[SessionStatus, set[SessionStatus]] = {
     SessionStatus.SUMMARY_READY: {
         SessionStatus.GENERATING_WIKI,  # DM confirmed the summary
         SessionStatus.SUMMARIZING,  # DM asked for a rewrite (with feedback)
+        # "Refresh the summary with the improved attribution": the one
+        # controlled BACKWARD edge, and the reason it is safe is that the change
+        # set has not been applied yet -- re-generating after applying_wiki
+        # would duplicate what the campaign already documents.
+        SessionStatus.ATTRIBUTING,
         SessionStatus.FAILED,
     },
     # The confirmed summary is turned into a PROPOSED CHANGE SET first:
@@ -107,6 +160,9 @@ ALLOWED_TRANSITIONS: dict[SessionStatus, set[SessionStatus]] = {
     SessionStatus.GENERATING_WIKI: {SessionStatus.WIKI_PLAN_READY, SessionStatus.FAILED},
     SessionStatus.WIKI_PLAN_READY: {
         SessionStatus.APPLYING_WIKI,  # DM confirmed the proposed changes
+        # Same backward edge as summary_ready: still reviewable, still safe,
+        # because the change set has not been written.
+        SessionStatus.ATTRIBUTING,
         SessionStatus.FAILED,
     },
     SessionStatus.APPLYING_WIKI: {SessionStatus.CONTENT_READY, SessionStatus.FAILED},
@@ -121,11 +177,35 @@ ALLOWED_TRANSITIONS: dict[SessionStatus, set[SessionStatus]] = {
     # the phase it failed in (summary draft/rewrite -> summarizing, change-set
     # computation -> generating_wiki, change-set application -> applying_wiki)
     SessionStatus.FAILED: {
+        SessionStatus.ATTRIBUTING,
         SessionStatus.SUMMARIZING,
         SessionStatus.GENERATING_WIKI,
         SessionStatus.APPLYING_WIKI,
     },
 }
+
+
+#: Statuses retired by the attribution redesign, mapped to their replacement.
+#: Accepted for one release so a session already parked on the old status
+#: survives a deploy; removed once no session can be in them.
+LEGACY_STATUS_ALIASES: dict[SessionStatus, SessionStatus] = {
+    SessionStatus.SPEAKER_PENDING: SessionStatus.ATTRIBUTION_REVIEW,
+}
+
+#: Statuses that are RESTING: the pipeline is waiting for the DM, not working.
+#: None of them block anything -- the DM can finish, skip or come back later.
+RESTING_STATUSES: frozenset[SessionStatus] = frozenset(
+    {
+        SessionStatus.ATTRIBUTION_REVIEW,
+        SessionStatus.SUMMARY_READY,
+        SessionStatus.WIKI_PLAN_READY,
+    }
+)
+
+
+def resolve_alias(status: SessionStatus) -> SessionStatus:
+    """Map a retired status onto its replacement (identity for current ones)."""
+    return LEGACY_STATUS_ALIASES.get(status, status)
 
 
 #: Statuses a session can no longer be DELETED from. From 'applying_wiki' on,
@@ -148,6 +228,35 @@ def can_delete(status: SessionStatus) -> bool:
     return status not in DELETE_BLOCKED_STATUSES
 
 
+#: Statuses that mean "a worker is doing this right now". Each one is owned by
+#: exactly one job, and the ONLY way out of it is that job finishing (or failing
+#: and marking the session failed).
+#:
+#: That makes re-entry load-bearing rather than a nicety. A worker killed
+#: mid-run - a restart, a deploy, an OOM - leaves the session sitting on its
+#: in-progress status, having never reached the failure path. When RabbitMQ
+#: redelivers the job, the worker asks to enter the status it is ALREADY in;
+#: refusing that turns one crash into a session that is stuck forever, with the
+#: redelivery quietly acknowledged and dropped.
+IN_PROGRESS_STATUSES: frozenset[SessionStatus] = frozenset(
+    {
+        SessionStatus.TRANSCRIBING,
+        SessionStatus.REFINING,
+        SessionStatus.IDENTIFYING_SPEAKERS,
+        SessionStatus.ATTRIBUTING,
+        SessionStatus.SUMMARIZING,
+        SessionStatus.GENERATING_WIKI,
+        SessionStatus.APPLYING_WIKI,
+    }
+)
+
+
 def can_transition(current: SessionStatus, target: SessionStatus) -> bool:
-    """Whether sessions.status may move from current to target."""
+    """Whether sessions.status may move from current to target.
+
+    Re-entering an in-progress status is allowed and is a no-op for the caller:
+    it is a redelivered job retrying the phase its previous attempt died in.
+    """
+    if current == target and current in IN_PROGRESS_STATUSES:
+        return True
     return target in ALLOWED_TRANSITIONS.get(current, set())

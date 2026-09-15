@@ -64,7 +64,8 @@ from dnd_common.events import Event, connect_rabbitmq, consume, publish
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import services as job_services
-from app.chunking import chunk_transcript
+from app.attribution import apply_gate
+from app.chunking import chunk_artifact, chunk_transcript
 from app.clients.campaign_service import CampaignServiceClient
 from app.clients.session_service import (
     STATUS_APPLYING_WIKI,
@@ -99,7 +100,24 @@ logger = logging.getLogger(__name__)
 #: being redelivered. Anything else (a session the DM is reviewing, or one
 #: that already generated its wiki) ignores late speakers.* events — re-running
 #: phase 1 there would throw away the DM's corrections or duplicate pages.
+#: Statuses the summary phase may START from, per mode.
+#:
+#: Without the attribution engine this is the old path: speaker identification
+#: finishes and the summary begins.
+#:
+#: With the engine ON the REVIEW is the gate instead, and 'speakers_identified'
+#: must NOT start the summary any more - both services subscribe to
+#: 'speakers.identified', so leaving it in lets content-service and the engine
+#: race for the same session, and the loser's work is silently dropped.
+#:
+#: 'attribution_review' is the DM pressing Finish; 'attribution_ready' is the
+#: same thing with nothing worth asking (the engine publishes
+#: 'attribution.review.completed' for both). 'failed' is kept in both modes so a
+#: broken phase can still be summarised from what the transcript does have.
 SUMMARY_SOURCE_STATUSES = frozenset({"speakers_identified", "failed"})
+ATTRIBUTION_SOURCE_STATUSES = frozenset(
+    {"attribution_ready", "attribution_review", "failed"}
+)
 
 #: Correlated event type published whenever a (new or rewritten) draft summary
 #: is ready for the DM to review.
@@ -286,7 +304,23 @@ async def _build_chunk_views(
     user_client: UserServiceClient,
     campaign_client: CampaignServiceClient | None,
 ) -> tuple[list[str], list[str], list[str]]:
-    """Named transcript view ready for the LLM: (views, party, dm_names)."""
+    """Named transcript view ready for the LLM: (views, party, dm_names).
+
+    Two sources, one output. With ATTRIBUTION_ENABLED the view comes from the
+    ATTRIBUTED transcript (transcripts/{id}/attributed.json), which carries a
+    per-utterance status and an [u_XXXXX] reference the extraction must echo back;
+    without it, the old label map is used exactly as before, so the flag stays a
+    real kill switch.
+    """
+    artifact = None
+    if settings.attribution_enabled:
+        artifact = await storage.read_json(
+            settings.minio_transcripts_bucket,
+            f"transcripts/{session_id}/attributed.json",
+        )
+    if artifact:
+        return await _artifact_views(artifact, settings, storage)
+
     transcript = await storage.read_json(
         settings.minio_transcripts_bucket, f"transcripts/{session_id}/transcript.json"
     )
@@ -326,6 +360,66 @@ async def _build_chunk_views(
         else ""
     )
     return [party_note + "\n".join(chunk) for chunk in chunks], party, dm_names
+
+
+async def _artifact_views(
+    artifact: dict[str, Any], settings: ServiceSettings, storage: ObjectStorage
+) -> tuple[list[str], list[str], list[str]]:
+    """The view built from the attributed transcript (the redesign's input).
+
+    The roster in the artifact already resolved player/character/DM roles, so
+    the party line and the out-of-world names come from it rather than from a
+    label map: an utterance only carries a name when the engine is confident
+    about it, and everything else is rendered '(unattributed)'.
+    """
+    roster = artifact.get("roster") or []
+    party = [
+        str(entry.get("character_name"))
+        for entry in roster
+        if entry.get("role") != "dm" and entry.get("character_name")
+    ]
+    dm_names = [
+        str(entry.get("character_name") or entry.get("player_name") or "")
+        for entry in roster
+        if entry.get("role") == "dm"
+    ]
+    dm_names = [name for name in dm_names if name and not is_narrator_name(name)]
+    chunks = chunk_artifact(
+        artifact, max_tokens=settings.chunk_tokens, overlap=settings.chunk_overlap
+    )
+    if not chunks:
+        raise ValueError("session has no attributed utterances to generate from")
+    if len(chunks) > settings.max_chunks_per_session:
+        raise ValueError(
+            f"session yields {len(chunks)} chunks "
+            f"(cap {settings.max_chunks_per_session}); refusing to generate"
+        )
+    party_note = (
+        "Party (player characters): " + ", ".join(sorted(set(party))) + "\n\n"
+        if party
+        else ""
+    )
+    return [party_note + "\n".join(chunk) for chunk in chunks], party, dm_names
+
+
+async def _load_attribution(
+    session_id: str, settings: ServiceSettings, storage: ObjectStorage
+) -> dict[str, Any] | None:
+    """The attributed transcript, when the redesign is on and it exists."""
+    if not settings.attribution_enabled:
+        return None
+    return await storage.read_json(
+        settings.minio_transcripts_bucket, f"transcripts/{session_id}/attributed.json"
+    )
+
+
+def _artifact_player_names(artifact: dict[str, Any]) -> list[str]:
+    """The PLAYERS' real names, which may never become character page titles."""
+    return [
+        str(entry.get("player_name"))
+        for entry in artifact.get("roster") or []
+        if entry.get("player_name")
+    ]
 
 
 async def _record_failure(
@@ -381,10 +475,15 @@ async def process_job(
     # that has not been distilled yet enters the summary phase.
     session = await session_client.get_session(session_id)
     status = str(session.get("status") or "")
-    if status not in SUMMARY_SOURCE_STATUSES:
+    accepted = (
+        ATTRIBUTION_SOURCE_STATUSES
+        if settings.attribution_enabled
+        else SUMMARY_SOURCE_STATUSES
+    )
+    if status not in accepted:
         logger.info(
             "session %s is '%s'; skipping %s (the summary phase only starts from %s)",
-            session_id, status, event.type, " or ".join(sorted(SUMMARY_SOURCE_STATUSES)),
+            session_id, status, event.type, " or ".join(sorted(accepted)),
         )
         return
 
@@ -409,6 +508,7 @@ async def process_job(
         views, party, dm_names = await _build_chunk_views(
             event, session_id, campaign_id, settings, storage, user_client, campaign_client
         )
+        artifact = await _load_attribution(session_id, settings, storage)
         extractions = await llm.extract_many(
             views,
             concurrency=settings.llm_chunk_concurrency,
@@ -417,6 +517,14 @@ async def process_job(
         merged = merge_extractions(extractions)
         if dm_names:
             merged = exclude_character_names(merged, dm_names)
+        if artifact is not None:
+            # The gate: uncertainty decides what may reach a page. Enforced in
+            # code, because a prompt is a request and this is the safety
+            # property of the whole redesign (attribution-model S14.4).
+            merged, gate_report = apply_gate(
+                merged, artifact, player_names=_artifact_player_names(artifact)
+            )
+            logger.info("session %s: attribution gate %s", session_id, gate_report)
         logger.info(
             "session %s: extraction language=%r (%d entities, %d summary lines)",
             session_id, merged.get("language"),

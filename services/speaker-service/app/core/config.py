@@ -72,6 +72,41 @@ class ServiceSettings(Settings):
     # Force the cluster count K (overrides relabel_mode); e.g. the DM knows N players.
     relabel_speaker_count: int | None = None
 
+    # Whether the attribution engine is running. It changes no behaviour here -
+    # it only lets this service WARN when it is asked to produce evidence from
+    # labels the refiner's LLM rewrote (REFINER_SPEAKERS=true). The engine treats
+    # the diarizer's labels as measurements, and a label the LLM guessed is not a
+    # measurement, so that combination silently degrades the engine's evidence.
+    attribution_enabled: bool = False
+
+    # --- per-observation voice evidence (attribution redesign, phase 0) ---
+    # Instead of one pooled window per label, embed every speaker turn and store
+    # it in its own Qdrant collection, so cluster purity can be measured and an
+    # individual utterance can defect from its cluster (attribution-model S5/S12).
+    observations_enabled: bool = True
+    voice_observation_collection: str = "voice_observations"
+    member_voice_model_collection: str = "member_voice_models"
+    # A turn shorter than this is not embedded (ECAPA needs a few seconds); it
+    # still becomes an observation so its utterances get an attribution.
+    observation_min_sec: float = 1.0
+    # Length component of the quality score saturates here.
+    observation_full_sec: float = 6.0
+    # Below this an observation is not trustworthy voice evidence.
+    observation_quality_floor: float = 0.35
+    # --- enrollment gates (attribution-model S12.3) ---
+    # An observation is only enrolled when its own quality clears this ...
+    enroll_min_quality: float = 0.5
+    # ... and the identity it came from is this pure (filled by the engine; when
+    # the engine has not run, a single-observation label counts as pure).
+    enroll_min_purity: float = 0.9
+    # How many per-centroid similarities one observation reports.
+    evidence_max_centroids: int = 8
+    # Centroids below this cosine are not reported (the best one always is).
+    evidence_cosine_floor: float = 0.2
+    # Multi-centroid aggregation over a member's voice models.
+    member_score_top_k: int = 3
+    member_score_mode: str = "topk_mean"
+
     # Required for gated HF models if the embedding model ever needs a token
     hf_token: str = ""
 

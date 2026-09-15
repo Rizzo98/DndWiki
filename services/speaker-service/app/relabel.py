@@ -22,14 +22,23 @@ unit-tested in the dev venv (no torch/speechbrain/qdrant).
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any
 
+from dnd_common.clustering import centroid, upgma_cluster
+from dnd_common.clustering import cosine as _cosine
 from dnd_common.transcript import GAP_TOLERANCE_SEC, Turn, speaker_turns
 
-# Re-exported for callers that used to import them from app.relabel.
-__all__ = ["GAP_TOLERANCE_SEC", "Turn", "speaker_turns"]
+# Re-exported for callers that used to import them from app.relabel: the
+# clustering primitives now live in dnd_common so the attribution engine shares
+# one implementation of the merge semantics (docs/attribution-model.md S12.5).
+__all__ = [
+    "GAP_TOLERANCE_SEC",
+    "Turn",
+    "centroid",
+    "speaker_turns",
+    "upgma_cluster",
+]
 
 # Canonical label scheme (matches the on-prem pyannote convention downstream
 # consumers/tests already expect).
@@ -47,110 +56,6 @@ class RelabelResult:
     label_durations: dict[str, float]         # label -> total embedded turn duration (s)
     anchors: dict[str, tuple[str, float]]     # label -> (user_id, cosine) snapped to enrollment
     stats: dict[str, Any]
-
-
-def _cosine(a: list[float], b: list[float]) -> float:
-    """Cosine similarity of two (ideally unit) vectors."""
-    dot = 0.0
-    na = 0.0
-    nb = 0.0
-    for x, y in zip(a, b):
-        dot += x * y
-        na += x * x
-        nb += y * y
-    if na == 0.0 or nb == 0.0:
-        return 0.0
-    return dot / (math.sqrt(na) * math.sqrt(nb))
-
-
-def _unit(v: list[float]) -> list[float]:
-    n = math.sqrt(sum(x * x for x in v))
-    if n == 0.0:
-        return v
-    return [x / n for x in v]
-
-
-def centroid(vectors: list[list[float]]) -> list[float]:
-    """Unit-norm mean of a set of embeddings."""
-    if not vectors:
-        return []
-    d = len(vectors[0])
-    s = [0.0] * d
-    for v in vectors:
-        for i in range(d):
-            s[i] += v[i]
-    return _unit([x / len(vectors) for x in s])
-
-
-def upgma_cluster(
-    vectors: list[list[float]],
-    *,
-    k: int | None = None,
-    threshold: float | None = None,
-) -> list[int]:
-    """Average-linkage agglomerative clustering (UPGMA) on cosine distance.
-
-    'k': stop once this many clusters remain (the diarizer's speaker count).
-    'threshold': cosine distance; stop once the closest pair is farther than
-    this (robust when K is unknown). Exactly one of the two must be given.
-
-    Returns a list of cluster ids (0..m-1) aligned to 'vectors', numbered in
-    first-appearance order.
-    """
-    n = len(vectors)
-    if n == 0:
-        return []
-    if n == 1:
-        return [0]
-    if k is None and threshold is None:
-        raise ValueError("upgma_cluster requires at least one of k or threshold")
-
-    # cosine distance matrix
-    dist = [[0.0] * n for _ in range(n)]
-    for i in range(n):
-        for j in range(i + 1, n):
-            d = 1.0 - max(-1.0, min(1.0, _cosine(vectors[i], vectors[j])))
-            dist[i][j] = dist[j][i] = d
-
-    sizes = [1] * n
-    members = [[i] for i in range(n)]
-    active = set(range(n))
-
-    while len(active) > 1:
-        if k is not None and len(active) <= k:
-            break
-        # find the closest active pair
-        best: float | None = None
-        pair: tuple[int, int] | None = None
-        ordered = sorted(active)
-        for x in range(len(ordered)):
-            for y in range(x + 1, len(ordered)):
-                i, j = ordered[x], ordered[y]
-                d = dist[i][j]
-                if best is None or d < best:
-                    best = d
-                    pair = (i, j)
-        if threshold is not None and best is not None and best > threshold:
-            break
-        assert pair is not None
-        i, j = pair
-        new_size = sizes[i] + sizes[j]
-        # UPGMA (average linkage) Lance-Williams update: merge j into i
-        for m in active:
-            if m == i or m == j:
-                continue
-            dist[i][m] = dist[m][i] = (
-                sizes[i] * dist[i][m] + sizes[j] * dist[j][m]
-            ) / new_size
-        members[i].extend(members[j])
-        sizes[i] = new_size
-        active.remove(j)
-
-    labels = [0] * n
-    for cid, c in enumerate(sorted(active, key=lambda idx: min(members[idx]))):
-        for m in members[c]:
-            labels[m] = cid
-    return labels
 
 
 def relabel_segments(

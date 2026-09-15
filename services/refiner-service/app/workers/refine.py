@@ -51,6 +51,7 @@ from app.refine import (
     build_cast_block,
     build_context_blocks,
     canonicalize,
+    keep_labels,
     rewrite_transcript,
     turn_view,
     turn_windows,
@@ -186,13 +187,30 @@ async def process_job(
                     exc_info=True,
                 )
 
+        # REFINER_SPEAKERS decides what the model is allowed to touch. The
+        # attribution engine consumes the diarizer's labels as measurements, so
+        # with the engine on this must be false: a label the LLM guessed is not
+        # a measurement.
+        include_speakers = settings.refiner_speakers
+        if not include_speakers:
+            logger.info(
+                "session %s: text-only refinement (REFINER_SPEAKERS=false); "
+                "speaker labels are left exactly as the diarizer produced them",
+                session_id,
+            )
+
         decisions: dict[int, tuple[str, str]] = {}
         windows = turn_windows(
             len(turns), settings.refiner_window_turns, settings.refiner_window_overlap
         )
         for w_index, (start, end, fixed) in enumerate(windows):
-            views = [turn_view(turns, segments, i) for i in range(start, end)]
-            context_blocks = build_context_blocks(turns, segments, decisions)
+            views = [
+                turn_view(turns, segments, i, include_speakers=include_speakers)
+                for i in range(start, end)
+            ]
+            context_blocks = (
+                build_context_blocks(turns, segments, decisions) if include_speakers else []
+            )
             raw = await llm.refine_window(
                 views,
                 context_blocks=context_blocks,
@@ -201,6 +219,7 @@ async def process_job(
                 total_windows=len(windows),
                 cast_lines=cast_lines,
                 member_count=member_count,
+                include_speakers=include_speakers,
             )
             for index, item in raw.items():
                 if start <= index < end and index >= start + fixed:
@@ -213,7 +232,11 @@ async def process_job(
                 end - start,
             )
 
-        decisions = canonicalize(turns, decisions)
+        decisions = (
+            canonicalize(turns, decisions)
+            if include_speakers
+            else keep_labels(turns, decisions)
+        )
         refined_segments = apply_refined(segments, turns, decisions)
 
         refiner_meta = {
@@ -221,6 +244,10 @@ async def process_job(
             "provider": settings.llm_provider,
             "model": settings.effective_model,
             "prompt_version": settings.prompt_version,
+            # Whether the LLM touched the speaker labels. Downstream consumers
+            # (speaker-service, the attribution engine) need to know: evidence
+            # built on labels an LLM guessed is not evidence.
+            "speakers_refined": include_speakers,
             "cast": {
                 "injected": bool(cast_lines),
                 "members": len(cast_lines),
@@ -251,6 +278,7 @@ async def process_job(
                     "diarization_uri": diarization_uri,
                     "segments": refined_segments,
                     "refined": True,
+                    "speakers_refined": include_speakers,
                     "refiner": refiner_meta,
                 },
             )

@@ -76,7 +76,6 @@ async def test_confirm_auto_match(
     assert payload["member_id"] == str(member)
     assert payload["display_name"] == "Bob"
     assert payload["character_name"] == "Borin"
-    assert payload["enrolled_voiceprint"] is True
     assert payload["audio_uri"] == session.raw_audio_uri
 
 

@@ -339,6 +339,8 @@ async def campaign_speaker_history(
     *,
     exclude_session_id: UUID | None = None,
     limit_sessions: int = 5,
+    confirmed_only: bool = True,
+    include_member_keyed: bool = False,
 ) -> list[dict[str, Any]]:
     """DM-confirmed, user-linked labels of a campaign's settled sessions.
 
@@ -348,9 +350,15 @@ async def campaign_speaker_history(
     Newest sessions first, so a caller that keeps only the head of the list
     gets the most recent history.
 
-    Only 'confirmed' assignments are returned (an 'auto' or 'pending' label is
-    a guess), and only user-linked ones: voiceprints are keyed by user id, so a
-    userless campaign member has nothing to enroll against.
+    By default only 'confirmed' assignments are returned (an 'auto' or
+    'pending' label is a guess), and only user-linked ones: voiceprints are keyed
+    by user id, so a userless campaign member has nothing to enroll against.
+
+    Calibration needs the OTHER slice: every labelled turn of the campaign,
+    including labels attached to a member with no linked account, and not capped
+    at the five newest sessions. Widening the defaults would have changed what
+    the enrollment path sees, so both are opt-in flags
+    (docs/attribution-plan.md S3).
     """
     stmt = (
         select(Session)
@@ -369,13 +377,14 @@ async def campaign_speaker_history(
         return []
 
     by_id = {session.id: session for session in sessions}
+    filters = [SpeakerAssignment.session_id.in_(list(by_id))]
+    if confirmed_only:
+        filters.append(SpeakerAssignment.status == CONFIRMED_STATUS)
+    if not include_member_keyed:
+        filters.append(SpeakerAssignment.user_id.is_not(None))
     rows = await db.execute(
         select(SpeakerAssignment)
-        .where(
-            SpeakerAssignment.session_id.in_(list(by_id)),
-            SpeakerAssignment.status == CONFIRMED_STATUS,
-            SpeakerAssignment.user_id.is_not(None),
-        )
+        .where(*filters)
         .order_by(SpeakerAssignment.speaker_label)
     )
     order = {session.id: index for index, session in enumerate(sessions)}
@@ -387,6 +396,13 @@ async def campaign_speaker_history(
             "session_status": by_id[assignment.session_id].status,
             "speaker_label": assignment.speaker_label,
             "user_id": assignment.user_id,
+            "member_id": assignment.member_id,
+            "status": assignment.status,
+            "confidence": (
+                float(assignment.confidence)
+                if assignment.confidence is not None
+                else None
+            ),
             "updated_at": assignment.updated_at,
         }
         for assignment in rows.scalars().all()
@@ -450,7 +466,6 @@ async def assign_speaker(
     character_name: str | None,
     assigned_by: UUID,
     publisher: EventPublisher,
-    enrolled_voiceprint: bool = False,
 ) -> SpeakerAssignment:
     """DM names a previously-unknown speaker; emits speakers.assigned.
 
@@ -498,8 +513,64 @@ async def assign_speaker(
         character_name=character_name,
         assigned_by=assigned_by,
         publisher=publisher,
-        enrolled_voiceprint=enrolled_voiceprint,
     )
+
+
+async def project_assignments(
+    db: AsyncSession,
+    session_id: UUID,
+    rows: list[dict],
+) -> list[SpeakerAssignment]:
+    """Replace a session's assignments with a PROJECTION of the belief.
+
+    The attribution engine is the only writer of this table after the redesign;
+    the rows are a compatibility VIEW derived from voice identities and
+    utterances, so the legacy speaker panel keeps working for one release.
+
+    This deliberately does NOT reuse upsert_assignments(): that path overwrites
+    'status' unconditionally but only replaces user_id/confidence when the
+    incoming value is non-None, so a redelivered event silently downgrades a
+    confirmed row back to 'auto' while leaving the previous run's user attached -
+    the DM's work undone and the row internally inconsistent
+    (docs/attribution-plan.md S8). A projection has no stale field by
+    construction: every column comes from the current belief on every write.
+    """
+    await get_session_or_404(db, session_id)
+    incoming = {
+        str(row.get("speaker_label")): row
+        for row in rows
+        if row.get("speaker_label")
+    }
+    existing = {
+        row.speaker_label: row
+        for row in await list_assignments(db, session_id)
+    }
+    for label, row in existing.items():
+        if label not in incoming:
+            await db.delete(row)
+    for label, payload in incoming.items():
+        confidence = payload.get("confidence")
+        values = {
+            "user_id": payload.get("user_id"),
+            "member_id": payload.get("member_id"),
+            "confidence": confidence,
+            "status": payload.get("status") or "pending",
+            "assigned_by": payload.get("assigned_by"),
+        }
+        row = existing.get(label)
+        if row is None:
+            db.add(
+                SpeakerAssignment(
+                    session_id=session_id,
+                    speaker_label=label,
+                    **values,
+                )
+            )
+            continue
+        for field, value in values.items():
+            setattr(row, field, value)
+    await db.commit()
+    return await list_assignments(db, session_id)
 
 
 async def get_assignment(
@@ -524,7 +595,6 @@ async def confirm_assignment(
     character_name: str | None = None,
     assigned_by: UUID,
     publisher: EventPublisher,
-    enrolled_voiceprint: bool = True,
 ) -> SpeakerAssignment:
     """DM confirms a speaker the pipeline proposed (auto) — emits speakers.assigned.
 
@@ -572,7 +642,6 @@ async def confirm_assignment(
         character_name=character_name,
         assigned_by=assigned_by,
         publisher=publisher,
-        enrolled_voiceprint=enrolled_voiceprint,
     )
 
 
@@ -585,7 +654,6 @@ async def _publish_assignment(
     character_name: str | None,
     assigned_by: UUID,
     publisher: EventPublisher,
-    enrolled_voiceprint: bool,
 ) -> SpeakerAssignment:
     """Close the identification stage when it is done, then announce the name.
 
@@ -622,11 +690,12 @@ async def _publish_assignment(
                 # speakers by their character, never the player name
                 "character_name": character_name,
                 "assigned_by": str(assigned_by),
-                "enrolled_voiceprint": enrolled_voiceprint,
                 # lets speaker-service slice this speaker's voice out of the
-                # session recording and enroll a session-derived voiceprint
-                # (only when user_id is present — userless members have no
-                # user-keyed voiceprint to enroll)
+                # session recording and enroll session-derived voice models.
+                # Enrollment is gated on the quality and purity of the EVIDENCE
+                # (attribution-model S12.3), not on a caller-supplied boolean:
+                # the old 'enrolled_voiceprint' flag was published but read by
+                # nobody, so it advertised a control it never had.
                 "audio_uri": session.raw_audio_uri,
             },
         )

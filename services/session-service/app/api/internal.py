@@ -108,6 +108,36 @@ async def list_speakers(
     return out
 
 
+@router.get("/{session_id}/speaker-assignments")
+async def get_speaker_assignments(
+    session_id: UUID, db: AsyncSession = Depends(get_session)
+):
+    """The derived compatibility view (a projection of the engine's belief).
+
+    During the transition the legacy speaker panel and the old content path read
+    this instead of the table directly, so they cannot disagree with the engine.
+    """
+    return [
+        {
+            "speaker_label": row.speaker_label,
+            "member_id": str(row.member_id) if row.member_id else None,
+            "user_id": str(row.user_id) if row.user_id else None,
+            "confidence": float(row.confidence) if row.confidence is not None else None,
+            "status": row.status,
+        }
+        for row in await services.list_assignments(db, session_id)
+    ]
+
+
+@router.put("/{session_id}/speaker-assignments")
+async def put_speaker_assignments(
+    session_id: UUID, body: list[dict], db: AsyncSession = Depends(get_session)
+):
+    """Write the engine's projection of the belief into the compatibility view."""
+    rows = await services.project_assignments(db, session_id, body)
+    return {"session_id": str(session_id), "rows": len(rows)}
+
+
 campaigns_router = APIRouter(
     prefix="/internal/campaigns",
     tags=["internal"],
@@ -120,6 +150,10 @@ async def campaign_speaker_history(
     campaign_id: UUID,
     exclude_session_id: UUID | None = None,
     limit_sessions: int = Query(default=5, ge=1, le=50),
+    # Defaults preserve what the ENROLLMENT path has always seen: confirmed,
+    # user-linked labels only. Calibration opts out of both explicitly.
+    confirmed_only: bool = Query(default=True),
+    include_member_keyed: bool = Query(default=False),
     db: AsyncSession = Depends(get_session),
 ):
     """DM-confirmed speaker labels of a campaign's previous sessions.
@@ -130,10 +164,20 @@ async def campaign_speaker_history(
     the filtering itself lives in speaker-service). Newest sessions first;
     'exclude_session_id' keeps the session being identified out of its own
     reference set, and 'limit_sessions' bounds how far back a run looks.
+
+    `confirmed_only` and `include_member_keyed` exist for CALIBRATION, which
+    wants a different slice than enrollment does: the engine fits its
+    score-to-LLR curve from every labelled turn of the campaign, including
+    labels attached to a member who has no linked user account, and it does not
+    want to be capped at the five newest sessions. Widening the defaults would
+    have changed what the enrollment path sees, so the new behaviour is opt-in
+    (docs/attribution-plan.md S3).
     """
     return await services.campaign_speaker_history(
         db,
         campaign_id,
         exclude_session_id=exclude_session_id,
         limit_sessions=limit_sessions,
+        confirmed_only=confirmed_only,
+        include_member_keyed=include_member_keyed,
     )
