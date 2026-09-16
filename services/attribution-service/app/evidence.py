@@ -23,6 +23,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.scenes import Scene, SceneMap
+
 #: Bumped when the pass's OUTPUT CONTRACT changes, because the artifact records
 #: which prompt produced its evidence. v2: the roster is part of every chunk (it
 #: used to be dropped on the way to the model), and the response is asked for one
@@ -238,10 +240,19 @@ class EvidencePass:
     language: str = "en"
     items: dict[str, EvidenceItem] = field(default_factory=dict)
     notes: list[IdentityNote] = field(default_factory=list)
+    #: Where the session happens and who the transcript shows is there (app.scenes).
+    #: Read from the whole session in one go, AFTER the per-utterance pass: the
+    #: scene reading needs the gists, and scene identity is not a per-chunk fact.
+    scenes: tuple[Scene, ...] = ()
     prompt_version: str = PROMPT_VERSION
 
     def item(self, ref: str) -> EvidenceItem:
         return self.items.get(ref, EvidenceItem(ref=ref))
+
+    @property
+    def scene_map(self) -> SceneMap:
+        """The scenes indexed by moment (empty when the reading produced none)."""
+        return SceneMap.build(self.scenes)
 
 
 def roster_block(

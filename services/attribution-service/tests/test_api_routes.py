@@ -6,6 +6,7 @@ service under a PathPrefix. A route that does not carry that prefix is not a
 path, with a bare "Not Found" that names nothing.
 """
 
+import uuid
 from types import SimpleNamespace
 
 from app.api import review
@@ -56,37 +57,147 @@ ROSTER_SNAPSHOT = {
 # --- the progress the DM is shown -------------------------------------------
 
 
-def test_a_plan_that_ran_out_of_budget_is_a_lower_bound_not_a_promise():
-    """"About 8 questions to finish" was followed by eight answers, 82% of what
-    matters still unattributed, and a panel announcing the session was done.
-
-    The greedy simulation stops at the question cap, so a plan that ends there
-    says "at least this many" - and the UI has to be able to tell the two apart.
+def test_the_progress_never_predicts_how_many_questions_are_left():
+    """The DM was shown "about 6 questions to finish", answered 8, and finished
+    with 84% of what matters still unattributed - because the number came from a
+    greedy simulation that assumes every answer lands the way the evidence
+    points. A review's length is a function of the answers, so the panel shows
+    the two facts that hold instead: answered, and how many one review asks.
     """
-    capped = review.plan_progress(
-        SimpleNamespace(questions_planned=8, questions_asked=3), max_questions=8
+    ahead = review.plan_progress(
+        SimpleNamespace(questions_planned=6, questions_asked=3), max_questions=8
     )
-    assert capped == {
-        "questions": 8,
-        "answered": 3,
-        "max_questions": 8,
-        "is_lower_bound": True,
-    }
-    converged = review.plan_progress(
-        SimpleNamespace(questions_planned=3, questions_asked=1), max_questions=8
+    # The stored plan is deliberately NOT in the payload: it cannot be shown
+    # without inviting a countdown the engine cannot honour.
+    assert ahead == {"answered": 3, "max_questions": 8, "budget_spent": False}
+
+
+def test_the_progress_says_when_the_budget_is_spent_even_past_the_plan():
+    """A run can answer MORE than the plan predicted - 8 against a plan of 6 -
+    and the panel has to survive it without printing "8 of 6 answered"."""
+    spent = review.plan_progress(
+        SimpleNamespace(questions_planned=6, questions_asked=8), max_questions=8
     )
-    assert converged["is_lower_bound"] is False
-    assert converged["questions"] == 3
+    assert spent == {"answered": 8, "max_questions": 8, "budget_spent": True}
+
+
+# --- the stretches the panel shows ------------------------------------------
+
+
+def test_a_stretch_payload_keeps_the_names_and_the_members_apart():
+    """The panel shows the names the reading used; the engine acts on member ids.
+
+    A reading can name somebody the roster does not know (it is the DM reading
+    their own table who will notice), and that has to stay visible rather than
+    being silently resolved to nobody.
+    """
+    row = SimpleNamespace(
+        index=3,
+        location="Dietro la locanda, presso il carro coperto",
+        reason="Il gruppo si divide",
+        start_ordinal=244,
+        end_ordinal=404,
+        start_sec=1512.5,
+        end_sec=2344.06,
+        first_ref="u_00244",
+        last_ref="u_00404",
+        present_names=["Dalia Drif", "Shiran Konno"],
+        absent_names=["Letho Hyman Feulner", "Gandalf"],
+        npcs=["Sir Lucius", "the monkeys"],
+        present_member_ids=[uuid.UUID(int=1)],
+        absent_member_ids=[uuid.UUID(int=2)],
+        revision=1,
+    )
+    payload = review.scene_payload(row)
+    assert payload["moments"] == 161
+    assert payload["location"].startswith("Dietro la locanda")
+    assert payload["present"] == ["Dalia Drif", "Shiran Konno"]
+    assert payload["absent"] == ["Letho Hyman Feulner", "Gandalf"]
+    assert payload["absent_member_ids"] == [str(uuid.UUID(int=2))]
+    assert payload["start_sec"] == 1512.5
 
 
 def test_no_run_is_a_plan_of_nothing_rather_than_a_crash():
     progress = review.plan_progress(None, max_questions=8)
-    assert progress == {
-        "questions": None,
-        "answered": 0,
+    assert progress == {"answered": 0, "max_questions": 8, "budget_spent": False}
+
+
+def test_the_review_payload_is_actually_returned():
+    """The body of GET /review, reachable without a database.
+
+    It is a function for this reason: the route body lost its `return` in an
+    edit and the panel rendered nothing at all, because a route body is the one
+    place in this service that no test could reach.
+    """
+    session = SimpleNamespace(
+        status=lambda questions_planned=None: {
+            "coverage": 0.158,
+            "unresolved": 0.844,
+            "buckets": {"auto_high": 54},
+            "questions_asked": 8,
+            "questions_planned": questions_planned,
+            "finished": True,
+        },
+        _coverage=lambda: 0.1582,
+        unresolved=lambda: 0.8436,
+    )
+    run = SimpleNamespace(
+        status="complete",
+        questions_planned=6,
+        questions_asked=8,
+        coverage_before=0.1410,
+        coverage_after=0.1582,
+    )
+    stats = SimpleNamespace(stop_reason="finished", engine_version="attr-1")
+
+    payload = review.review_payload(session, stats, run, max_questions=8)
+
+    assert payload["coverage"] == 0.1582
+    # The number the DM is shown is a LOWER BOUND here (8 answered against a
+    # plan of 6), and the payload must not offer anything to compare it to.
+    assert payload["plan"] == {
+        "answered": 8,
         "max_questions": 8,
-        "is_lower_bound": False,
+        "budget_spent": True,
     }
+    assert "questions" not in payload["plan"]
+    # ...while the stored estimate stays available as a diagnostic.
+    assert payload["run"]["questions_planned"] == 6
+    assert payload["run"]["coverage_before"] == 0.141
+
+
+# --- what an answer writes back ---------------------------------------------
+
+
+def test_the_answer_path_keeps_the_record_of_what_the_answer_moved():
+    """The snapshot the DM's answer writes carries the FULL belief state.
+
+    This function used to hold its own copy of the belief encoder, and the copy
+    had already lost a key: 'propagated_refs', the record of which moments an
+    answer moved. Losing it is not a missing detail - the next read falls back
+    to "somebody answered something, so every moment is inferred", which puts
+    the whole session on the stricter status bar (S7.1). The effect was measured
+    on a real session: the DM answered eight questions and the coverage shown
+    went from 14.10% to 12.41%, instead of rising to 15.82%.
+    """
+    from app.propagate import Node
+    from app.services.review import decode_belief
+
+    belief = Belief(
+        candidates=["member:a"],
+        nodes={"u1": Node(ref="u1", stakes=0.8, seconds=5.0)},
+        potentials={"u1": {"member:a": 1.0}},
+        answers={"u1": "member:a"},
+        propagated_refs={"u2", "u3"},
+    )
+    session = SimpleNamespace(belief=lambda: belief, asked=[])
+    snapshot = review._snapshot_with(session, {"roster": [{"member_id": "a"}]})
+
+    assert snapshot["propagated_refs"] == ["u2", "u3"]
+    assert decode_belief(snapshot).propagated_refs == {"u2", "u3"}
+    # ...and the keys that describe the SESSION are carried over, not rebuilt:
+    # dropping them once left every later read unable to name a voice.
+    assert snapshot["roster"] == [{"member_id": "a"}]
 
 
 def test_a_voice_carries_what_the_engine_makes_of_it():

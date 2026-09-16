@@ -51,11 +51,14 @@ from json_repair import loads as repair_loads
 
 from app.core.config import ServiceSettings
 from app.prompts import (
+    SUMMARY_COMPOSE_SYSTEM_PROMPT,
     SUMMARY_REVISION_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
     build_chunk_message,
+    build_summary_compose_message,
     build_summary_revision_message,
 )
+from app.services.summaries import summary_lines
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +140,22 @@ class LLMClient:
             ),
             chunk_index,
         )
+    async def compose_summary(
+        self, current: dict[str, Any], *, language: str | None = None
+    ) -> list[str]:
+        """Rewrite the merged beats into the session's story (raises ExtractionError).
+
+        The beats were written one chunk at a time, each without sight of the
+        others; this is the only call that sees the whole session, and it is what
+        turns a list of moments into something with a thread (see
+        SUMMARY_COMPOSE_SYSTEM_PROMPT).
+        """
+        payload = await self._complete_json(
+            SUMMARY_COMPOSE_SYSTEM_PROMPT,
+            build_summary_compose_message(current, language=language),
+            "the session summary composition",
+        )
+        return summary_lines(payload.get("session_summary"))
 
     async def revise_summary(
         self,

@@ -39,7 +39,7 @@ and the summary below them. The new order inverts that:
 |  SESSION REVIEW                                            94% resolved  |
 |  We analysed your session and identified 94% of it automatically.         |
 |  [############################------]  3 moments need your help.          |
-|  Answer about 2 questions to finish.        [ Answer the questions ]      |
+|  Question 1 of 8.                           [ Answer the questions ]      |
 |                                                                          |
 +--------------------------------------------------------------------------+
 |                                                                          |
@@ -78,10 +78,10 @@ Three states: **nothing to review**, **review available**, **review complete**.
 |  We analysed your session. We could identify most of it automatically -   |
 |  three moments are still unclear.                                        |
 |                                                                          |
+|  We are confident about 94% of your session.       question 1 of 8       |
 |  ################# ################# ##########  ###  #                  |
 |  confirmed 41%      automatic 53%    uncertain 3%   ? 3%                 |
-|                                                                          |
-|  Answer about 2 questions to finish.                                     |
+|  6% of what matters is still unattributed.                               |
 |                                                                          |
 |  [ Answer the questions ]   [ Finish anyway ]                            |
 +--------------------------------------------------------------------------+
@@ -90,9 +90,11 @@ Three states: **nothing to review**, **review available**, **review complete**.
 - The bar is **stakes-weighted speech time**, not a count of labels. Segments:
   *confirmed* (green) / *automatic* (blue) / *uncertain* (amber) / *unresolved*
   (grey). The legend is one line, always visible.
-- **“Answer about 2 questions”** comes from the greedy simulation (§9.4 of the
-  model doc). It is refreshed after every answer and, crucially, it can go
-  *down* (“Nice — one more question should do it”).
+- **“question {n} of 8”** is where the DM is in a review of at most eight
+  questions. There is no “questions to finish”: the greedy simulation behind that
+  string is a best case (it said 6 on a session that then took 8 and ended with
+  84 % unattributed), so the panel shows the two facts that hold instead (§9.4 of
+  the model doc).
 - **“Finish anyway”** is always present and never scolding: the summary and the
   wiki are generated from a 94%-resolved session just fine.
 
@@ -166,45 +168,49 @@ Notes on the anatomy:
 - **Skip** and **Finish** are always visible. *I don’t know* is a real option,
   visually equal to the others, not a hidden fallback.
 
-### 4.2 A `same_voice` question
+### 4.2 The questions are about moments, and nothing else
 
-```
-+--------------------------------------------------------------+
-|  Are these two the same person?              Question 1 of ~2|
-|                                                              |
-|  [ > 00:12:08  "we should check the eastern passage" ]        |
-|  [ > 00:36:41  "I'll take the rear guard" ]                  |
-|                                                              |
-|  These two voices sound unusually similar. If they are the    |
-|  same person we can merge them and identify both moments.     |
-|                                                              |
-|  [ Same person ]   [ Different people ]   [ I don't know ]    |
-+--------------------------------------------------------------+
-```
+Both remaining kinds show one moment - the line, its span, a **Listen**, and the
+roster in posterior order - and the card is the same card for both. What is
+retired is everything that was not about a moment.
 
-This is the cheapest question the system can ask: no reading, two short clips.
-It is also the only one that can fix a *structural* error, which is why it is
-worth surfacing even though it does not name anyone.
+**The `presence` question was the last of them, and the DM's verdict killed it
+in one sentence: *"usually in a scene 95 % of the characters are present"*.** That
+is right, and the shape of the failure was worse than the wording:
 
-### 4.3 A `who_is_voice` question
+- the answer was a foregone **yes** - on a real session the reading put the whole
+  party in four stretches out of six - so the click bought the belief nothing;
+- because it was priced at half a click and spanned a whole stretch, it took the
+  ranking by storm: **20 of the 24 simulated candidates were presence questions**,
+  and the questions that would have settled a moment were never even simulated.
 
-```
-+--------------------------------------------------------------+
-|  This voice speaks for 12 minutes. Who is it?                |
-|                                                              |
-|  [ > 00:03:12 ] [ > 00:19:44 ] [ > 01:02:07 ]                |
-|                                                              |
-|  We couldn't match this voice to anyone in the campaign.      |
-|                                                              |
-|  [ Aramil - Player 1 ]  [ Thorin - Player 2 ]  [ Keth - ... ] |
-|  [ Elara - Player 4 ]   [ The Dungeon Master ]                |
-|  [ Someone not in the campaign - a guest ]                    |
-|  [ I don't know ]                                             |
-+--------------------------------------------------------------+
-```
+So the review the DM saw was *"Was X there?"* asked six times about six people in
+the same room, while the session's own summary said *"un personaggio si avvicina
+allo sceriffo"* - the exact beat a moment question answers. The family is now in
+`RETIRED_KINDS` with the voice kinds, and stored rows are dropped when a session
+computed while it existed is reloaded.
 
-Used sparingly — typically once in the first session of a campaign, when a
-voiceprint is missing or someone joined the table without enrolling.
+What replaced it is not another kind. It is the same moment question, asked about
+the moments that matter, plus one change on the summary side: the reading of who
+was in a stretch now travels to the extractor (section 12.6.1 of the model doc),
+so a solo stretch names the party member a narration is about instead of leaving a
+hole the DM has to fill by hand.
+
+### 4.3 The voice-identity questions are retired
+
+`same_voice`, `different_voice`, `who_is_voice` and `new_person` are no longer
+generated, and the ones stored on older sessions are dropped when the review
+loads. They were measured against the DM's own ear and lost: the diarization
+clusters they asked about are **mixtures of several people** (six of seven of
+them contained clips of different voices), so *“who is this voice?”* had no true
+answer, and a wrong answer was worse than no question — one click wrote a strong
+prior onto every moment of a cluster that was not one person.
+
+**The panel is not a question either.** *Where this session happens* (§3.4) shows
+the stretches, their places, their casts and their exclusions — all visible, all
+arguable — and it stays. What does not stay is asking the DM to *confirm the
+cast*, one character at a time: the reading's cast list is context, and §4.2 above
+is why.
 
 ### 4.4 After an answer
 
@@ -344,11 +350,11 @@ the removed `LOW_SPEAKER_CONFIDENCE = 0.8` diarization threshold.
 | Session still transcribing | The review card shows the pipeline stage; no review entry point |
 | No usable audio | “We couldn’t analyse the voices in this recording, so the session is built from the text only.” plus the review card hidden and a lower coverage figure |
 | One player at the table | Review card suppressed entirely (nothing to disambiguate) |
-| Campaign with no voiceprints | Review card present, `questions_planned` higher, first question is `who_is_voice`; a one-line hint offers “Enrol player voices to cut this down next time” linking to the campaign members page |
+| Campaign with no voiceprints | Review card present, coverage low and honest; the questions come from the moments, and a one-line hint offers “Enrol player voices to cut this down next time” linking to the campaign members page |
 | Developer account | Same view as the DM. Role gating is scattered in the current page (`isDm` alone for the speaker panel, `isDm \|\| isDeveloper` for the summary and change-set cards); the review follows the **summary/plan** convention, and `isDm`-only gating stays retired with the old panel. |
 | Player (non-DM) viewing | No review card, no voices panel, collapsed transcript only; summary chips render names but are not clickable |
 | Session already published | Review card becomes read-only history: “Reviewed on 14 Jan — 2 questions” |
-| Everything unresolved | Coverage bar mostly grey, review offers `who_is_voice` questions first; the session is still confirmable |
+| Everything unresolved | Coverage bar mostly grey, review offers the highest-stakes moments; the session is still confirmable |
 
 ---
 
@@ -357,21 +363,24 @@ the removed `LOW_SPEAKER_CONFIDENCE = 0.8` diarization threshold.
 Exact strings, written to be honest and non-blaming:
 
 - Card title: **Session review**
-- Ready: **We identified {pct}% of your session** — the stakes-weighted coverage of
-  §11.1, never a promise that it reaches 100 %.
-- Progress: **{answered} of {max} answered** while the review is live, and
-  **review finished · {answered} answered** once it is over.
-- Estimate: **about {k} question(s) to finish** — ONLY when the greedy simulation
-  reached the stopping criterion. When it ran out of its budget the honest
-  string is **this session needs more questions than we ask in one sitting**,
-  because `plan.is_lower_bound` means the count is a floor, not an estimate.
+- Ready: **We are confident about {pct}% of your session** — the stakes-weighted
+  coverage of §11.1, worded as a state so that it is never read as a countdown to
+  100 %.
+- Progress: **question {n} of {max}** while there are questions left, and **all
+  {max} questions answered** once the budget is spent. Two facts, no forecast.
+  (There is deliberately **no** “about {k} questions to finish”: it was measured
+  against reality — the plan said 6, the DM answered 8, the session ended with
+  84 % unattributed — and no such number can be computed honestly. See §9.4 of
+  the model.)
 - Still left: **{pct} of what matters is still unattributed.**  A review can end
   with most of a session unresolved, and the panel must say so instead of
   announcing that there was nothing left to ask.
 - Ending, by reason: “nothing left worth asking” for a belief that converged;
-  “we have asked all the questions one sitting allows” for `budget`; “you said
+  “we have asked every question one review asks” for `budget`; “you said
   you did not know twice in a row” for `repeated_dont_know`; “review finished at
   your request” for the DM pressing Finish.
+- The `budget` ending must not promise a later pass: reopening the review today
+  means a recompute, which rebuilds the belief without the DM’s answers.
 - After Finish the card is **removed from the page**: the review is closed, the
   session moves on to its summary, and the panel does not come back as “in
   review” on the next page load.
@@ -406,13 +415,17 @@ New components:
 | Component | Notes |
 |---|---|
 | `Modal` | none exists today; `window.confirm` is the only dialog. Needed for the review overlay, keyboard-trapped and labelled |
+| `SessionScenesCard` | **Where this session happens**: the stretches of the session as read from the transcript — place, moments, who is there, who is somewhere else, the event that started it — open by default, with no placeholder when a session has no reading. It exists because the engine EXCLUDES the members a stretch places elsewhere: an exclusion nobody can see is an exclusion nobody can correct, and the DM is the only one who knows whether the reading of their own table is right. It renders nothing at all when the session has no reading (an older session, or the engine off) |
 | `CoverageBar` | stakes-weighted coverage of §11.1, plus the DM’s own progress
   through the questions (answered / max). It never claims a percentage it cannot
-  support, and it is allowed to move DOWN when an answer contradicts earlier
-  evidence — that is information, not a bug |
+  support and never predicts a number of questions left: it shows the two facts
+  that hold, and the residual “still unattributed” share under the bar. It is
+  allowed to move DOWN when an answer contradicts earlier evidence — that is
+  information, not a bug — but NOT because the engine re-labelled untouched
+  moments as inferred (§10.0 of the model) |
 | `SessionReviewCard` | the card in §3, wired to `GET /review` |
 | `ReviewFlow` | the overlay in §4, one question at a time |
-| `QuestionCard` | kind-specific renderers (`who_did`, `same_voice`, …) behind one shell |
+| `QuestionCard` | one shell for all three kinds: the prompt, the quote, the note, a listen button when the hook carries a span, and the options |
 | `AttributionPicker` | the roster picker, reused by the flow, the summary chips and the voices panel |
 | `ProvenanceChip` | the chip in §5 |
 | `VoicesPanel` | §6, with `Split` / `Merge` actions |

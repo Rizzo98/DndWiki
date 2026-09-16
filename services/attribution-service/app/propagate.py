@@ -41,6 +41,11 @@ VOICE_ANSWER_LR = 4.5
 CAPABILITY_PROPAGATION_LR = 1.2
 #: Similarity at which another observation is treated as the answered voice.
 SIMILARITY_FLOOR = 0.7
+#: The log of channels.ABSENT_PRIOR_FACTOR, in the form the potentials use. A
+#: presence answer has to move a member by exactly what the absence evidence
+#: moved them by, in one direction or the other, which is why the two constants
+#: are defined next to each other: -log(0.05) ~ +3.0 nats.
+ABSENT_PRIOR_FACTOR_LR = 3.0
 
 
 @dataclass(frozen=True)
@@ -451,6 +456,38 @@ def _moved(
         (abs(float(after.get(k, 0.0)) - float(before.get(k, 0.0))) for k in keys),
         default=0.0,
     ) >= MOVED_TOLERANCE
+
+
+def moved_by_answers(belief: Belief) -> set[str]:
+    """The moments that OWE their belief to the DM's answers (see _was_propagated).
+
+    'measure' answers this for one answer as it is applied, by comparing the two
+    sides of it. This answers it for the whole session at once, for a belief
+    whose record of that was lost: it asks the same question by taking EVERY
+    answer away and seeing which posteriors move. One extra inference, and it
+    names exactly the moments the DM's answers are currently responsible for.
+
+    It is the weaker claim of the two - a moment that only moved in the presence
+    of a later answer is not in the set - and that is the point: the alternative
+    used to be "somebody answered something, so every moment of the session is
+    inferred", which demoted the whole session onto the stricter bar once the DM
+    answered anything at all (S7.1).
+    """
+    if not (belief.answers or belief.voice_answers):
+        return set()
+    propagator = Propagator(belief)
+    answered = set(belief.answers)
+    without = belief.copy()
+    without.answers = {}
+    without.voice_answers = {}
+    without.propagated_refs = set()
+    before = propagator.infer(without).posteriors
+    after = propagator.infer(belief).posteriors
+    return {
+        ref
+        for ref, posterior in after.items()
+        if ref not in answered and _moved(before.get(ref), posterior)
+    }
 
 
 def _add_learned(potential: dict[str, float], belief: Belief, ref: str) -> None:

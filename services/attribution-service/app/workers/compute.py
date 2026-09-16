@@ -39,7 +39,7 @@ from app.clients import (
 )
 from app.core.config import ServiceSettings, get_settings
 from app.evidence import EvidencePass
-from app.evidence_llm import EvidenceLLM, run_evidence_pass
+from app.evidence_llm import EvidenceLLM, run_evidence_pass, run_scene_pass
 from app.pipeline import ObservationInput, PlanInput, plan_session
 from app.review import ReviewPolicy
 from app.services import review as review_service
@@ -286,6 +286,23 @@ async def compute_session(
             utterances, members, capabilities, settings
         )
 
+    # 3b. the scene reading (S12.6), best effort and AFTER the pass above: it
+    # reads the gists that pass produced, from the whole session at once, and it
+    # is what tells the engine who the transcript places in which stretch - the
+    # absence evidence and the presence questions both come from here.
+    if not pass_.scenes:
+        scenes_at = time.perf_counter()
+        scene_map = await run_scene_pass(
+            utterances=utterances,
+            roster=_roster_lines(members, capabilities),
+            roster_names=_scene_names(members),
+            settings=settings,
+        )
+        pass_.scenes = scene_map.scenes
+        logger.info(
+            "session %s scenes read in %.1fs", session_uuid, time.perf_counter() - scenes_at
+        )
+
     plan_input = PlanInput(
         session_id=str(session_uuid),
         campaign_id=str(campaign_id or ""),
@@ -446,6 +463,27 @@ async def _run_evidence(
         settings=settings,
         llm=EvidenceLLM(settings),
     )
+
+
+def _scene_names(members: list[dict[str, Any]]) -> dict[str, str]:
+    """Lowercased name -> the roster's own spelling, for the scene reading.
+
+    Both the character and the player name map to the CHARACTER: a table says
+    "Bob is running Keth" as often as it says "Keth", and a scene's cast is about
+    characters. A name the model returns that is not in this map is dropped
+    (app.scenes.parse_scenes): the engine keys candidates by member, and a name
+    that matches nobody is worse than no name.
+    """
+    names: dict[str, str] = {}
+    for member in members:
+        character = str(member.get("character_name") or "").strip()
+        if not character:
+            continue
+        names[character.lower()] = character
+        player = str(member.get("player_name") or "").strip()
+        if player:
+            names.setdefault(player.lower(), character)
+    return names
 
 
 def _roster_lines(members: list[dict[str, Any]], capabilities: CapabilityStore) -> list[str]:

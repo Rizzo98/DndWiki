@@ -27,7 +27,7 @@ by-product: nothing is written to the wiki before the DM has confirmed it.
 4. Split into overlapping chunks (~`CHUNK_TOKENS` tokens, `CHUNK_OVERLAP`
    overlap, never splitting a segment).
 5. For each chunk, call the LLM (via **LiteLLM**) with a strict JSON schema
-   (`app/prompts.py`, `PROMPT_VERSION=v11`): transcript language, session
+   (`app/prompts.py`, `PROMPT_VERSION=v13`): transcript language, session
    summary, characters (name, aliases, description, durable facts,
    session-specific facts, `is_party`, mentions), locations (+ `place_type`,
    `part_of` geospatial hints and the v8 type-specific detail fields:
@@ -37,10 +37,18 @@ by-product: nothing is written to the wiki before the DM has confirmed it.
    narrative `history` section), events, timeline entries. The prompt enforces
    the players' language for every output field, proper-name-only entities
    (no "the city" / "città" pages) and — since v11 — a summary written as
-   **1-3 short lines per chunk, one beat per line**. Calls run in parallel
+   **1-3 short lines per chunk, one beat per line** — and, since v13, the
+   `[Stretches]` note in front of a chunk, which is what lets a solo stretch
+   name the party member a narration is about instead of writing "un
+   personaggio". Calls run in parallel
    (`LLM_CHUNK_CONCURRENCY`). Malformed LLM output is repaired locally
    (`json-repair`: missing/trailing commas, fences, ...) and, if that fails,
    re-asked once per `LLM_JSON_RETRIES` with the parse error appended.
+   The merged beats are then **composed into the session's story** by one more
+   call that sees the whole session (`SUMMARY_COMPOSE_SYSTEM_PROMPT`): an opening
+   line that sets the scene, then the beats connected to each other. Without it
+   the DM read a list of separate moments, because each chunk wrote its beats
+   without sight of the others. A failed composition keeps the beats.
 6. Merge across chunks (`app/merger.py`): dedupe entities by normalized name,
    longest description wins, facts/aliases/mentions union (durable `facts`
    kept separate from `session_facts`), majority-vote language, drop
@@ -135,7 +143,7 @@ state-machine 409, so a failed job is never re-run blindly or DLQ-spammed.
 | `LLM_MAX_TOKENS` | 4096 | per-call completion cap |
 | `LLM_CHUNK_CONCURRENCY` | 4 | parallel per-chunk LLM calls |
 | `LLM_JSON_RETRIES` | 1 | corrective retries per call on malformed JSON (0 = off) |
-| `PROMPT_VERSION` | `v11` | version of `app/prompts.py`, recorded per job |
+| `PROMPT_VERSION` | `v13` | version of `app/prompts.py`, recorded per job |
 | `CHUNK_TOKENS` | 4000 | target chunk size (char/4 estimate) |
 | `CHUNK_OVERLAP` | 0.1 | fraction of chunk re-seen by the next one |
 | `MAX_CHUNKS_PER_SESSION` | 16 | safety cap; beyond this the job fails |

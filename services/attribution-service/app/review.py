@@ -58,7 +58,11 @@ class ReviewPolicy:
     gain_floor_bits: float = 0.15
     target_unresolved: float = 0.10
     max_questions: int = 8
-    event_stakes_threshold: float = 0.7
+    #: Keep in step with core.config's default, which is what the API and the
+    #: worker actually pass: the two were 0.5 and 0.7, and the higher one makes
+    #: condition (2) of the stopping rule unreachable (no moment scores above
+    #: 0.6 on this scale). See ServiceSettings.event_stakes_threshold.
+    event_stakes_threshold: float = 0.5
     max_consecutive_idk: int = 2
     uninformative_penalty: float = 1.0
     overlap_penalty: float = 0.5
@@ -262,6 +266,24 @@ class ReviewSession:
 
     # -- the question ------------------------------------------------------
 
+    def blocking_moments(self) -> set[str]:
+        """The moments the wiki is still waiting on a name for (S11 condition 2).
+
+        The stopping rule refuses to end the review while one of these is
+        unattributed, so the RANKING has to know about them too: a question the
+        shortlist never simulates is a question never asked, and measuring the
+        proxy on a real session showed it starving exactly these - the four beats
+        the summary wrote as "un personaggio" ranked 37, 39, 40 and 78 of 156.
+        """
+        belief = self.belief()
+        return set(
+            high_stakes_without_actor(
+                belief,
+                self._verdicts(belief),
+                threshold=self.policy.event_stakes_threshold,
+            )
+        )
+
     def ranked(self) -> list[ScoredQuestion]:
         from app.inference import global_entropy
 
@@ -284,6 +306,9 @@ class ReviewSession:
             max_simulated_options=self.policy.max_simulated_options,
             # the SAME stakes the baseline above was measured with
             stakes=stakes,
+            # ...and the moments the stopping rule is blocked on, which are
+            # shortlisted first (see ranking.shortlist).
+            priority=self.blocking_moments(),
         )
 
     def remaining(self) -> list[CandidateQuestion]:
@@ -318,7 +343,7 @@ class ReviewSession:
         return best, StopDecision(False, "")
 
     def plan(self) -> PlannedReview:
-        """The greedy simulation behind "answer about N questions"."""
+        """The greedy simulation of the review: a best case, kept as a diagnostic."""
         belief = self.belief()
         stakes = {ref: node.stakes for ref, node in belief.nodes.items()}
         return plan_review(
@@ -333,6 +358,7 @@ class ReviewSession:
             is_done=lambda posteriors: self._simulated_done(posteriors, stakes),
             simulation_budget=self.policy.simulation_budget,
             max_simulated_options=self.policy.max_simulated_options,
+            priority=self.blocking_moments(),
         )
 
     def _simulated_done(

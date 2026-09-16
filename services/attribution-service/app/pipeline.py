@@ -55,7 +55,6 @@ from app.questions import (
     CandidateQuestion,
     QuestionContext,
     UtteranceView,
-    VoiceView,
     generate,
 )
 from app.review import ReviewPolicy, ReviewSession
@@ -116,6 +115,11 @@ class PlanInput:
     #: Coupling eps for an identity MEASURED to be one person (purity 1.0).
     same_voice_eps: float = SAME_VOICE_EPS
     engine_version: str = "attr-1"
+
+
+# The sample-selection constants (VOICE_SAMPLES, MIN/MAX_SAMPLE_SEC) are gone with
+# the voice questions that used them: the DM told us what those clusters really
+# are - mixtures of several people - so no clip of one is worth asking about.
 
 
 @dataclass
@@ -333,7 +337,22 @@ def _addressed_of(pass_: EvidencePass, ref: str) -> tuple[str, ...]:
 def _excluded_for(
     pass_: EvidencePass, ref: str, ordinal_of: Mapping[str, int], names: Mapping[str, str]
 ) -> tuple[str, ...]:
-    """Members an identity_note rules out for this utterance's window."""
+    """Members ruled out for this utterance's window.
+
+    Two sources, and they are the same claim at different scopes:
+
+    * an identity_note - somebody SAID it out loud ("Keth isn't here tonight"),
+      which speaks for the rest of the session unless the note carries a window;
+    * the SCENE READING (S12.6) - the record places that member somewhere else for
+      a stretch of the session ("Letho went back to the inn"), which is what makes
+      a party that splits up usable at all: on a real session it restricted the
+      candidate set for 227 of 404 moments.
+
+    Only a STATED absence excludes anybody. The reading's "present" list is never
+    turned into a penalty by complement - a list that is merely incomplete would
+    silence the quiet player, who is exactly the person the review is trying to
+    find.
+    """
     position = ordinal_of.get(ref, 0)
     excluded: list[str] = []
     for note in pass_.notes:
@@ -346,6 +365,12 @@ def _excluded_for(
         end = ordinal_of.get(note.end_ref or "", 10**9)
         if start <= position <= end:
             excluded.append(key)
+    scene = pass_.scene_map.for_ordinal(position)
+    if scene is not None:
+        for name in scene.absent:
+            key = names.get(name.strip().lower())
+            if key is not None and key not in excluded:
+                excluded.append(key)
     return tuple(excluded)
 
 
@@ -847,34 +872,10 @@ def _questions(
             voice_id=voice_of.get(utterance.ref),
             speech_sec=utterance.duration,
         )
-    voice_views = [
-        VoiceView(
-            id=voice_id,
-            handle=handles.get(voice_id, voice_id),
-            speech_sec=sum(
-                u.duration for u in utterances if voice_of.get(u.ref) == voice_id
-            ),
-            purity=state.purity,
-            utterance_refs=state.refs,
-            start=min(
-                (u.start for u in utterances if voice_of.get(u.ref) == voice_id),
-                default=None,
-            ),
-            end=max(
-                (u.end for u in utterances if voice_of.get(u.ref) == voice_id),
-                default=None,
-            ),
-            centroid=_centroid(state, observations),
-            posterior=state.posterior,
-        )
-        for voice_id, state in voices.items()
-    ]
-    if dm_key:
-        # the DM is a candidate for the narration questions even though no voice
-        # identity maps onto them yet
-        for voice_view in voice_views:
-            voice_view.posterior.setdefault(dm_key, 0.0)
-
+    # The voice views are gone with the questions that used them. The identities
+    # still exist, still pool evidence and still shape the belief through the
+    # same_voice edges and the voice channel - what stopped is ASKING the DM to
+    # name them (see questions.RETIRED_KINDS).
     referenced = {
         ref: verdict.status in {"auto_low", "unresolved"}
         for ref, verdict in verdicts.items()
@@ -883,10 +884,7 @@ def _questions(
         context=context,
         utterances=views,
         posteriors=result.posteriors,
-        voices=voice_views,
         referenced=referenced,
-        purity_split_threshold=plan_input.purity_split_threshold,
-        clips=_clips(voice_views, observations, utterances),
     )
 
 
@@ -904,29 +902,3 @@ def _centroid(
 
     return tuple(centroid_of(vectors))
 
-
-def _clips(
-    voices: Sequence[VoiceView],
-    observations: Mapping[str, ObservationInput],
-    utterances: Sequence[Utterance],
-) -> dict[str, tuple[float, float]]:
-    """Short playable clips for the audio questions, one per voice (and a second
-    sample for a voice that might be two people)."""
-    by_ref = {u.ref: u for u in utterances}
-    clips: dict[str, tuple[float, float]] = {}
-    # NOT named 'voice': that is the imported evidence channel, and shadowing it
-    # in this scope would silently break any later channel call in the function.
-    for voice_view in voices:
-        usable = [
-            by_ref[ref]
-            for ref in voice_view.utterance_refs
-            if ref in by_ref and 2.0 <= by_ref[ref].duration <= 12.0
-        ]
-        if not usable:
-            continue
-        first = usable[0]
-        clips[voice_view.id] = (first.start, first.end)
-        if len(usable) > 1:
-            last = usable[-1]
-            clips[f"{voice_view.id}#second"] = (last.start, last.end)
-    return clips

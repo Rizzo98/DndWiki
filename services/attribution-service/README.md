@@ -47,7 +47,11 @@ people (the DM voicing NPCs) and one person may span several labels.
 ## Running
 
 ```sh
+python -m dnd_common.wait         # postgres may still be replaying WAL (57P03)
 alembic upgrade head
 python -m app.workers.compute     # consumes attribution.jobs
 uvicorn app.main:app --port 8000  # review + internal APIs
 ```
+
+The first step is the container entrypoint's own guard: a database that is only
+*momentarily* unavailable (still starting up) must not kill the service.

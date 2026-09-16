@@ -47,7 +47,15 @@ class ServiceSettings(Settings):
     max_questions: int = 8
     #: Every extracted event at least this important must have an actor before
     #: the review may stop.
-    event_stakes_threshold: float = 0.7
+    #:
+    #: 0.7 was ABOVE THE DATA: across every session this stack has computed, the
+    #: evidence pass has never scored a moment higher than 0.6 (the scale runs
+    #: 0.05 to 0.6, and 0.5 is the top band that recurs). So the condition that
+    #: exists to stop the review ending while a moment the wiki will use has no
+    #: actor never once fired - "every event that matters must have an actor"
+    #: (S11 condition 2) was dead code with a plausible-looking number, which is
+    #: the same failure mode as a threshold that is too low, only quieter.
+    event_stakes_threshold: float = 0.5
     #: Measured "I don't know" rate per question kind decays that kind.
     uninformative_penalty: float = 1.0
     #: Redundancy penalty against already-asked questions.
@@ -103,6 +111,13 @@ class ServiceSettings(Settings):
     # /health and used to spot a deployment running a prompt the code no longer
     # ships (the same rule refiner-service and content-service follow).
     prompt_version: str = "attr-ev-v2"
+
+    # --- scene reading (S12.6) ----------------------------------------------
+    #: One extra request over the session's GISTS, not its full text: the gists
+    #: are what the evidence pass already produced, and structure does not need
+    #: the words. Larger than the evidence chunks because a scene boundary is a
+    #: property of a whole stretch: splitting the reading fragments scenes.
+    scene_chunk_tokens: int = 24000
 
     # --- calibration (S7.2) -------------------------------------------------
     calibration_min_labels: int = 300

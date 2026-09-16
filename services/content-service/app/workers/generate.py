@@ -65,7 +65,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import services as job_services
 from app.attribution import apply_gate
-from app.chunking import chunk_artifact, chunk_transcript
+from app.chunking import chunk_artifact, chunk_transcript, stretch_note
 from app.clients.campaign_service import CampaignServiceClient
 from app.clients.session_service import (
     STATUS_APPLYING_WIKI,
@@ -91,6 +91,7 @@ from app.merger import (
 )
 from app.models import PHASE_APPLY, PHASE_SUMMARY, PHASE_WIKI, PLAN_APPLIED
 from app.planner import build_change_set
+from app.services.summaries import summary_lines
 from app.storage import ObjectStorage
 
 logger = logging.getLogger(__name__)
@@ -399,7 +400,14 @@ async def _artifact_views(
         if party
         else ""
     )
-    return [party_note + "\n".join(chunk) for chunk in chunks], party, dm_names
+    # The stretch note goes BETWEEN the party line and the lines it is about: it
+    # is a reading of where this part of the session happens, and the extraction
+    # has to see it next to the lines it licenses a name for (see
+    # chunking.stretch_note).
+    return [
+        party_note + stretch_note(artifact, chunk) + "\n".join(chunk)
+        for chunk in chunks
+    ], party, dm_names
 
 
 async def _load_attribution(
@@ -525,6 +533,9 @@ async def process_job(
                 merged, artifact, player_names=_artifact_player_names(artifact)
             )
             logger.info("session %s: attribution gate %s", session_id, gate_report)
+        composed = await _compose_summary(llm, merged)
+        if composed:
+            merged["session_summary"] = "\n".join(composed)
         logger.info(
             "session %s: extraction language=%r (%d entities, %d summary lines)",
             session_id, merged.get("language"),
@@ -663,6 +674,34 @@ async def process_summary_regeneration(
         logger.exception("summary regeneration failed for session %s", session_id)
         await _record_failure(db, session_client, session_id, job.id, exc)
         raise
+
+
+#: Below this many merged beats the list is already a story: a three-beat session
+#: does not need an editor, and the call would be a cost with nothing to buy.
+MIN_SUMMARY_LINES_TO_COMPOSE = 4
+
+
+async def _compose_summary(llm: Any, merged: dict[str, Any]) -> list[str]:
+    """Turn the merged per-chunk beats into the session's story.
+
+    The extraction pass writes 1-3 beats per chunk and NEVER sees the other
+    chunks, so what the merger produces is a list of separate moments with no
+    thread - "a patch of sentences", in the DM's own words. This is the only call
+    that sees the whole session, and the one that can give it an opening, an
+    order and a thread.
+
+    Never fatal: on any failure the beats stand as they are, which is exactly
+    what the DM saw before this existed.
+    """
+    beats = summary_lines(str(merged.get("session_summary") or ""))
+    if len(beats) < MIN_SUMMARY_LINES_TO_COMPOSE:
+        return []
+    try:
+        composed = await llm.compose_summary(merged, language=merged.get("language"))
+    except Exception:
+        logger.exception("could not compose the session summary; keeping the beats")
+        return []
+    return composed or []
 
 
 def _apply_revision_guards(current: dict[str, Any], revised: dict[str, Any]) -> dict[str, Any]:

@@ -99,7 +99,17 @@ services:
       # Creates one database per service (database-per-service pattern)
       - ./infrastructure/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dnd} -d ${POSTGRES_DB:-dnd}"]
+      # Probe over TCP, not the default unix socket: while the entrypoint runs
+      # /docker-entrypoint-initdb.d it serves a TEMPORARY server with
+      # listen_addresses='' (socket up, TCP not listening), so a socket probe can
+      # report this container healthy before the real server exists. Over TCP,
+      # pg_isready also reports "rejecting connections" (exit 1) while the server
+      # is still replaying WAL - the window that killed attribution-service. It
+      # narrows the race; it cannot remove it (containers started outside
+      # compose - Docker Desktop after a reboot, docker start - never consult
+      # depends_on), which is why the entrypoints wait for the database
+      # themselves: see libs/python/dnd_common/dnd_common/wait.py.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-dnd} -d ${POSTGRES_DB:-dnd}"]
       interval: 5s
       timeout: 5s
       retries: 20

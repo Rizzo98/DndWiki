@@ -30,6 +30,14 @@ from app.evidence import (
     split_view,
     system_message,
 )
+from app.scenes import (
+    SceneMap,
+    build_scene_message,
+    merge_scene_parts,
+    parse_scenes,
+    render_moment_view,
+    scene_system_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -117,24 +125,53 @@ class EvidenceLLM:
         header: str | None = None,
     ) -> EvidencePass:
         """One chunk -> evidence (raises on unusable output)."""
+        raw = await self._json_response(
+            system=system_message(),
+            user=build_chunk_message(
+                "\n".join(lines),
+                window=window,
+                total=total,
+                header=header,
+                expected=len(lines),
+            ),
+            what=f"evidence window {window + 1}/{total}",
+        )
+        return parse_evidence(raw)
+
+    async def scene_response(
+        self,
+        lines: list[str],
+        *,
+        window: int,
+        total: int,
+        header: str | None = None,
+    ) -> Any:
+        """One part of the session -> the RAW scene JSON (raises when unusable).
+
+        Raw, not parsed: only the caller knows the session's reference list and
+        the roster's own spellings, and a scene that names a character the
+        evidence never saw must be dropped by the side that can tell.
+        """
+        return await self._json_response(
+            system=scene_system_message(),
+            user=build_scene_message(lines, header=header, window=window, total=total),
+            what=f"scene reading {window + 1}/{total}",
+        )
+
+    async def _json_response(self, *, system: str, user: str, what: str) -> Any:
+        """One JSON response, with the corrective retry the pass already used.
+
+        Shared by both passes: the retry is about the model returning unusable
+        JSON, which is a property of the model and not of the question.
+        """
         import litellm  # lazy: heavy dependency, only needed at runtime
 
         litellm.drop_params = True
         self._export_provider_env()
 
-        view = "\n".join(lines)
         messages = [
-            {"role": "system", "content": system_message()},
-            {
-                "role": "user",
-                "content": build_chunk_message(
-                    view,
-                    window=window,
-                    total=total,
-                    header=header,
-                    expected=len(lines),
-                ),
-            },
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
         ]
         for attempt in range(self._settings.evidence_json_retries + 1):
             response = await litellm.acompletion(
@@ -145,16 +182,11 @@ class EvidenceLLM:
             )
             content = response.choices[0].message.content
             try:
-                return parse_evidence(self._load_json(content))
+                return self._load_json(content)
             except ValueError as exc:
                 if attempt >= self._settings.evidence_json_retries:
                     raise
-                logger.warning(
-                    "evidence window %d/%d: %s; asking the model to fix the JSON",
-                    window + 1,
-                    total,
-                    exc,
-                )
+                logger.warning("%s: %s; asking the model to fix the JSON", what, exc)
                 messages = [
                     *messages,
                     {"role": "assistant", "content": content or ""},
@@ -241,6 +273,74 @@ async def run_evidence_pass(
     merged = merge_passes(kept)
     _report_coverage(merged, utterances)
     return merged
+
+
+async def run_scene_pass(
+    *,
+    utterances: list[Any],
+    roster: list[str],
+    roster_names: dict[str, str],
+    settings: ServiceSettings,
+    llm: EvidenceLLM | None = None,
+) -> SceneMap:
+    """Read the session's stretches: where, and who is there; never raises.
+
+    One call over the WHOLE session's text rather than one per chunk: a stretch is
+    a property of the session, and the per-utterance pass has no way to know where
+    the previous chunk ended (see app.scenes).
+
+    A failed reading is not a failed session: with no stretches the engine simply
+    has no presence evidence, exactly as it did before this existed.
+    """
+    if not utterances:
+        return SceneMap()
+    ordinals = {
+        str(getattr(utterance, "ref", "")): int(getattr(utterance, "ordinal", 0))
+        for utterance in utterances
+    }
+    lines = render_moment_view(utterances)
+    if not lines:
+        return SceneMap()
+    header = "\n".join(roster) if roster else None
+    chunks = chunk_lines(lines, settings.scene_chunk_tokens)
+    if not chunks:
+        return SceneMap()
+
+    llm = llm or EvidenceLLM(settings)
+    semaphore = asyncio.Semaphore(max(1, settings.evidence_concurrency))
+
+    async def _one(index: int, chunk: list[str]) -> tuple[Any, ...]:
+        async with semaphore:
+            try:
+                raw = await llm.scene_response(
+                    chunk, window=index, total=len(chunks), header=header
+                )
+            except Exception:
+                logger.exception(
+                    "scene reading failed for part %d/%d", index + 1, len(chunks)
+                )
+                return ()
+            return parse_scenes(raw, ordinals=ordinals, roster_names=roster_names)
+
+    parts = await asyncio.gather(*(_one(i, chunk) for i, chunk in enumerate(chunks)))
+    scenes = merge_scene_parts(parts)
+    scene_map = SceneMap.build(scenes)
+    if not scene_map:
+        logger.warning(
+            "the scene reading produced nothing; the session runs without presence "
+            "evidence and without presence questions"
+        )
+        return scene_map
+    logger.info(
+        "scene reading: %d scene(s) over %d moment(s); %d with a cast, %d naming "
+        "somebody absent, %d with NPCs in play",
+        len(scene_map),
+        sum(scene.moment_count for scene in scene_map.scenes),
+        sum(1 for scene in scene_map.scenes if scene.present),
+        sum(1 for scene in scene_map.scenes if scene.absent),
+        sum(1 for scene in scene_map.scenes if scene.npcs),
+    )
+    return scene_map
 
 
 def _report_coverage(merged: EvidencePass, utterances: list[Any]) -> None:

@@ -1,12 +1,14 @@
 """Ranking tests: the objective, the penalties, and the greedy plan."""
 
 
+
 import pytest
 
 from app.inference import global_entropy
 from app.questions import IDK_OPTION, CandidateQuestion, QuestionOption
 from app.ranking import (
     PlannedReview,
+    _target_refs,
     answer_probabilities,
     expected_gain,
     plan_review,
@@ -16,7 +18,7 @@ from app.ranking import (
     shortlist,
 )
 
-A, B, U = "member:a", "member:b", "unknown"
+A, B, U = "member:a", "member:b", "U"
 
 
 def question(kind="who_did", cost=1.0, stakes=0.9, targets=("u1",), prompt="Who did it?"):
@@ -340,6 +342,81 @@ def test_the_shortlist_never_exceeds_its_budget():
     questions = [question(targets=(f"u{i}",), prompt=f"q{i}") for i in range(50)]
     posteriors = {f"u{i}": {A: 0.5, B: 0.5} for i in range(50)}
     assert len(shortlist(questions, posteriors=posteriors, max_candidates=7)) == 7
+
+
+def test_a_question_touching_more_moments_competes_for_the_budget():
+    """The proxy has to measure how MANY moments a question touches.
+
+    It used to be the entropy of their average posterior, which is the same
+    number for one moment and for a hundred, so a question that reaches forty
+    moments scored no better than one that reaches a single line and lost the
+    tiebreak on cost. Measured on a real session: the seven questions about a
+    voice (now retired) ranked 121-129 of 131 against a budget of 24 and were
+    never simulated (see app.ranking.shortlist).
+    """
+    wide = question(
+        stakes=0.2,
+        targets=tuple(f"v{i}" for i in range(40)),
+        prompt="a question that reaches forty moments",
+    )
+    singles = [
+        question(targets=(f"s{i}",), stakes=0.4, prompt=f"single {i}") for i in range(40)
+    ]
+    posteriors = {
+        ref: {A: 0.5, B: 0.5}
+        for ref in (*wide.target_utterances, *(q.target_utterances[0] for q in singles))
+    }
+
+    kept = shortlist([*singles, wide], posteriors=posteriors, max_candidates=4)
+    assert wide in kept
+    # ...and at the head of the budget, not clinging to the last slot.
+    assert kept[0] is wide
+
+
+def test_every_kind_carries_the_moments_it_is_about():
+    """The invariant that replaced "a structural question is measured through
+    its voices".
+
+    Every generated kind names its own moments, so no kind can silently score
+    zero for want of a target to measure.
+    """
+    content = question(targets=("u_00001",), prompt="who said it")
+    assert _target_refs(content) == ["u_00001"]
+    # deduplicated: the same moment twice is the same moment
+    assert _target_refs(question(targets=("u_00001", "u_00001"))) == ["u_00001"]
+
+
+def test_a_moment_the_review_is_blocked_on_gets_simulated():
+    """The proxy measures "how much uncertainty does this touch", which is LARGE
+    for a moment nobody can call and SMALL for one the engine already leans
+    towards - so measured on a real session it starved exactly the questions the
+    review exists for: the four beats the summary wrote as "un personaggio"
+    ranked 37, 39, 40 and 78 of 156 and were never simulated.
+
+    The moments the stopping rule is blocked on are not a preference, they are
+    what the wiki is waiting for, so they are shortlisted first. The simulation
+    still decides whether any of them is worth asking.
+    """
+    blocked = question(targets=("u_blocked",), stakes=0.5, prompt="who did it")
+    crowded = [
+        question(targets=(f"u{i}",), stakes=0.9, prompt=f"noisy {i}") for i in range(40)
+    ]
+    posteriors = {"u_blocked": {A: 0.91, B: 0.05, U: 0.04}}
+    posteriors.update(
+        {f"u{i}": {A: 0.2, B: 0.2, U: 0.6} for i in range(40)}
+    )
+
+    without = shortlist([blocked, *crowded], posteriors=posteriors, max_candidates=10)
+    assert blocked not in without, "the proxy alone does not reach it"
+
+    kept = shortlist(
+        [blocked, *crowded],
+        posteriors=posteriors,
+        max_candidates=10,
+        priority={"u_blocked"},
+    )
+    assert blocked in kept
+    assert kept[0] is blocked
 
 
 def test_ranking_simulates_only_the_shortlist():

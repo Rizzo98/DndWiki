@@ -8,6 +8,7 @@ is kept whole (the LLM still extracts from it).
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 #: Rough chars-per-token estimate (English ~4 chars/token). Good enough for
@@ -82,6 +83,80 @@ def build_view_lines_from_artifact(artifact: dict[str, Any]) -> list[str]:
             head = name
         lines.append(f"[{ref} {stamp}] {head}: {text}")
     return lines
+
+
+#: The stretch note, rendered before the lines of the chunk it belongs to. See
+#: stretch_note for why it exists at all.
+_REF = re.compile(r"^\[(u_\d+)\s")
+
+
+def refs_in_lines(lines: list[str]) -> list[str]:
+    """The utterance references a view chunk starts its lines with."""
+    return [match.group(1) for line in lines if (match := _REF.match(line))]
+
+
+def _ordinal(ref: str) -> int:
+    try:
+        return int(ref.rsplit("_", 1)[1])
+    except (IndexError, ValueError):
+        return -1
+
+
+def stretch_note(artifact: dict[str, Any], lines: list[str]) -> str:
+    """What the record says about where these lines happen, when it says anything.
+
+    The extraction sees one line per utterance and a name only for whoever is
+    SPEAKING, so a beat about somebody else had nothing to name itself with and
+    came out as "un personaggio" - which is the one thing the prompt forbids. The
+    two cases the reading can settle are exactly two:
+
+    * a stretch where ONE party member is present and the reading names the
+      others as elsewhere: everything a party member does or experiences in those
+      lines is about that one member, and the writer is told to name them;
+    * a stretch that puts a member elsewhere: nothing in those lines may be
+      attributed to them.
+
+    Only stretches that STATE an absence produce a note, in either direction.
+    A reading that lists four members present is a reading of who stayed
+    together, and it licenses nothing at all - which is why the presence
+    questions built on it were retired (see docs/attribution-model.md S12.6).
+    """
+    refs = {_ordinal(ref) for ref in refs_in_lines(lines)}
+    if not refs:
+        return ""
+    notes: list[str] = []
+    for stretch in artifact.get("stretches") or []:
+        absent = [str(name) for name in stretch.get("absent") or []]
+        if not absent:
+            continue
+        lo, hi = _ordinal(str(stretch.get("from") or "")), _ordinal(
+            str(stretch.get("to") or "")
+        )
+        if lo < 0 or hi < lo or not any(lo <= ref <= hi for ref in refs):
+            continue
+        place = str(stretch.get("place") or "").strip()
+        where = f'"{place}"' if place else "this stretch"
+        solo = stretch.get("solo_character")
+        if solo:
+            notes.append(
+                f"A stretch of this session is {where}, and the only party member "
+                f"present in it is {solo} ({', '.join(absent)} "
+                f"{'is' if len(absent) == 1 else 'are'} elsewhere). So a narration "
+                f"here that shows a party member acting or experiencing something "
+                f"is about {solo}: NAME that member. Never write \"un "
+                f'personaggio\" / "a character" / "someone" for them.'
+            )
+        else:
+            present = [str(name) for name in stretch.get("present") or []]
+            here = f" The party here: {', '.join(present)}." if present else ""
+            notes.append(
+                f"A stretch of this session is {where}, and the reading puts "
+                f"{', '.join(absent)} elsewhere during it. Attribute NOTHING in "
+                f"these lines to them.{here}"
+            )
+    if not notes:
+        return ""
+    return "[Stretches] " + " ".join(notes) + "\n\n"
 
 
 def chunk_artifact(

@@ -18,7 +18,12 @@ from app.attribution import (
     resolve_refs,
     strip_raw_labels_from_drafts,
 )
-from app.chunking import build_view_lines_from_artifact, chunk_artifact
+from app.chunking import (
+    build_view_lines_from_artifact,
+    chunk_artifact,
+    refs_in_lines,
+    stretch_note,
+)
 from app.merger import is_generic_name
 
 
@@ -278,6 +283,78 @@ def test_the_view_marks_certainty_in_the_text_itself():
     assert "Aramil?" in lines[2]  # auto_low
     assert "(unattributed)" in lines[3]
     assert all("SPEAKER" not in line for line in lines)
+
+
+# --- the stretch note: what lets a narration name its subject -----------------
+#
+# A narration is filed under the DM, so a beat about somebody else had no name to
+# use and came out as "un personaggio". The reading knows who was where; the note
+# hands the extraction that one fact, and only where the reading states it.
+
+
+def _with_stretches(*, start="u_00003", end="u_00004", **stretch):
+    base = {
+        "index": 4,
+        "place": "inside a covered cage, Fatumastra",
+        "from": start,
+        "to": end,
+        "present": ["Aramil"],
+        "absent": ["Thorin"],
+        "solo_character": "Aramil",
+    }
+    base.update(stretch)
+    return {**CONFIDENT, "stretches": [base]}
+
+
+def test_a_solo_stretch_tells_the_writer_which_member_to_name():
+    lines = build_view_lines_from_artifact(CONFIDENT)
+    note = stretch_note(_with_stretches(), lines)
+    assert "[Stretches]" in note
+    assert "inside a covered cage, Fatumastra" in note
+    assert "only party member present in it is Aramil" in note
+    assert "Thorin" in note  # ...and who the reading put elsewhere
+    assert "NAME that member" in note
+
+
+def test_a_stretch_that_puts_a_member_elsewhere_forbids_them():
+    note = stretch_note(
+        _with_stretches(solo_character=None, present=["Aramil", "Thorin"]),
+        build_view_lines_from_artifact(CONFIDENT),
+    )
+    assert "puts Thorin elsewhere" in note
+    assert "Attribute NOTHING" in note
+    assert "NAME that member" not in note
+
+
+def test_a_stretch_that_states_no_absence_produces_no_note():
+    """A cast list is not a statement that the others were away - which is the
+    same reason the presence questions built on it were retired."""
+    note = stretch_note(
+        _with_stretches(absent=[], solo_character=None),
+        build_view_lines_from_artifact(CONFIDENT),
+    )
+    assert note == ""
+
+
+def test_a_stretch_about_other_lines_produces_no_note():
+    note = stretch_note(
+        _with_stretches(start="u_00090", end="u_00099"),
+        build_view_lines_from_artifact(CONFIDENT),
+    )
+    assert note == ""
+
+
+def test_an_artifact_without_a_reading_produces_no_note():
+    assert stretch_note(CONFIDENT, build_view_lines_from_artifact(CONFIDENT)) == ""
+
+
+def test_the_note_covers_a_chunk_that_starts_inside_the_stretch():
+    """A chunk is a window, not a stretch: what matters is whether the lines it
+    holds fall inside the stretch, and a chunk born from the overlap does."""
+    lines = build_view_lines_from_artifact(CONFIDENT)
+    assert refs_in_lines(lines) == ["u_00001", "u_00002", "u_00003", "u_00004"]
+    note = stretch_note(_with_stretches(start="u_00004", end="u_00009"), lines)
+    assert "NAME that member" in note
 
 
 def test_the_view_carries_the_reference_the_extraction_must_echo():

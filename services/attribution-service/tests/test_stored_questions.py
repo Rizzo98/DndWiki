@@ -32,6 +32,7 @@ class _Row:
         ]
         self.target_utterances = [UTTERANCE_A]
         self.target_voices = [VOICE_1]
+        self.target_member = None
         self.hook = {"quote": "I cast Fireball"}
         self.cost = 1.0
         for key, value in overrides.items():
@@ -57,12 +58,36 @@ def test_a_question_with_nothing_resolvable_is_dropped():
     assert rebuild_questions([unknown], ref_of=REF_OF, voice_of=VOICE_OF) == []
 
 
-def test_a_voice_question_survives_a_missing_utterance():
-    """Structural questions target voices; their utterance list may be stale
-    without making the question unanswerable."""
-    question_row = _Row(target_utterances=[uuid.uuid4()], target_voices=[VOICE_1])
-    (question,) = rebuild_questions([question_row], ref_of=REF_OF, voice_of=VOICE_OF)
-    assert question.target_voices == ["V1"]
+def test_a_question_about_a_voice_is_no_longer_asked():
+    """A session computed before the rollback still holds these rows.
+
+    They are dropped on load rather than deleted: the record of what was asked is
+    worth keeping, but asking them again is exactly what the rollback was for -
+    and the ranking used to like them enough to put them first.
+    """
+    stored = _Row(kind="who_is_voice", target_utterances=[UTTERANCE_A], target_voices=[VOICE_1])
+    assert rebuild_questions([stored], ref_of=REF_OF, voice_of=VOICE_OF) == []
+
+
+def test_a_presence_question_is_no_longer_asked():
+    """The second rollback, under the same rule as the voice questions above.
+
+    "Was <name> there?" over a stretch lost on the DM's second session: a scene
+    holds almost everybody almost always, so the answer was a foregone "yes" -
+    while, being priced at half a click and spanning a whole stretch, it took 20
+    of the 24 simulated slots away from the questions that could have settled a
+    moment. The row stays in the database as the record of what was asked; it is
+    dropped here so it can never be asked again.
+    """
+    stored = _Row(
+        kind="presence",
+        prompt_text="Was Bob there?",
+        target_utterances=[UTTERANCE_A, UTTERANCE_B],
+        target_voices=[],
+        target_member="member:b",
+        hook={"quote": "Va bene.", "note": "the cart"},
+    )
+    assert rebuild_questions([stored], ref_of=REF_OF, voice_of=VOICE_OF) == []
 
 
 def test_mean_stakes_come_from_the_moments_not_a_constant():

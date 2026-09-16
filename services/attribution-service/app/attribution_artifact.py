@@ -80,8 +80,55 @@ def build_artifact(plan: Any, *, revision: int = 1) -> dict[str, Any]:
             "prompt_version": getattr(plan.evidence, "prompt_version", None),
         },
         "roster": plan.roster,
+        "stretches": _stretches(plan),
         "utterances": utterances,
     }
+
+
+def _stretches(plan: Any) -> list[dict[str, Any]]:
+    """Where the session happens and who the reading puts there (S12.6).
+
+    The scene reading is the only statement anybody makes about who was present,
+    and until now the content pass could not see it: it received one line per
+    utterance and a name only for the person SPEAKING. That is why a beat about
+    somebody else came out as "un personaggio" - the DM narrating "you wake up in
+    a cage" is filed under the DM, and nothing told the writer that in that
+    stretch of the session the party was one person.
+
+    So the stretches travel with the artifact, and the fields are the ones the
+    writer needs to use them without guessing:
+
+    * `present` / `absent` are the names AS READ, in the reading's own words;
+    * `solo_character` is set only when the reading is at its most specific -
+      exactly ONE party member here AND at least one named elsewhere. That is the
+      whole licence to name a subject the speaker cannot supply, and it is
+      deliberately narrow: a stretch that lists four members present licenses
+      nothing, because "present" there is a reading of who stayed together, not a
+      statement about who did what.
+    """
+    party = {
+        str(entry.get("character_name") or "").strip()
+        for entry in getattr(plan, "roster", []) or []
+        if str(entry.get("role") or "player") != "dm"
+        and str(entry.get("character_name") or "").strip()
+    }
+    out: list[dict[str, Any]] = []
+    for scene in getattr(getattr(plan, "evidence", None), "scenes", ()) or ():
+        present = [str(name) for name in scene.present]
+        absent = [str(name) for name in scene.absent]
+        here = [name for name in present if name in party]
+        out.append(
+            {
+                "index": scene.index,
+                "place": scene.location,
+                "from": scene.first_ref,
+                "to": scene.last_ref,
+                "present": present,
+                "absent": absent,
+                "solo_character": here[0] if len(here) == 1 and absent else None,
+            }
+        )
+    return out
 
 
 def _item_of(plan: Any, ref: str) -> Any:

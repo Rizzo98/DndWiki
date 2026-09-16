@@ -78,53 +78,44 @@ export function ProvenanceChip({
  *
  * Stakes-weighted SPEECH SECONDS, not "3 of 5 labels": the old figure said
  * nothing about how much of a four-hour session was covered, and it was the one
- * the DM was shown (docs/attribution-model.md S11.1).
+ * the DM was shown (docs/attribution-model.md S11.1). It is the engine's
+ * confidence about the session RIGHT NOW, so it is worded as a state.
  *
  * Two things this must never do, because it did both:
  *
- * - claim a NUMBER OF QUESTIONS TO FINISH it cannot support. The greedy
- *   simulation stops at MAX_QUESTIONS, so a plan that ends there is a LOWER
- *   BOUND ("8 or more"), not a prediction; "about 8 questions to finish" was
- *   followed by eight answers and 82% of what matters still unattributed.
- * - present the coverage as a bar that only fills up. It measures what the wiki
- *   will ACT on, and the honest framing is what is left, not a promise of 100%.
+ * - claim a NUMBER OF QUESTIONS TO FINISH. There is no such number: the length
+ *   of a review is a function of the answers, and the greedy simulation that
+ *   used to be printed here is a best case (it assumes every answer lands the
+ *   way the evidence points). Measured against reality it said 6; the DM then
+ *   answered 8 and finished with 84% of what matters still unattributed. What
+ *   the DM gets instead is the two facts that do not move:
+ *   answered so far, and how many one review asks.
+ * - present the coverage as a countdown to 100%. It measures what the wiki will
+ *   ACT on, and the honest framing is what is LEFT - the line under the bar.
  */
 export function CoverageBar({
   coverage,
   unresolved,
   plan,
-  finished,
 }: {
   coverage: number;
   unresolved?: number;
-  plan?: { questions: number | null; answered: number; max_questions: number; is_lower_bound: boolean };
-  finished?: boolean;
+  plan?: { answered: number; max_questions: number; budget_spent: boolean };
 }) {
   const pct = Math.max(0, Math.min(100, Math.round(coverage * 100)));
-  const answered = plan?.answered ?? 0;
-  const planned = plan?.questions ?? null;
-  const remaining = planned != null ? Math.max(0, planned - answered) : null;
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-sm">
-        <span className="font-semibold text-slate-200">We identified {pct}% of your session</span>
-        {finished ? (
+        <span className="font-semibold text-slate-200">
+          We are confident about {pct}% of your session
+        </span>
+        {plan ? (
           <span className="text-slate-400">
-            review finished{answered > 0 ? ` · ${answered} answered` : ""}
+            {plan.budget_spent
+              ? `all ${plan.max_questions} questions answered`
+              : `question ${plan.answered + 1} of ${plan.max_questions}`}
           </span>
-        ) : plan == null ? null : plan.is_lower_bound ? (
-          <span className="text-slate-400">
-            {answered} of {plan.max_questions} answered · this session needs more questions
-            than we ask in one sitting
-          </span>
-        ) : remaining != null && remaining > 0 ? (
-          <span className="text-slate-400">
-            {answered > 0 ? `${answered} answered · ` : ""}about {remaining} question
-            {remaining === 1 ? "" : "s"} to finish
-          </span>
-        ) : (
-          <span className="text-slate-400">{answered} of {planned} answered</span>
-        )}
+        ) : null}
       </div>
       <div
         className="h-2 w-full overflow-hidden rounded-full bg-slate-800"
@@ -137,9 +128,8 @@ export function CoverageBar({
       </div>
       {unresolved != null && unresolved > 0 ? (
         <p className="text-xs text-slate-500">
-          {fmtPercent(unresolved)} of what matters is still unattributed
-          {finished ? "" : " so far"}. Anything left unresolved is described at party level and
-          never attributed to a character.
+          {fmtPercent(unresolved)} of what matters is still unattributed. Anything left
+          unresolved is described at party level and never attributed to a character.
         </p>
       ) : null}
     </div>

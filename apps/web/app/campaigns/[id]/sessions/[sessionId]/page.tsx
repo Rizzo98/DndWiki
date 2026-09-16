@@ -10,6 +10,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import { Alert, Badge, Button, Card, Collapsible, EmptyState, Field, FileInput, Select, SessionStatusBadge, TextInput, fmtDate, fmtDuration, fmtPercent } from "@/components/ui";
 import { AudioPlayer } from "@/components/session/audio-player";
 import { SessionReviewCard } from "@/components/session/review";
+import { SessionScenesCard } from "@/components/session/scenes";
 import { VoicesPanel } from "@/components/session/voices-panel";
 import { SessionPlanCard } from "@/components/session/session-plan";
 import { SessionSummaryCard } from "@/components/session/session-summary";
@@ -622,6 +623,17 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
           reload();
           reloadSummary();
         }}
+      />
+
+      {/* The reading behind the presence evidence: which stretch of the session
+          each moment belongs to, and who the transcript puts there. It has to be
+          visible because the engine EXCLUDES the ones it places elsewhere, and an
+          exclusion nobody can see is one nobody can correct. */}
+      <SessionScenesCard
+        token={token}
+        sessionId={params.sessionId}
+        sessionStatus={session.status}
+        onSeek={seek}
       />
 
       <SessionSummaryCard

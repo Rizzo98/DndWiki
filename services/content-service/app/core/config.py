@@ -38,10 +38,11 @@ class ServiceSettings(Settings):
     anthropic_api_key: str = ""
     ollama_base_url: str = ""
     # Version of app/prompts.py shipped with this deployment; recorded per job.
-    # KEEP IN SYNC with prompts.PROMPT_VERSION. v12 adds source_refs to every
-    # extracted item and an explicit actor to every event, which is what lets
-    # the attribution gate verify a fact instead of trusting it.
-    prompt_version: str = "v12"
+    # KEEP IN SYNC with prompts.PROMPT_VERSION. v13 tells the extraction what the
+    # '[Stretches]' note in front of a chunk means: in a stretch where the record
+    # puts exactly one party member present, a beat about a party member is about
+    # THAT member, and an unnamed actor ("un personaggio") is never acceptable.
+    prompt_version: str = "v13"
     # Parallel per-chunk LLM calls per session job.
     llm_chunk_concurrency: int = 4
     # Corrective retries per chunk when the LLM returns malformed JSON

@@ -12,11 +12,19 @@ from app.prompts import (
 )
 
 
-def test_prompt_version_is_v12():
+def test_prompt_version_is_v13():
     # v12 adds source_refs to every extracted item and an explicit actor to
     # every event, which is what lets the attribution gate VERIFY a fact
     # instead of trusting it (docs/attribution-model.md S14.3).
-    assert PROMPT_VERSION == "v12"
+    # v13 reads the '[Stretches]' note: in a stretch where the record puts
+    # exactly one party member present, a beat about a party member is about THAT
+    # member, and an unnamed actor ("un personaggio") is never acceptable.
+    assert PROMPT_VERSION == "v13"
+
+
+def test_the_stretches_note_is_explained_to_the_model():
+    assert "[Stretches]" in SYSTEM_PROMPT
+    assert "un personaggio" in SYSTEM_PROMPT
 
 
 def test_every_extractable_item_carries_source_refs():

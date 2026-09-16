@@ -47,6 +47,7 @@ __all__ = [
     "ReviewQuestion",
     "ReviewRun",
     "SessionBeliefStats",
+    "SessionScene",
     "Utterance",
     "UtteranceAttribution",
     "UtteranceEvidence",
@@ -203,6 +204,11 @@ class ReviewQuestion(Base):
     target_voices: Mapped[list[uuid.UUID]] = mapped_column(
         ARRAY(Uuid), nullable=False, default=list
     )
+    #: The member a presence question is about. A content question encodes its
+    #: subject in the option keys (the roster list); a presence question offers
+    #: yes/no, so the member has to be carried separately or the answer arrives
+    #: with nothing to apply it to.
+    target_member: Mapped[str | None] = mapped_column(String(64))
     expected_gain: Mapped[float | None] = mapped_column(Numeric(8, 4))
     gain_detail: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     cost: Mapped[float] = mapped_column(Numeric(4, 2), nullable=False, default=1)
@@ -301,6 +307,57 @@ class AttributionCalibration(Base):
     n_labeled: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     false_confident_rate: Mapped[float | None] = mapped_column(Numeric(5, 4))
     fitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class SessionScene(Base):
+    """One stretch of a session in one place, with who is there (S12.6).
+
+    Persisted because it is the only representation of "where this happens and
+    who is in the room" the system has, and three different readers need it:
+
+    * the ENGINE, which applies the stated absences as a per-moment exclusion -
+      that part is baked into the belief's potentials and would work without this
+      table, but then nothing could explain WHY a member was excluded;
+    * the DM, who is the only one able to correct a reading that got the party's
+      movements wrong, and who cannot correct what nobody shows them;
+    * the wiki, for which a session's locations are a fact worth having.
+
+    'present_member_ids'/'absent_member_ids' are resolved at write time against
+    the roster: the names are what the reading said (kept verbatim, so a name that
+    resolves to nobody is visible rather than silently dropped), and the ids are
+    what the engine keys candidates by.
+    """
+
+    __tablename__ = "session_scenes"
+
+    session_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    index: Mapped[int] = mapped_column(Integer, primary_key=True)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+
+    start_ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    start_sec: Mapped[float | None] = mapped_column(Numeric(12, 3))
+    end_sec: Mapped[float | None] = mapped_column(Numeric(12, 3))
+    first_ref: Mapped[str | None] = mapped_column(String(32))
+    last_ref: Mapped[str | None] = mapped_column(String(32))
+
+    location: Mapped[str] = mapped_column(String(200), nullable=False, default="unclear")
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    present_names: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    absent_names: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    npcs: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    present_member_ids: Mapped[list[uuid.UUID]] = mapped_column(
+        ARRAY(Uuid), nullable=False, default=list
+    )
+    absent_member_ids: Mapped[list[uuid.UUID]] = mapped_column(
+        ARRAY(Uuid), nullable=False, default=list
+    )
+
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    prompt_version: Mapped[str | None] = mapped_column(String(32))
+    computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 

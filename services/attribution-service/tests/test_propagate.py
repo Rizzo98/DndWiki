@@ -152,6 +152,33 @@ def test_an_untouched_moment_keeps_its_observed_verdict():
     assert verdicts["u3"].status == "auto_high"  # untouched by the answer
 
 
+def test_the_moments_that_owe_their_belief_to_an_answer_can_be_derived():
+    """The whole-session version of the question 'measure' answers per answer.
+
+    It exists for a snapshot that lost the record of what the answers moved
+    (see services.review.encode_belief_state). The fallback it replaces -
+    "somebody answered something, so every moment is inferred" - put the entire
+    session on the stricter status bar at once, which is why an answered session
+    used to read WORSE than an untouched one.
+    """
+    from app.propagate import moved_by_answers
+
+    base = belief(answers={"u1": A})
+    derived = moved_by_answers(base)
+    # u2 shares u1's voice identity, so the answer reaches it...
+    assert "u2" in derived
+    # ...the answered moment itself is not "inferred", it is what the DM said...
+    assert "u1" not in derived
+    # ...and the other identity is untouched.
+    assert "u3" not in derived
+
+
+def test_deriving_the_moved_set_needs_answers_to_derive_from():
+    from app.propagate import moved_by_answers
+
+    assert moved_by_answers(belief()) == set()
+
+
 # --- applying an answer -----------------------------------------------------
 
 

@@ -59,9 +59,9 @@ def make_transcript() -> dict:
     }
 
 
-def make_extraction() -> dict:
+def make_extraction(**overrides) -> dict:
     """One chunk extraction consistent with the canned transcript (v2 shape)."""
-    return {
+    base = {
         "language": "en",
         "session_summary": "The party reaches the gates of Moria.",
         "characters": [
@@ -95,6 +95,8 @@ def make_extraction() -> dict:
             {"time": "00:00:12", "summary": "The gate opens.", "characters": ["Aragorn"]}
         ],
     }
+    base.update(overrides)
+    return base
 
 
 # ---------------------------------------------------------------- fixtures
@@ -120,7 +122,17 @@ def session_factory(engine):
 
 @pytest.fixture
 def settings() -> ServiceSettings:
-    return ServiceSettings()
+    """Settings for a test run, with the ambient environment made explicit.
+
+    ServiceSettings() reads the process environment, and the repo's .env turns
+    ATTRIBUTION_ENABLED on for the live stack - which flips the statuses the
+    summary phase accepts (a session at 'speakers_identified' is the ENGINE's to
+    attribute, not this service's to summarise). Every phase-1 test then returned
+    early and the suite was red locally while green in CI, on a flag that has
+    nothing to do with what those tests are about. The fixture pins the mode the
+    fakes are written for; the attribution path has its own tests.
+    """
+    return ServiceSettings(attribution_enabled=False)
 
 
 class FakeStorage:
@@ -333,6 +345,11 @@ class FakeLLM:
         self.revised = revised
         self.revise_calls: list[dict] = []
         self.revise_error: Exception | None = None
+        #: What compose_summary() returns; None means "the model could not do it",
+        #: which is the case the worker has to survive by keeping the beats.
+        self.composed: list[str] | None = None
+        self.compose_calls: list[dict] = []
+        self.compose_error: Exception | None = None
 
     async def extract_many(
         self,
@@ -346,6 +363,12 @@ class FakeLLM:
         if self.error is not None:
             raise self.error
         return [self.extractions[min(i, len(self.extractions) - 1)] for i in range(len(chunk_views))]
+
+    async def compose_summary(self, current: dict, *, language: str | None = None) -> list[str]:
+        self.compose_calls.append({"current": current, "language": language})
+        if self.compose_error is not None:
+            raise self.compose_error
+        return list(self.composed or [])
 
     async def revise_summary(
         self,

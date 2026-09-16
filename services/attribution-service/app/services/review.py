@@ -29,13 +29,15 @@ from app.models import (
     ReviewQuestion,
     ReviewRun,
     SessionBeliefStats,
+    SessionScene,
     Utterance,
     UtteranceAttribution,
     VoiceIdentity,
 )
 from app.pipeline import SessionPlan
-from app.propagate import Belief, Node, Propagator, VoiceState
+from app.propagate import Belief, Node, Propagator, VoiceState, moved_by_answers
 from app.review import ReviewPolicy, ReviewSession
+from app.scenes import SCENE_PROMPT_VERSION
 from app.statuses import StatusThresholds
 
 logger = logging.getLogger(__name__)
@@ -52,9 +54,18 @@ def _uuid(value: str | uuid.UUID | None) -> uuid.UUID | None:
         return None
 
 
-def encode_belief(plan: SessionPlan) -> dict[str, Any]:
-    """Serialise everything needed to rebuild the Propagator."""
-    belief = plan.belief
+def encode_belief_state(belief: Belief) -> dict[str, Any]:
+    """Serialise everything needed to rebuild the Propagator from this belief.
+
+    ONE encoder, used by BOTH writers: the compute pass (via encode_belief,
+    which adds the session-level keys) and every answer the DM gives. It was
+    two, and the answer path's copy had already drifted - it never wrote
+    'propagated_refs', so the record of what an answer MOVED was dropped on the
+    way to the database and the next read fell back to "somebody answered
+    something, so every moment is inferred". That fallback is the stricter bar
+    (S7.1), so the coverage the DM was shown went DOWN when they answered and
+    stayed down after a page load (S10.6).
+    """
     return {
         "candidates": list(belief.candidates),
         "nodes": {
@@ -105,6 +116,18 @@ def encode_belief(plan: SessionPlan) -> dict[str, Any]:
             if belief.propagated_refs is not None
             else {}
         ),
+    }
+
+
+def encode_belief(plan: SessionPlan) -> dict[str, Any]:
+    """The compute pass's snapshot: the belief, plus what the session IS.
+
+    The session-level keys (roster, handles, language) describe the session and
+    not the belief, which is why the answer path carries them over from the
+    previous snapshot instead of rebuilding them (see api.review._snapshot_with).
+    """
+    return {
+        **encode_belief_state(plan.belief),
         "handles": dict(plan.handles),
         "roster": plan.roster,
         "language": plan.language,
@@ -246,6 +269,13 @@ async def store_plan(
         attribution.decided_by = verdict.decided_by if verdict else None
         attribution.revision = revision
 
+    # the stretches: where the session happens, and who is there (S12.6)
+    await db.execute(delete(SessionScene).where(SessionScene.session_id == session_id))
+    for scene in _scene_rows(
+        plan, session_id=session_id, campaign_id=campaign_id, revision=revision
+    ):
+        db.add(scene)
+
     # voice identities (the "Voices we found" panel reads these)
     await db.execute(delete(VoiceIdentity).where(VoiceIdentity.session_id == session_id))
     for voice_id, state in plan.voices.items():
@@ -329,6 +359,65 @@ async def store_plan(
     return run
 
 
+def _scene_rows(
+    plan: SessionPlan,
+    *,
+    session_id: uuid.UUID,
+    campaign_id: uuid.UUID,
+    revision: int,
+) -> list[SessionScene]:
+    """One row per stretch, with the names it was read with and the members they mean.
+
+    The names are kept AS READ, including the ones that resolve to nobody: a name
+    the roster does not know is a reading the DM may want to see (and correct),
+    and dropping it here would make it invisible instead of merely unusable.
+    """
+    spans = {utterance.ref: (utterance.start, utterance.end) for utterance in plan.utterances}
+    member_of = {
+        str(entry.get("character_name") or "").strip().lower(): str(entry.get("member_id"))
+        for entry in plan.roster
+        if str(entry.get("character_name") or "").strip()
+        and str(entry.get("member_id") or "")
+    }
+    rows: list[SessionScene] = []
+    for scene in plan.evidence.scenes:
+        start = spans.get(scene.first_ref)
+        end = spans.get(scene.last_ref)
+        rows.append(
+            SessionScene(
+                session_id=session_id,
+                index=scene.index,
+                campaign_id=campaign_id,
+                start_ordinal=scene.start_ordinal,
+                end_ordinal=scene.end_ordinal,
+                start_sec=start[0] if start else None,
+                end_sec=end[1] if end else None,
+                first_ref=scene.first_ref or None,
+                last_ref=scene.last_ref or None,
+                location=scene.location[:200],
+                reason=scene.reason,
+                present_names=list(scene.present),
+                absent_names=list(scene.absent),
+                npcs=list(scene.npcs),
+                present_member_ids=_member_ids(scene.present, member_of),
+                absent_member_ids=_member_ids(scene.absent, member_of),
+                revision=revision,
+                prompt_version=SCENE_PROMPT_VERSION,
+            )
+        )
+    return rows
+
+
+def _member_ids(names: Sequence[str], member_of: Mapping[str, str]) -> list[uuid.UUID]:
+    """Roster members behind the given names, in order and without duplicates."""
+    out: list[uuid.UUID] = []
+    for name in names:
+        key = _uuid(member_of.get(name.strip().lower()))
+        if key is not None and key not in out:
+            out.append(key)
+    return out
+
+
 def _utterance_id(session_id: uuid.UUID, ref: str) -> uuid.UUID:
     """Deterministic id, so a recompute updates rows instead of duplicating them."""
     return uuid.uuid5(uuid.NAMESPACE_URL, f"dnd:utterance:{session_id}:{ref}")
@@ -353,6 +442,22 @@ async def load_review(
     belief = decode_belief(snapshot)
     if thresholds is not None:
         belief.thresholds = thresholds
+    # A snapshot whose record of what the answers moved is missing: written by
+    # the answer path before it carried one (see encode_belief_state), or by an
+    # older engine. Leaving it unknown is not neutral - the fallback reads
+    # "somebody answered something, so every moment is inferred", which puts the
+    # whole session on the stricter bar and makes a reviewed session look WORSE
+    # than an untouched one. The record is derived instead (propagate.
+    # moved_by_answers), and the next write persists it.
+    if belief.propagated_refs is None and (belief.answers or belief.voice_answers):
+        belief.propagated_refs = moved_by_answers(belief)
+        logger.info(
+            "session %s: snapshot carried %d answer(s) but no record of what "
+            "they moved; derived %d inferred moment(s)",
+            session_id,
+            len(belief.answers),
+            len(belief.propagated_refs),
+        )
     propagator = Propagator(belief)
     questions = await load_questions(
         db,
@@ -455,11 +560,19 @@ def rebuild_questions(
     stakes: Mapping[str, float] | None = None,
 ) -> list[Any]:
     """Turn stored question rows into engine questions (see load_questions)."""
-    from app.questions import CandidateQuestion, QuestionOption
+    from app.questions import RETIRED_KINDS, CandidateQuestion, QuestionOption
 
     stakes = stakes or {}
     out: list[CandidateQuestion] = []
+    retired = 0
     for row in rows:
+        if row.kind in RETIRED_KINDS:
+            # A session computed before the rollback still holds these rows. They
+            # are NOT deleted - the record of what was asked is worth keeping -
+            # but they must not be asked again, and the ranking used to like them
+            # enough to put them first.
+            retired += 1
+            continue
         stored_refs = list(row.target_utterances or [])
         stored_voices = list(row.target_voices or [])
         targets = [ref_of[item] for item in stored_refs if item in ref_of]

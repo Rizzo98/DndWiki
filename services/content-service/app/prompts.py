@@ -108,7 +108,7 @@ from __future__ import annotations
 
 import json
 
-PROMPT_VERSION = "v12"
+PROMPT_VERSION = "v13"
 
 #: Every extracted item must say WHICH transcript lines produced it.
 #:
@@ -554,7 +554,8 @@ You are given one chunk of a session transcript. The transcript lines look like:
 
 The reference (u_00412) identifies the line; the time is when it was said; the
 name is who the attribution engine believes was speaking. A chunk may open with
-a 'Party (player characters)' line listing the party's PCs.
+a 'Party (player characters)' line listing the party's PCs, and with a
+'[Stretches]' note saying where those lines happen and who the record puts there.
 
 THE THREE LINE FORMS MEAN THREE DIFFERENT THINGS. Respect them:
 
@@ -565,6 +566,16 @@ THE THREE LINE FORMS MEAN THREE DIFFERENT THINGS. Respect them:
   Describe it at party level ("the party ...") or leave it out.
 * "(unattributed):" - the engine could not tell who spoke. NEVER attribute this
   content to a named character. Describe it at party level or omit it.
+
+* "[Stretches]" — the note in front of the lines, not a transcript line. It is
+  what the record knows about WHERE this part of the session happens, and it is
+  the only statement you have about who was present. When it says that ONE party
+  member is present and the others are elsewhere, every party member who acts or
+  experiences something in these lines IS that member: write their name as the
+  actor. That is the difference between a beat the wiki can use ("Hann Caleto si
+  risveglia in una gabbia") and a beat with a hole in it ("un personaggio si
+  risveglia in una gabbia"). When it says a member is elsewhere, attribute
+  nothing in these lines to them.
 
 EVERY item you extract must carry "source_refs": the [u_XXXXX] ids of the lines
 it came from. This is not optional bookkeeping - a fact that cannot be traced
@@ -632,6 +643,13 @@ The wiki is CROSS-SESSION:
   creatura", "the creature", "la città", "the city", "l'uomo urlante"), do
   not refer to it — either name it or drop the statement. Wiki text must
   stand alone without the transcript.
+- NEVER write "un personaggio" / "a character" / "someone" / "una persona" as
+  the actor of a beat. It is never the right answer: either the '[Stretches]'
+  note names the party member (use the name), or the actor is an NPC you can
+  name from these lines (use that name), or the beat has no actor you can
+  support — in which case describe it at party level ("il gruppo...") or drop
+  it. An unnamed actor is a beat the wiki cannot use and the reader cannot
+  correct.
 
 Rules:
 - language: code of the transcript's dominant language (see above).
@@ -764,6 +782,96 @@ def build_chunk_message(
 # those corrections to the WHOLE extraction - not just to the summary text -
 # so a corrected attribution cannot survive in the character page, the event
 # description or the timeline while the summary says otherwise.
+
+
+
+# --- composing the session summary ------------------------------------------
+#
+# The extraction pass runs PER CHUNK, and every chunk writes its own 1-3 beats
+# without seeing the others. Concatenated, that is a list of separate moments
+# with no thread - which is what the DM read: "a patch of sentences".
+#
+# So the merged beats go through one more pass that can see the WHOLE session
+# at once, and writes the story from them: an opening line that sets the scene,
+# then the beats joined into a narrative. The line-per-beat contract survives
+# (the DM selects single lines and asks for changes), and so does the rule that
+# nothing may be invented: the material is the beats, the events and the
+# timeline, never the transcript.
+
+SUMMARY_COMPOSE_SYSTEM_PROMPT = """You are the editor of a tabletop RPG (Dungeons & Dragons) session record.
+
+You receive one session as it was distilled PART BY PART: a list of beats in
+order, plus the events and the timeline entries extracted from it. Each beat was
+written by somebody who could see only their own part of the session, so the
+list reads as a string of separate moments with no thread. Your job is to write
+the session's STORY from that material, for the Dungeon Master to read and
+correct.
+
+Respond with a single JSON object: {"session_summary": "<lines>"} where the
+value is the story with ONE BEAT PER LINE, separated by newline characters.
+
+How to write it:
+- The FIRST line sets the scene: where the session opens, who is there, and
+  what is already in motion or at stake. It is what makes the rest make sense.
+- Then the beats, in the order they happened.
+- EVERY LINE STANDS ON ITS OWN. The DM selects single lines and asks for
+  changes, so a line has to be understandable without the one before it - name
+  who did what rather than writing "then he...".
+- CONNECT the beats: later lines should follow from earlier ones, not start a
+  new list. The events and the timeline carry the thread; use them to keep it.
+- Use the table's own language for everything: the session's language, the names
+  as they were spoken, the places as they were called.
+- Cover the whole session, including how it ends. Around 12-25 lines for a long
+  session, fewer for a short one: it is a record, not a teaser.
+
+What you must NOT do:
+- Never invent a fact, a name, an outcome or a motive that the material does not
+  contain. If a stretch is thin, write fewer lines about it.
+- Do not add a title, a heading, bullets, numbering or blank lines.
+- Do not address the reader ("in this session...", "the party then..." is fine,
+  "as you can see" is not).
+"""
+
+
+def build_summary_compose_message(
+    current: dict, *, language: str | None = None
+) -> str:
+    """User message for the compose call: the beats, the events, the timeline."""
+    beats = [
+        line.strip()
+        for line in str(current.get("session_summary") or "").splitlines()
+        if line.strip()
+    ]
+    parts = [f"Session language: {language or current.get('language') or 'en'}", ""]
+    parts.append("Beats, in the order they were distilled:")
+    parts += [f"  {index}. {line}" for index, line in enumerate(beats, start=1)]
+
+    events = current.get("events") or []
+    if events:
+        parts += ["", "Events:"]
+        for event in events:
+            title = str(event.get("title") or "").strip()
+            summary = str(event.get("description") or event.get("summary") or "").strip()
+            parts.append(f"  - {title}: {summary}" if summary else f"  - {title}")
+
+    timeline = current.get("timeline_entries") or []
+    if timeline:
+        parts += ["", "Timeline:"]
+        for entry in timeline:
+            label = str(entry.get("label") or entry.get("title") or "").strip()
+            when = str(entry.get("timestamp") or entry.get("start") or "").strip()
+            parts.append(f"  - {when} {label}".rstrip())
+
+    parts += [
+        "",
+        (
+            "Write the session's story as the JSON object described in your "
+            "instructions: an opening line that sets the scene, then the beats in "
+            "order, one per line, connected to each other and standing on their own."
+        ),
+    ]
+    return "\n".join(parts)
+
 
 SUMMARY_REVISION_SYSTEM_PROMPT = f"""You maintain the session record of a tabletop RPG (Dungeons & Dragons) campaign.
 

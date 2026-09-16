@@ -34,6 +34,7 @@ from sqlalchemy import select
 from app import services as job_services
 from app.models import GenerationJob, SessionSummary, WikiChangeSet
 from app.workers.generate import (
+    _artifact_views,
     process_job,
     process_plan_application,
     process_plan_generation,
@@ -194,6 +195,46 @@ async def _plan_row(session_factory) -> WikiChangeSet | None:
 # ------------------------------------------------- phase 1: the draft summary
 
 
+async def test_the_merged_beats_are_composed_into_the_session_story(session_factory, settings):
+    """The beats are written one chunk at a time, each without sight of the
+    others, so the merger produces a list of separate moments. One call sees the
+    whole session and rewrites them into a story - and that is what is saved."""
+    beats = "\n".join(f"beat {index}" for index in range(5))
+    llm = FakeLLM([make_extraction(session_summary=beats)])
+    llm.composed = ["La sessione si apre nella locanda.", "Il gruppo esce nella strada."]
+
+    await _run_phase1(session_factory, settings, llm=llm)
+
+    assert llm.compose_calls, "the beats are worth composing"
+    async with session_factory() as db:
+        row = await job_services.latest_summary_for_session(db, UUID(SESSION_ID))
+    assert row.summary == "La sessione si apre nella locanda.\nIl gruppo esce nella strada."
+
+
+async def test_a_failed_composition_keeps_the_beats_the_dm_already_knew(session_factory, settings):
+    """The review must not depend on this call: the merged beats are exactly what
+    the DM saw before the pass existed."""
+    beats = "\n".join(f"beat {index}" for index in range(5))
+    llm = FakeLLM([make_extraction(session_summary=beats)])
+    llm.compose_error = RuntimeError("model unavailable")
+
+    await _run_phase1(session_factory, settings, llm=llm)
+
+    async with session_factory() as db:
+        row = await job_services.latest_summary_for_session(db, UUID(SESSION_ID))
+    assert "beat 4" in row.summary
+
+
+async def test_a_short_summary_is_never_sent_to_the_composer(session_factory, settings):
+    """Two beats are already a story, and every extra call is a chance to invent
+    something."""
+    llm = FakeLLM([make_extraction(session_summary="one beat\ntwo beats")])
+
+    await _run_phase1(session_factory, settings, llm=llm)
+
+    assert llm.compose_calls == []
+
+
 async def test_process_job_creates_a_draft_summary_and_no_page(session_factory, settings):
     """The summary is the intermediate layer: phase 1 writes NOTHING to the
     wiki, it parks the session on summary_ready for the DM to review."""
@@ -321,7 +362,7 @@ async def test_process_job_happy_path(session_factory, settings):
         jobs = (await db.execute(select(GenerationJob))).scalars().all()
     apply_job = next(j for j in jobs if j.phase == "apply")
     assert apply_job.status == "done"
-    assert apply_job.prompt_version == "v12"
+    assert apply_job.prompt_version == "v13"
     assert float(apply_job.confidence) == 1.0
     assert _draft_ids_from(apply_job) == {
         PAGE_UUIDS["Aragorn"], PAGE_UUIDS["Moria"], PAGE_UUIDS["Entering Moria"],
@@ -407,6 +448,35 @@ async def test_process_job_skips_entities_already_documented(session_factory, se
     ready = next(ev for ev in publisher.events if ev.type == "content.plan.ready")
     assert ready.payload["skipped"] == 1
     assert ready.payload["create"] == 2
+
+
+async def test_the_stretch_note_reaches_the_lines_it_licenses(settings):
+    """Where the "un personaggio" beats are supposed to stop happening.
+
+    A narration is filed under the DM, so the only thing that can name its
+    subject is the reading of who was in that stretch - and until now the
+    extraction never saw it. It has to arrive with the chunk, in front of the
+    lines it talks about.
+    """
+    settings.attribution_enabled = True
+    storage = _attributed_storage()
+    artifact = storage.transcript
+    artifact["stretches"] = [
+        {
+            "index": 4,
+            "place": "inside a covered cage",
+            "from": "u_00001",
+            "to": "u_00001",
+            "present": ["Aramil"],
+            "absent": ["Thorin"],
+            "solo_character": "Aramil",
+        }
+    ]
+    views, _, _ = await _artifact_views(artifact, settings, storage)
+    (view,) = views
+    assert "[Stretches]" in view
+    assert "NAME that member" in view
+    assert view.index("[Stretches]") < view.index("[u_00001 ")
 
 
 def _attributed_storage() -> "FakeStorage":

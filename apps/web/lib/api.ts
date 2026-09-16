@@ -214,6 +214,30 @@ export interface SummaryTimelineEntry {
   characters: string[];
 }
 
+/**
+ * One stretch of a session in one place, with who the record puts there.
+ *
+ * 'absent' is the load-bearing field: those members are excluded as speakers for
+ * the moments of the stretch, so the panel has to show them (and where they were
+ * instead) rather than just the cast.
+ */
+export interface SessionScene {
+  index: number;
+  location: string;
+  reason: string;
+  moments: number;
+  start_sec: number | null;
+  end_sec: number | null;
+  first_ref: string | null;
+  last_ref: string | null;
+  present: string[];
+  absent: string[];
+  npcs: string[];
+  present_member_ids: string[];
+  absent_member_ids: string[];
+  revision: number;
+}
+
 /** One proposed wiki change (create or update) the DM reviews. */
 export interface PlanChange {
   id: string;
@@ -528,6 +552,19 @@ export const sessionsApi = {
       token,
       `/api/attribution/sessions/${sessionId}/review/finish`,
       { method: "POST" },
+    ),
+  /**
+   * Where the session happens, and who the record puts there.
+   *
+   * The reading behind the presence evidence: the engine excludes a member from
+   * the moments a stretch says they are somewhere else, and this is the only
+   * place that decision is visible - which is what makes it arguable rather than
+   * silent.
+   */
+  scenes: (token: string, sessionId: string) =>
+    request<{ session_id: string; scenes: SessionScene[] }>(
+      token,
+      `/api/attribution/sessions/${sessionId}/scenes`,
     ),
   /** Per-utterance attribution, for the provenance chips and the transcript. */
   attribution: (token: string, sessionId: string, limit = 2000, offset = 0) =>

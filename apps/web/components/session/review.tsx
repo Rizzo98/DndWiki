@@ -15,7 +15,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Alert, Badge, Button, Card, EmptyState, Spinner } from "@/components/ui";
+import { Alert, Badge, Button, Card, EmptyState, Spinner, fmtDuration } from "@/components/ui";
 import { AttributionBuckets, CoverageBar } from "@/components/session/attribution";
 import {
   ApiError,
@@ -41,7 +41,7 @@ const STOP_EXPLANATION: Record<string, string> = {
   default:
     "Nothing left worth asking. Everything we could not settle is described at party level and never attributed to a character.",
   budget:
-    "We have asked all the questions one sitting allows. What is still unattributed is described at party level and never attributed to a character - answering more questions in a later pass, or enrolling the players' voices, is what moves it.",
+    "We have asked every question one review asks. What is still unattributed is described at party level and never attributed to a character - enrolling the players' voices is what moves it further.",
   repeated_dont_know:
     "You said you did not know twice in a row, so we stopped asking. What is left is described at party level and never attributed to a character.",
   target_reached:
@@ -240,7 +240,6 @@ export function SessionReviewCard({
             coverage={status.coverage}
             unresolved={status.unresolved}
             plan={status.plan}
-            finished={finished}
           />
           <AttributionBuckets buckets={status.buckets} />
         </>
@@ -290,9 +289,9 @@ export function SessionReviewCard({
 /**
  * One question.
  *
- * The hook is what makes it answerable in seconds: the quote, the audio span,
- * and - for the audio questions - two clips the DM compares without reading
- * anything at all.
+ * The hook is what makes it answerable in seconds: the quote, and the audio the
+ * DM compares without reading anything at all. What to play comes from the hook
+ * (samples, or the question's own span) rather than from the question kind.
  */
 export function QuestionCard({
   question,
@@ -307,7 +306,6 @@ export function QuestionCard({
   onSkip?: () => void | Promise<void>;
   onSeek?: (seconds: number) => void;
 }) {
-  const isAudio = question.kind === "same_voice" || question.kind === "different_voice";
   return (
     <div className="space-y-4 rounded-lg border border-slate-800 bg-slate-950/60 p-4">
       <div className="space-y-2">
@@ -322,25 +320,12 @@ export function QuestionCard({
         ) : null}
       </div>
 
-      {isAudio ? (
-        <div className="flex flex-wrap gap-2">
-          {(["audio_a", "audio_b"] as const).map((key, index) => {
-            const span = question.hook[key];
-            if (!span) return null;
-            return (
-              <Button
-                key={key}
-                variant="ghost"
-                onClick={() => onSeek?.(span.start)}
-                title={`${Math.round(span.start)}s – ${Math.round(span.end)}s`}
-              >
-                ▶ Clip {String.fromCharCode(65 + index)}
-              </Button>
-            );
-          })}
-        </div>
-      ) : question.hook.audio ? (
-        <Button variant="ghost" onClick={() => onSeek?.(question.hook.audio!.start)}>
+      {question.hook.audio ? (
+        <Button
+          variant="ghost"
+          onClick={() => onSeek?.(question.hook.audio!.start)}
+          title={`${fmtDuration(question.hook.audio.start)} – ${fmtDuration(question.hook.audio.end)}`}
+        >
           ▶ Listen
         </Button>
       ) : null}

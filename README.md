@@ -102,6 +102,17 @@ docker compose ps
 | Qdrant (vectors) | http://localhost:6333 | — |
 | Traefik dashboard | http://localhost:8090 | — |
 
+> **Startup order.** `depends_on: postgres: condition: service_healthy` only orders
+> the containers *Compose itself* starts — anything else that starts containers
+> (Docker Desktop after a reboot, `docker start`, `docker compose start`) bypasses
+> it. And a Postgres that has just started answers TCP while it is still replaying
+> WAL, refusing queries with "the database system is starting up" (SQLSTATE 57P03,
+> `asyncpg.exceptions.CannotConnectNowError`). So every entrypoint that owns a schema
+> waits for its database first (`python -m dnd_common.wait`, see
+> [libs/python/dnd_common/dnd_common/wait.py](libs/python/dnd_common/dnd_common/wait.py))
+> before running `alembic upgrade head` — a service that starts alongside Postgres
+> comes up a few seconds later instead of exiting.
+
 > **Windows note:** `*.localhost` resolves to loopback automatically on Windows (RFC 6761),
 > so no hosts file entries are needed — the pretty hostnames work out of the box.
 

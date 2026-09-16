@@ -236,7 +236,9 @@ CREATE TABLE review_questions (
     campaign_id       uuid NOT NULL,
     revision          int  NOT NULL,
     kind              text NOT NULL,
-    -- who_did | who_said | same_voice | different_voice | who_is_voice | new_person
+    -- who_did | who_said (who_is_voice/same_voice/different_voice/new_person/
+    -- presence are RETIRED: stored rows stay as the record, and are dropped when
+    -- a review loads - see S8.1)
     prompt_text       text NOT NULL,          -- 'Who cast Fireball on the three goblins?'
     hook              jsonb NOT NULL DEFAULT '{}',
     -- {quote, audio:{start,end}, voice_ids:[], candidates:[{key,label,why}]}
@@ -738,7 +740,7 @@ Three hard rules, enforced in code rather than in a prompt:
 
 ## 8. Generating candidate questions
 
-### 8.1 Six question kinds
+### 8.1 Two question kinds, both about a moment
 
 Each kind is a *template* instantiated from the evidence graph. The DM never
 sees a label or a cluster id.
@@ -747,21 +749,36 @@ sees a label or a cluster id.
 |---|---|---|---|
 | `who_did` | a high-`stakes` `action`/`decision` utterance with two or more candidates and entropy above the floor | “Who cast Fireball on the three goblins?” | 1.0 |
 | `who_said` | a `dialogue` utterance that is quoted, decided upon or referenced later | “Who said they wanted to enter from the eastern passage?” | 1.0 |
-| `same_voice` | an identity whose `purity` sits between the split and clean thresholds | two 4-second clips: “Same person?” | **0.7** |
-| `different_voice` | two identities closer than `d_same_p50` | two clips: “Same person?” | 0.7 |
-| `who_is_voice` | an identity with `speech_sec >= 60` and no candidate above 0.4 | “This voice speaks for 12 minutes and we can’t place it. Who is it?” | 1.3 |
-| `new_person` | an identity whose best hypothesis is `unknown` with `p >= 0.6` | “We found a voice that isn’t anyone in the party. Is that right?” | 0.8 |
 
-Every question’s option list is: the plausible roster members in posterior
-order, rendered as `Player — Character (Class)`; *The Dungeon Master* when
-`p(narrator) >= 0.05`; *Someone not in the campaign*; and **always** *I don’t
-know*.
+Every question’s option list ends with **always** *I don’t know*; it offers the
+plausible roster members in posterior order, rendered as
+`Player — Character (Class)`, plus *Someone not in the campaign* and *The Dungeon
+Master* when `p(narrator) >= 0.05`.
 
-`same_voice`/`different_voice` are the cheapest and, per unit of DM effort, the
-highest-yield questions in the system: a binary audio comparison resolves an
-entire structural decision (split or merge) that no content question can
-express. They are also the only way the DM can teach the engine something it
-cannot infer from text — hence their first-class support in the model.
+**Both other families are retired** (`questions.RETIRED_KINDS`), and both were
+measured rather than argued. Stored rows are dropped when a review loads; the
+rows stay in the database as the record of what was asked.
+
+* **The voice-identity kinds** — `same_voice`, `different_voice`,
+  `who_is_voice`, `new_person`. Measured against the DM’s own ear and lost: the
+  diarization clusters they asked about are mixtures of several people, so “who
+  is this voice?” had no true answer, and a wrong answer wrote a strong prior onto
+  every moment of a cluster that was not one person.
+* **The `presence` questions** — “Was Thorin there?” over a stretch. They
+  replaced the voice kinds and lost on the DM’s second session, for a reason that
+  is structural rather than a matter of tuning: **a scene holds almost everybody
+  almost always**, so the answer was a foregone “yes”, and a question whose answer
+  the reading already asserts buys nothing. Worse, being priced at half a click
+  (§9.3) and spanning a whole stretch, it took the ranking by storm — on the
+  session that killed it, **20 of the 24 simulated candidates were presence
+  questions** (proxy 70.7 against 1.23 for the best moment question, a factor of
+  57). Every question that could have settled a moment was never simulated, never
+  asked and never shown, and the DM was left with a review made entirely of “Was
+  X there?”.
+
+The lesson is the one §12.6 now states positively: the readings the engine makes
+about a session — where it happens, who is around — are **context**, and the
+review’s job is the thing context cannot supply, which is *who did this*.
 
 ### 8.2 How a question is phrased
 
@@ -772,14 +789,30 @@ using the table’s own words:
   who_did      ->  Who <gist>?
                    Who cast Fireball on the three goblins?
   who_said     ->  Who said: “<quote>”?
-  who_is_voice ->  This voice speaks for <N> minutes. Who is it?
 ```
 
-Every question carries a **hook**: the quoted text, the audio span (`start_sec`,
-`end_sec`) for one-click playback, and a one-line *why* (“three characters could
-have done this, and the voice is unclear”). The hook is what makes a question
-answerable in seconds instead of minutes.
+Every question carries a **hook**: the quoted text, what to play, and a one-line
+*why*. The hook is what makes a question answerable in seconds instead of
+minutes. What it plays is the thing the question is about — the line itself — and
+a question with nothing concrete to point at is refused by the generator (§8.3
+rule 8) rather than asked.
 
+### 8.3 Suppression rules — the questions that must never be asked
+
+A candidate question is discarded before ranking when:
+
+1. **The engine already answers it** — the moment is in a CONFIDENT status
+   (`auto_high`, `propagated`, `user_confirmed`), i.e. `p_max >= 0.90` and
+   `margin >= 0.50` **and** the statuses were willing to promote it. (The “don’t
+   confirm a speaker at 95%” rule, expressed as a number — and, per §7.1, a
+   number is not enough: a lone weak channel never yields high confidence.) A
+   peaked posterior the statuses refuse to promote is `auto_low`: ignorance the
+   wiki will not act on, and therefore exactly what the review is for.
+2. **A rule determines it** — capability or collapse logic resolves it, so it is
+   resolved rather than asked.
+3. **The subject was already covered** — the same voice identity, or more than
+   50% utterance overlap with a question already asked.
+4. **The stakes are too low** — `stakes < 0.15` and `p_max >= 0.5`: filler,
 ### 8.3 Suppression rules — the questions that must never be asked
 
 A candidate question is discarded before ranking when:
@@ -840,9 +873,10 @@ property the product needs.
 
 ### 9.2 Why this is affordable
 
-- The candidate pool is small by construction: one question per ambiguous voice
-  identity (≤ 20), one per suspected split/merge pair (≤ 10), plus the top 30
-  utterances by `stakes * entropy`. Typically **≤ 60 candidates**.
+- The candidate pool is bounded by construction: one question per (stretch,
+  member) pair — five stretches and six characters is thirty — plus one per moment
+  the belief cannot settle. On a real 404-moment session: 131 candidates, of which
+  the shortlist simulates 24.
 - Each simulation is a handful of BP sweeps over a surrogate of ≤ 400
   utterances with mean degree ≤ 10 — single-digit milliseconds in NumPy.
 - 60 candidates × ≤ 6 options × ~10 ms ≈ **a few seconds**, and it re-runs only
@@ -866,28 +900,98 @@ property the product needs.
   questions of that kind, so the kinds the DM keeps bouncing decay.
 - `overlap` punishes redundancy with questions already asked.
 
-### 9.4 “Answer approximately 2–3 questions to finish”
+### 9.3.1 The shortlist: how much a question TOUCHES
 
-That number is neither a promise nor a guess: it is the length of the **greedy
-simulation**. Starting from the current posterior, repeatedly take the argmax
-option under the current belief instead of asking, propagate, and count how many
-questions it takes to reach the stopping criterion of §11.
+The objective above is *measured*, and measuring it costs a propagation per
+option per candidate - hundreds of candidates on a four-hour session. So only
+`SIMULATION_BUDGET` (24) candidates are ever scored, chosen by a cheap stand-in
+that has to be right about one thing above all: **how many moments a question is
+about.** The stand-in is the stakes-weighted uncertainty the question touches, in
+the objective's own units:
 
-Two corrections, because the implementation cannot honestly claim what this
-section used to say:
+```
+  reach(q) = SUM over u in target(q) of  stakes(u) * H(x_u)
+  proxy(q) = reach(q) / cost(q)
+```
 
-- it is computed **once per attribution revision**, not after every answer. A
-  full simulation is a propagation per option per shortlisted candidate and takes
-  tens of seconds on a real session; paying that inside the answer request would
-  make the review unusable. The count therefore describes the belief as it was
-  written, and the card shows the DM’s own progress (answered of max_questions)
-  beside it rather than pretending the estimate is live.
-- **it is a LOWER BOUND whenever it reaches MAX_QUESTIONS**, because that is where
-  the simulation stops — not necessarily where the session ends. A session that
-  answered all eight questions ended with 82 % of what matters still
-  unattributed, so “about 8 questions to finish” was a promise the engine could
-  not keep. `GET /review` reports `plan.is_lower_bound`, and the card says “this
-  session needs more questions than we ask in one sitting” instead.
+and `target(q)` is the question's **own** moments if it names any, otherwise the
+moments of the voices it names. Both halves of that are corrections, and both
+were real bugs:
+
+- **the sum, not the entropy of the mean.** `H(mean posterior)` answers "how
+  undecided is a typical moment", which is the same number whether a question
+  covers one moment or a hundred. A question that settles an entire voice
+  identity therefore scored no better than one that settles a single line, and
+  lost the tie on cost and mean stakes. Measured on a real session: the seven
+  the seven questions about a voice ranked **121-129 of 131** against a budget of
+  24, so they were never simulated - and once `reach` put them in the running they
+  won by a factor of forty, which is how the DM discovered that the clusters they
+  asked about were mixtures of several people. (Those questions are now retired,
+  §8.1.)
+
+  The same proxy later let the `presence` questions do it in the other
+  direction: at cost 0.5 and a reach of a hundred and sixty-seven moments they
+  took 20 of the 24 slots, and the review the DM saw was “Was X there?” and
+  nothing else. Retiring them (§8.1) is what restores the budget to the moment
+  questions; the ordering below is unchanged, and it is still the *measured*
+  gain, not the proxy, that decides who is asked.
+- **own moments XOR voices, never the union.** Every question carries a voice -
+  the identity of the moment it is about - so adding the cluster to a question
+  that already names a moment credits a single-line question with the reach of
+  the whole cluster it sits in. In the first version of this fix that is exactly
+  what happened, and the voice questions lost again *because* the single-line
+  questions were asking for the same forty moments at cost 1.0 against 1.3.
+
+The proxy still cannot see the knock-on effect an answer has on moments *outside*
+the question, nor whether the answer settles its targets or merely reshapes them
+(a "different people" answer changes the coupling, not the labels). That is what
+the simulation is for: **the proxy decides who competes, never who wins**, and it
+is never reported to the DM as a gain. The bound is stated plainly rather than
+hidden - a question the proxy ranks below the budget is never asked.
+
+That bound is also the reason a question kind can only be judged on a whole
+session: a proxy that likes a cheap, wide question will starve every other kind
+out of the simulation, and since only simulated questions are ever ranked, the
+starvation is invisible from inside the ranking. It shows up in the *kinds the DM
+is asked*, which is where both retirements in §8.1 were caught.
+
+### 9.4 "Answer approximately 2-3 questions to finish"
+
+**The DM is no longer told a number of questions.** There is no honest number to
+tell: the length of a review is a function of the answers, because every answer
+moves the belief and the stopping rule of §11 reads the state that produces.
+
+What the **greedy simulation** measures is a *best case*: starting from the
+current posterior, repeatedly take the argmax option under the current belief
+instead of asking, propagate, and count how many questions it takes to reach the
+stopping criterion. That is the shortest review possible under the assumption
+that the DM answers every question the way the evidence points — an assumption
+reality is free to break, and broke:
+
+| | questions |
+|---|---|
+| simulation at compute time | 6 |
+| questions the DM actually answered | 8 |
+| simulation re-run on the state those answers produced | 8 (the whole budget) |
+
+The session ended with 84 % of what matters still unattributed. So the card
+showed “about 6 questions to finish”, then “8 of 6 answered”: two numbers, both
+artefacts of asking a question that has no answer. Three corrections:
+
+- **no estimate is displayed.** `GET /review` returns `plan.answered`,
+  `plan.max_questions` and `plan.budget_spent` — two facts and a flag — and the
+  card says “question 3 of 8”, or “all 8 questions answered”. The simulation is
+  still computed (once per revision: it is a propagation per option per
+  shortlisted candidate, tens of seconds on a real session) and still returned in
+  the run block as a diagnostic, and it still decides whether a review exists at
+  all (§15.1). It is simply not presented as progress.
+- **the bar is a state, not a countdown.** It reads “we are confident about N % of
+  your session”, and the line under it says how much of what matters is *still*
+  unattributed. Both come from the same classification the wiki gate uses (§11.1).
+- **a review is a fixed number of questions, not a completion procedure.** With
+  `MAX_QUESTIONS = 8` and a session that needs far more, the review is a sampling
+  of the DM’s knowledge; the coverage it buys is real but partial, and saying so
+  is the whole point of §11.2.
 
 ---
 
@@ -909,9 +1013,28 @@ verdict. This is not a detail: `propagated` is deliberately stricter than
 existed demoted every corroborated moment onto the higher bar. Answering
 questions could then only ever push the session’s confidence **down** — a real
 session went from 15.24 % identified to 14.70 % after eight correct answers,
-which is the progress bar the DM watched move backwards. A snapshot written
-before the set existed decodes as “unknown” and falls back to the conservative
-reading.
+which is the progress bar the DM watched move backwards.
+
+**The record has to survive the round trip.** `propagated_refs` is part of the
+belief, and the snapshot is the only thing the review reads: a belief written
+without it comes back as “unknown” and falls back to the conservative reading,
+so an answered session reads *worse* than an untouched one, on every page load.
+That is exactly what happened — the answer path kept its own copy of the belief
+encoder and the copy had lost the key. Two defences:
+
+- `services.review.encode_belief_state` is the **single** encoder, used by the
+  compute pass and by every answer (`api.review._snapshot_with`). Two copies of
+  a data contract is how this broke; there is now one.
+- a snapshot that arrives without the record (written by an older engine) is
+  **repaired on load**: `propagate.moved_by_answers` asks the whole-session
+  version of the question `measure` asks per answer — take every answer away,
+  infer, and see which posteriors move. It is the weaker claim of the two (a
+  moment that only moved in the presence of a later answer is not in the set),
+  it costs one extra inference, and it is the honest one: it names exactly the
+  moments the DM’s answers are currently responsible for. Measured on the session
+  above: 12.41 % as read with the fallback, 15.82 % with the derived set (and
+  18.07 % if the answers were simply ignored, which would be a lie in the other
+  direction).
 
 ### 10.1 Clamp the target
 
@@ -1129,6 +1252,93 @@ exactly the semantics needed: “this is the DM again, doing another voice”.
 `relabel.py`’s UPGMA moves into the attribution engine’s clustering step, where
 it can be seeded with **calibrated** cut points and used for **local** splits
 instead of a global pass.
+
+---
+
+### 12.6 The scene reading: where the session happens, and who is there
+
+A session is not one conversation in one place. The party moves, the scene cuts,
+a player leaves the table for twenty minutes, and the table splits up mid-scene.
+Until now the engine could express exactly one absence - an `identity_note`,
+which needs somebody to SAY it out loud - so every moment was weighted against
+every member of the campaign for the whole session.
+
+`app.scenes` reads that structure from the session's own text, once, in one
+call. What it produces per stretch: the **location**, the **characters there**,
+the characters the record places **elsewhere**, the **NPCs** in play, and the
+**event that started the stretch**.
+
+Three things about it are deliberate, and each was measured rather than assumed:
+
+1. **A stretch ends when somebody JOINS OR LEAVES, not only when the party
+   moves.** This is the whole signal. A first version asked for "scenes" and put
+   all six characters in all three scenes - which is true of a party that stays
+   together and useless to the engine. Asking instead for *the stretches in which
+   the same people are together* produced, on the same session: Letho absent from
+   moment 178, Hann joining at 316, and 72 moments in which only two of the six
+   are at the cart. Those boundaries are invisible to a summary and obvious to the
+   DM, whose own words ("Letho si allontana", "il gruppo si divide") are quoted
+   as the stretch's reason.
+2. **It reads the TEXT, not the gists the evidence pass produced.** The gists are
+   subject-less by design ("casts Fireball on the three goblins"), so a reading
+   built on them put every character in every scene: the words that place somebody
+   in a room are the words the gist pass takes out. One call over the session's
+   text costs roughly what four evidence chunks cost.
+3. **Only a STATED absence excludes anybody.** The engine applies the `absent`
+   list as the same strong negative log LR as an `identity_note` (-3 nats), per
+   moment. It does **not** turn the `present` list into a penalty by complement: an
+   incomplete present list would silence the quiet player, who is precisely the
+   person the review is trying to find. Presence is evidence about who is in the
+   room, and only its explicit half is used.
+
+Measured on a real 404-moment session: **228 moments (56%) lose at least one
+candidate, covering 63% of the session's stakes-weighted speech** - and the
+moment a character walks back in, he is a candidate again.
+
+The reading is **persisted** in `session_scenes` (one row per stretch, one
+revision), with the names exactly as read and the member ids they resolve to, and
+served by `GET /api/attribution/sessions/{id}/scenes`. The DM reads it in the
+*Where this session happens* panel, collapsed, next to the review. That panel is
+not decoration: the engine excludes members, and an exclusion nobody can see is
+an exclusion nobody can correct.
+
+#### 12.6.1 The reading is context, not a question
+
+The first attempt to make the reading *ask* something was the **presence
+question** - "Is Hann in this stretch?", one click per (member, stretch) pair.
+It is retired (§8.1), and the reason is worth keeping, because it is the same
+reason a reading must never become a cast census: **a scene holds almost
+everybody almost always.** On a real session the reading's `present` list was
+the whole party in four stretches out of six, so the question had one answer, and
+asking a question whose answer is already asserted costs the DM a click and buys
+the belief nothing. The stretches where the question *was* informative are the
+ones that state an absence - and measuring those showed the answer moves no moment
+into a confident status either way.
+
+So the reading keeps its three jobs, and all three are about **context**:
+
+1. it **excludes** a member the table put elsewhere, at -3 nats per moment, the
+   same strength as a stated absence (§12.6 step 3);
+2. it is **shown** in the *Where this session happens* panel, so an exclusion
+   nobody can see does not become an exclusion nobody can correct;
+3. it **travels with the artifact** (`stretches`, §14.1) and so reaches the
+   extraction prompt - which is what fixes the "un personaggio" beats. A narration
+   is filed under the DM, so a beat about somebody else had no name to use; in a
+   stretch where the reading puts exactly ONE party member present and names the
+   others elsewhere, the writer is told that a party member acting or experiencing
+   something in those lines IS that member, and to name them. It is the one place
+   the reading can supply a subject the speaker cannot, and it is gated on the
+   reading's most specific claim rather than on its default cast list.
+
+What is still NOT built: a way for the DM to *dispute* an exclusion. Today a wrong
+absence can be seen in the panel but corrected only by a recompute, which discards
+the DM's answers - so on an answered session it cannot be corrected at all. The
+presence question was meant to close that gap and did not: it was a question about
+a cast, and the cast was never where this system was losing.
+
+The reading is best-effort like the evidence pass: a failed call leaves the
+session exactly as it was before this existed, with no presence evidence at all
+(never with everybody absent).
 
 ---
 

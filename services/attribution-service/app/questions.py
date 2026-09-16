@@ -1,4 +1,4 @@
-"""The six questions the DM can actually answer.
+"""The questions the DM can actually answer.
 
 The DM never sees a label, a cluster id or a probability. They see a moment from
 their own session and a list of people, and the list always ends with "I don't
@@ -10,12 +10,32 @@ Two design constraints do the real work here:
   "why this is being asked". A question the DM cannot answer from memory of the
   session is a bug in the generator, not a hard question (S8.3 rule 8), so the
   generator refuses to emit one without a concrete moment to point at;
-- **suppression is explicit and testable** - the eight rules are a function, not
-  a vibe, and each one has a test.
+- **suppression is explicit and testable** - the rules are a function, not a
+  vibe, and each one has a test.
 
-`same_voice` / `different_voice` are the cheapest questions in the system and,
-per unit of DM effort, the highest-yield: a single binary audio comparison
-resolves an entire structural decision that no content question can express.
+TWO kinds remain, and both are about a MOMENT: a high-stakes action, or a line
+somebody quoted. Everything that asked the DM for something else is gone ON
+PURPOSE (`RETIRED_KINDS`), and both retirements were measured rather than
+argued:
+
+* the **voice-identity** questions ("this voice speaks for 14 minutes, who is
+  it?") lost against the DM's own ear. The diarization clusters are mixtures -
+  six of seven of them contain clips of different people - so the question had
+  no true answer, and a wrong answer was worse than none: one click wrote a
+  strong prior onto every moment of a cluster we now know was not one person.
+* the **presence** questions ("was <name> there?" over a stretch) replaced them
+  and lost on the DM's second session. A scene holds almost everybody almost
+  always, so the answer was a foregone "yes" - and a question whose answer the
+  reading already asserts buys nothing. Worse, because it was priced at half a
+  click and spanned a whole stretch, it monopolised the ranking: on a real
+  session 20 of the 24 simulated candidates were presence questions, so the
+  questions that WOULD have settled a moment - "who approaches the sheriff?"
+  about a summary line that reads "un personaggio si avvicina allo sceriffo" -
+  were never simulated, never asked, and never shown.
+
+What the DM needs is the opposite of a census: the engine already knows who was
+roughly where. What it does not know is WHO did a particular thing, and that is
+exactly what a moment question asks.
 """
 
 from __future__ import annotations
@@ -24,22 +44,30 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from dnd_common.clustering import cosine
-
 from app.channels import UNKNOWN
 from app.statuses import StatusThresholds
 
-#: Effort cost per kind, from S8.1. 0.7 for a binary audio A/B, 1.0 for a
-#: roster pick, 1.3 when the DM has to listen to something and think.
+#: Effort cost per kind, from S8.1. Both remaining kinds are one roster pick.
 QUESTION_COSTS: dict[str, float] = {
     "who_did": 1.0,
     "who_said": 1.0,
-    "same_voice": 0.7,
-    "different_voice": 0.7,
-    "who_is_voice": 1.3,
-    "new_person": 0.8,
 }
 QUESTION_KINDS: tuple[str, ...] = tuple(QUESTION_COSTS)
+
+#: Kinds that are no longer generated, and are DROPPED when a stored review is
+#: reloaded. A session computed before a rollback still has these rows, and
+#: without this the DM would keep being asked them - the ranking liked them, which
+#: is exactly how they got in the way. The rows are kept in the database: they are
+#: the record of what was asked, and a deletion would erase it.
+RETIRED_KINDS: frozenset[str] = frozenset(
+    {
+        "who_is_voice",
+        "new_person",
+        "same_voice",
+        "different_voice",
+        "presence",
+    }
+)
 
 #: Always the last option offered. It is a real answer, not an escape hatch: it
 #: records that the engine asked something the DM could not settle, which is
@@ -58,13 +86,13 @@ DM_OFFER_THRESHOLD = 0.05
 #: Rule 4: below this stakes an utterance is filler and is never asked about.
 MIN_QUESTION_STAKES = 0.15
 #: Questions that target a voice identity rather than a moment. Their overlap is
-#: measured on voices; content questions' overlap is measured on utterances.
+#: measured on voices. NO GENERATED KIND USES THIS any more (see RETIRED_KINDS),
+#: but the belief still supports a structural answer - split_voices, merged_voices
+#: and voice_answers are part of propagate - so the distinction is kept where it
+#: is used rather than deleted along with the questions.
 STRUCTURAL_KINDS: frozenset[str] = frozenset(
     {"same_voice", "different_voice", "who_is_voice", "new_person"}
 )
-#: A roster member at or above this is 'plausible', which is what stops
-#: who_is_voice from asking about a voice we can already place.
-PLAUSIBLE_MATCH = 0.4
 
 
 @dataclass(frozen=True)
@@ -180,10 +208,6 @@ def hook_of(view: UtteranceView) -> dict[str, Any]:
         "audio": {"start": round(view.start, 3), "end": round(view.end, 3)},
         "ref": view.ref,
     }
-
-
-def _minutes(seconds: float) -> str:
-    return f"{max(1, round(seconds / 60.0))}"
 
 
 def options_for(
@@ -304,157 +328,6 @@ def who_said(
         cost=QUESTION_COSTS["who_said"],
         mean_stakes=view.stakes,
         note="quoted dialogue with more than one plausible speaker",
-    )
-
-
-def same_voice(
-    voice: VoiceView,
-    *,
-    context: QuestionContext,
-    clip_a: tuple[float, float],
-    clip_b: tuple[float, float],
-) -> CandidateQuestion:
-    """Two short clips: "same person?" - the split decision, in one question."""
-    return CandidateQuestion(
-        kind="same_voice",
-        prompt_text="Same person?",
-        options=[
-            QuestionOption(key="same", label="Same person"),
-            QuestionOption(key="different", label="Different people"),
-            QuestionOption(key=IDK_OPTION, label="I don't know"),
-        ],
-        target_utterances=list(voice.utterance_refs),
-        target_voices=[voice.id],
-        hook={
-            "audio_a": {"start": round(clip_a[0], 3), "end": round(clip_a[1], 3)},
-            "audio_b": {"start": round(clip_b[0], 3), "end": round(clip_b[1], 3)},
-            "note": f"voice {voice.handle} may be more than one person",
-        },
-        cost=QUESTION_COSTS["same_voice"],
-        mean_stakes=0.7,
-        note="identity purity sits between the split and clean thresholds",
-    )
-
-
-def different_voice(
-    left: VoiceView,
-    right: VoiceView,
-    *,
-    context: QuestionContext,
-    clip_a: tuple[float, float],
-    clip_b: tuple[float, float],
-) -> CandidateQuestion:
-    """Two short clips from two identities: "same person?" - the merge decision."""
-    return CandidateQuestion(
-        kind="different_voice",
-        prompt_text="Same person?",
-        options=[
-            QuestionOption(key="same", label="Same person"),
-            QuestionOption(key="different", label="Different people"),
-            QuestionOption(key=IDK_OPTION, label="I don't know"),
-        ],
-        target_utterances=list(left.utterance_refs) + list(right.utterance_refs),
-        target_voices=[left.id, right.id],
-        hook={
-            "audio_a": {"start": round(clip_a[0], 3), "end": round(clip_a[1], 3)},
-            "audio_b": {"start": round(clip_b[0], 3), "end": round(clip_b[1], 3)},
-            "note": f"voices {left.handle} and {right.handle} sound alike",
-        },
-        cost=QUESTION_COSTS["different_voice"],
-        mean_stakes=0.7,
-        note="two identities closer than the campaign's own same-voice distance",
-    )
-
-
-def who_is_voice(
-    voice: VoiceView, *, context: QuestionContext
-) -> CandidateQuestion | None:
-    """"This voice speaks for 12 minutes and we can't place it. Who is it?"
-
-    The highest-yield question in the system, and the reason it exists: one
-    answer teaches the engine a voice model that re-scores the whole session
-    (S10.2).
-    """
-    if voice.speech_sec < 60.0:
-        return None
-    if not voice.utterance_refs:
-        return None
-    best_roster = max(
-        (p for c, p in voice.posterior.items() if c != UNKNOWN), default=0.0
-    )
-    if best_roster >= PLAUSIBLE_MATCH:
-        return None  # something plausible is already in play: ask about THAT
-    if voice.posterior.get(UNKNOWN, 0.0) >= 0.6:
-        # A stranger-dominated voice is new_person's question: it is more
-        # specific, cheaper to answer, and asking both would be asking twice.
-        return None
-    return CandidateQuestion(
-        kind="who_is_voice",
-        prompt_text=(
-            f"This voice speaks for {_minutes(voice.speech_sec)} minutes "
-            "and we can't place it. Who is it?"
-        ),
-        options=options_for(voice.posterior, context=context),
-        target_utterances=list(voice.utterance_refs),
-        target_voices=[voice.id],
-        hook={
-            "audio": {
-                "start": round(voice.start or 0.0, 3),
-                "end": round(voice.end or 0.0, 3),
-            },
-            "note": f"voice {voice.handle}, {voice.speech_sec:.0f}s of speech",
-        },
-        cost=QUESTION_COSTS["who_is_voice"],
-        mean_stakes=0.8,
-        note="a long voice with no plausible roster match",
-    )
-
-
-def new_person(
-    voice: VoiceView, *, context: QuestionContext
-) -> CandidateQuestion | None:
-    """"We found a voice that isn't anyone in the party. Is that right?"
-
-    A guest, a second DM, a visitor. The answer creates a guest pseudo-member so
-    their utterances are excluded from character pages rather than attributed to
-    the nearest party member.
-    """
-    if voice.posterior.get(UNKNOWN, 0.0) < 0.6:
-        return None
-    return CandidateQuestion(
-        kind="new_person",
-        prompt_text="We found a voice that isn't anyone in the party. Is that right?",
-        options=[
-            QuestionOption(key=UNKNOWN, label="Yes - someone outside the party"),
-            *[
-                QuestionOption(key=c, label=context.label_of.get(c, c))
-                for c in _roster_above(voice.posterior, context)
-            ],
-            QuestionOption(key=IDK_OPTION, label="I don't know"),
-        ],
-        target_utterances=list(voice.utterance_refs),
-        target_voices=[voice.id],
-        hook={
-            "audio": {
-                "start": round(voice.start or 0.0, 3),
-                "end": round(voice.end or 0.0, 3),
-            },
-            "note": f"voice {voice.handle} matches nobody in the roster",
-        },
-        cost=QUESTION_COSTS["new_person"],
-        mean_stakes=0.8,
-        note="the best hypothesis is 'not in the campaign'",
-    )
-
-
-def _roster_above(posterior: Mapping[str, float], context: QuestionContext) -> list[str]:
-    return sorted(
-        (
-            candidate
-            for candidate, probability in posterior.items()
-            if candidate not in {UNKNOWN, IDK_OPTION} and probability >= OFFER_THRESHOLD
-        ),
-        key=lambda c: (-posterior[c], c),
     )
 
 
@@ -581,21 +454,18 @@ def generate(
     context: QuestionContext,
     utterances: Mapping[str, UtteranceView],
     posteriors: Mapping[str, Mapping[str, float]],
-    voices: Sequence[VoiceView] = (),
     referenced: Mapping[str, bool] | None = None,
-    purity_split_threshold: float = 0.80,
-    same_voice_similarity: float = 0.72,
-    clips: Mapping[str, tuple[float, float]] | None = None,
 ) -> list[CandidateQuestion]:
     """Every question the current belief could justify, before ranking.
 
-    Content questions come from the utterances; structural questions come from
-    the voice identities (an impure one for a split, two similar ones for a
-    merge). Nothing here decides ORDER - that is app.ranking's job - and nothing
-    here talks to the database.
+    One pass over the moments: a high-stakes action yields a `who_did`, a quoted
+    or decisive line yields a `who_said`. Nothing here decides ORDER - that is
+    app.ranking's job - and nothing here talks to the database.
+
+    No other kind exists rather than being merely disabled: see RETIRED_KINDS and
+    the module docstring for the two that were measured and removed.
     """
     referenced = referenced or {}
-    clips = clips or {}
     out: list[CandidateQuestion] = []
 
     for ref, view in utterances.items():
@@ -611,45 +481,5 @@ def generate(
         if said is not None:
             out.append(said)
 
-    for voice in voices:
-        if voice.purity is not None and purity_split_threshold > voice.purity > 0.2:
-            clip_a = clips.get(voice.id)
-            clip_b = clips.get(f"{voice.id}#second")
-            if clip_a and clip_b:
-                out.append(same_voice(voice, context=context, clip_a=clip_a, clip_b=clip_b))
-        if voice.posterior.get(UNKNOWN, 0.0) >= 0.6:
-            person = new_person(voice, context=context)
-            if person is not None:
-                out.append(person)
-        placed = who_is_voice(voice, context=context)
-        if placed is not None:
-            out.append(placed)
-
-    for index, left in enumerate(voices):
-        for right in voices[index + 1 :]:
-            if _centroid_similarity(left, right) < same_voice_similarity:
-                continue
-            clip_a = clips.get(left.id)
-            clip_b = clips.get(right.id)
-            if clip_a and clip_b:
-                out.append(
-                    different_voice(
-                        left, right, context=context, clip_a=clip_a, clip_b=clip_b
-                    )
-                )
-
     return [q for q, reason in suppress(out, context=context, posteriors=posteriors) if not reason]
 
-
-def _centroid_similarity(left: VoiceView, right: VoiceView) -> float:
-    """Audio similarity of two identities, from their centroids.
-
-    An identity without a centroid (no embedded observations) scores 0.0 and is
-    never proposed for a merge: "we have no audio for it" must not read as "it
-    sounds like everybody".
-    """
-    if not left.centroid or not right.centroid:
-        return 0.0
-    if len(left.centroid) != len(right.centroid):
-        return 0.0
-    return float(cosine(left.centroid, right.centroid))

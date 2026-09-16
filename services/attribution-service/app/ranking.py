@@ -23,7 +23,7 @@ explainable to the DM anyway (S9.2).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -263,35 +263,107 @@ def shortlist(
     *,
     posteriors: Mapping[str, Mapping[str, float]],
     max_candidates: int,
+    stakes: Mapping[str, float] | None = None,
+    priority: Collection[str] = (),
 ) -> list[CandidateQuestion]:
     """The candidates worth SIMULATING, best guess first.
 
     The real objective is measured, not estimated - it needs a propagation per
     option per candidate, and a four-hour session produces hundreds of
     candidates. So the shortlist is drawn with a cheap stand-in that uses the
-    same ingredients minus the propagation: how uncertain the moments in
-    question are, weighted by how much those moments matter and divided by what
+    same ingredients minus the propagation: how much UNCERTAINTY THE QUESTION
+    TOUCHES, in the objective's own units (stakes-weighted nats), divided by what
     the question costs the DM.
 
-    What this CANNOT see is the knock-on effect an answer has on every other
-    moment - the very thing the objective exists to measure. So the proxy picks
-    who competes; it never decides who wins, and it is never reported as a gain.
-    The bound this buys is stated plainly rather than hidden: a question the
-    proxy ranks below the budget is never asked.
+    "Touches" is a sum over the moments the question is about, and that is the
+    correction: this used to be the entropy of their AVERAGE posterior, which is
+    the same number whether the question covers one moment or a hundred. An
+    answer that settles a whole voice identity therefore scored no better than
+    one that settles a single line, and lost the tiebreak on cost and mean
+    stakes. Measured on a real session: the seven `who_is_voice` questions
+    ranked 121-129 of 131 against a simulation budget of 24 - the question kind
+    with by far the largest knock-on effect in the system was never simulated,
+    and the review asked eight single-moment questions instead (S9.3).
+
+    What this CANNOT see is the knock-on effect an answer has on moments OUTSIDE
+    the question, nor whether the answer settles its targets or merely reshapes
+    them. So the proxy picks who competes; it never decides who wins, and it is
+    never reported as a gain. The bound this buys is stated plainly rather than
+    hidden: a question the proxy ranks below the budget is never asked.
+
+    'priority' is the exception to that bound, and it exists because measuring
+    the proxy against a real session found it starving the questions the review
+    exists for. The proxy asks "how much uncertainty does this touch", which is
+    large for a moment nobody can call and SMALL for a moment the engine already
+    leans towards - so on that session the four questions about the beats the
+    summary wrote as "un personaggio" ranked 37, 39, 40 and 78 of 156, and were
+    never simulated at all. The moments the stopping rule is BLOCKED on are not a
+    preference: they are the moments the wiki is still waiting for a name on
+    (S11 condition 2). So they are shortlisted first, by the same proxy, and the
+    simulation still decides whether any of them is worth asking.
     """
     if max_candidates <= 0 or len(questions) <= max_candidates:
         return list(questions)
 
     def proxy(question: CandidateQuestion) -> float:
-        pooled = _pooled_posterior(posteriors, question.target_utterances)
-        uncertainty = entropy(pooled) if pooled else 0.0
-        return uncertainty * max(0.0, question.mean_stakes) / max(1e-6, question.cost)
+        reach = _reach(question, posteriors, stakes=stakes)
+        return reach / max(1e-6, question.cost)
 
-    ordered = sorted(
-        questions,
-        key=lambda q: (-proxy(q), q.kind, q.prompt_text),
-    )
-    return ordered[:max_candidates]
+    def order(items: Sequence[CandidateQuestion]) -> list[CandidateQuestion]:
+        return sorted(items, key=lambda q: (-proxy(q), q.kind, q.prompt_text))
+
+    wanted = set(priority)
+    blocking = order([q for q in questions if wanted & set(q.target_utterances)])
+    rest = order([q for q in questions if not (wanted & set(q.target_utterances))])
+    return (blocking + rest)[:max_candidates]
+
+
+def _reach(
+    question: CandidateQuestion,
+    posteriors: Mapping[str, Mapping[str, float]],
+    *,
+    stakes: Mapping[str, float] | None = None,
+) -> float:
+    """The uncertainty this question puts on the table, in the objective's units.
+
+    Every kind is measured the same way, including the structural ones: a moment
+    a question cannot reach is a moment it cannot be asked about, and silently
+    scoring a whole KIND at zero - which is what "no target utterances" used to
+    mean - is not a preference for content questions, it is a bug with a
+    plausible-looking number.
+    """
+    refs = _target_refs(question)
+    total = 0.0
+    counted = 0
+    for ref in refs:
+        posterior = posteriors.get(ref)
+        if not posterior:
+            continue
+        counted += 1
+        weight = (
+            float(stakes.get(ref, question.mean_stakes))
+            if stakes
+            else float(question.mean_stakes)
+        )
+        total += max(0.0, weight) * entropy(posterior)
+    if counted:
+        return total
+    # Nothing measurable (no posterior for any target): fall back to the
+    # question's own claim instead of to zero, so it still competes.
+    pooled = _pooled_posterior(posteriors, refs)
+    return max(0.0, question.mean_stakes) * (entropy(pooled) if pooled else 0.0)
+
+
+def _target_refs(question: CandidateQuestion) -> list[str]:
+    """The moments this question is about.
+
+    Its own, and only its own. Every question carries the moments it is about,
+    and adding a voice's cluster on top of that credited a single-line question
+    with the reach of every moment that voice speaks, which is how the voice
+    questions and the single-line ones kept swapping places on a number that
+    meant nothing.
+    """
+    return list(dict.fromkeys(question.target_utterances))
 
 
 def rank(
@@ -309,16 +381,26 @@ def rank(
     simulation_budget: int = DEFAULT_SIMULATION_BUDGET,
     max_simulated_options: int = DEFAULT_SIMULATED_OPTIONS,
     stakes: Mapping[str, float] | None = None,
+    priority: Collection[str] = (),
 ) -> list[ScoredQuestion]:
     """Score the candidates worth scoring, best-first.
 
     Ties break on (kind, prompt_text) so a recompute over identical evidence
     reaches the identical order - a review that shuffles between page loads
     would be indistinguishable from a broken one.
+
+    'stakes' and 'priority' exist here for the SHORTLIST: the proxy needs the
+    stakes of the moments a question touches, and the moments the stopping rule
+    is blocked on are shortlisted first (see shortlist and _reach). Neither is
+    used by the scoring itself, which measures the real thing.
     """
     covered = covered or set()
     candidates = shortlist(
-        questions, posteriors=posteriors, max_candidates=simulation_budget
+        questions,
+        posteriors=posteriors,
+        max_candidates=simulation_budget,
+        stakes=stakes,
+        priority=priority,
     )
     scored: list[ScoredQuestion] = []
     for question in candidates:
@@ -365,9 +447,10 @@ def _pooled_posterior(
 def _overlap(question: CandidateQuestion, covered: set[str]) -> float:
     """Redundancy against what was already asked, on the question's OWN axis.
 
-    Structural questions are about voices and content questions about moments;
-    conflating them would let one voice answer suppress every utterance that
-    voice speaks.
+    Two axes live in one set and are looked up by the question's own kind:
+    content questions are about moments, structural ones about voices. A
+    structural question is asked about a cluster, and measuring it on the moments
+    would let one of them suppress every moment that voice speaks.
     """
     targets = (
         set(question.target_voices)
@@ -383,10 +466,10 @@ def _overlap(question: CandidateQuestion, covered: set[str]) -> float:
 class PlannedReview:
     """The greedy simulation: how many questions to reach the stopping rule.
 
-    This is the number behind "answer about 2 questions to finish". It is
-    neither a promise nor a guess: it is the length of exactly the procedure the
-    system follows when the DM really answers, recomputed after every answer, so
-    it self-corrects (S9.4).
+    It is a BEST CASE and never a promise: it assumes the DM answers every
+    question the way the evidence points, and it is a function of the state, so
+    the same session gives 6 here and 8 there. It is kept as a diagnostic and as
+    the reason a review exists; the card does not show it (S9.4).
     """
 
     planned: int
@@ -415,6 +498,7 @@ def plan_review(
     is_done: Callable[[Mapping[str, Mapping[str, float]]], bool] | None = None,
     simulation_budget: int = DEFAULT_SIMULATION_BUDGET,
     max_simulated_options: int = DEFAULT_SIMULATED_OPTIONS,
+    priority: Collection[str] = (),
 ) -> PlannedReview:
     """Greedily simulate the review under the current belief.
 
@@ -462,6 +546,7 @@ def plan_review(
             simulation_budget=simulation_budget,
             max_simulated_options=max_simulated_options,
             stakes=stakes,
+            priority=priority,
         )
         if not ranked:
             stopped = "no_candidates"

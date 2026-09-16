@@ -205,13 +205,25 @@ export interface ReviewOption {
   why?: string;
 }
 
-export type ReviewQuestionKind =
-  | "who_did"
-  | "who_said"
-  | "same_voice"
-  | "different_voice"
-  | "who_is_voice"
-  | "new_person";
+/**
+ * What a question is about.
+ *
+ * TWO kinds, and both are about one MOMENT of the session: an action somebody
+ * took, or a line somebody said. Two families are RETIRED and no longer
+ * generated, each because it was measured rather than argued:
+ *
+ * - the voice-identity kinds (same_voice, different_voice, who_is_voice,
+ *   new_person): the diarization clusters they asked about turned out to be
+ *   mixtures of several people, so "who is this voice?" had no true answer;
+ * - "presence" ("was <name> there?" over a stretch): a scene holds almost
+ *   everybody almost always, so the answer was a foregone "yes" - while, being
+ *   priced at half a click, it crowded every question that could have settled a
+ *   moment out of the ranking.
+ *
+ * Sessions computed before either rollback still hold those rows, and the
+ * service drops them on load rather than asking them again.
+ */
+export type ReviewQuestionKind = "who_did" | "who_said";
 
 export interface ReviewQuestion {
   id: string | null;
@@ -222,9 +234,8 @@ export interface ReviewQuestion {
   target_voices: string[];
   hook: {
     quote?: string;
+    /** The moment's own span: every question plays the thing it asks about. */
     audio?: { start: number; end: number };
-    audio_a?: { start: number; end: number };
-    audio_b?: { start: number; end: number };
     ref?: string;
     note?: string;
   };
@@ -247,13 +258,13 @@ export interface ReviewStatus {
   questions_asked: number;
   questions_planned: number;
   finished: boolean;
-  /** The DM's own progress: what was asked, what was answered, and whether the
-   *  plan is an estimate or a LOWER BOUND (the simulation stops at the cap). */
+  /** The DM's own progress: TWO FACTS - how many questions they have answered
+   *  and how many one review asks. No "N to finish": the length of a review
+   *  depends on the answers, so no honest estimate exists in advance (S9.4). */
   plan: {
-    questions: number | null;
     answered: number;
     max_questions: number;
-    is_lower_bound: boolean;
+    budget_spent: boolean;
   };
   run: {
     status: string;

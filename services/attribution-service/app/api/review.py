@@ -24,6 +24,7 @@ from app.models import (
     PropagationEvent,
     ReviewRun,
     SessionBeliefStats,
+    SessionScene,
     Utterance,
     UtteranceAttribution,
     VoiceIdentity,
@@ -105,10 +106,22 @@ async def review_status_view(
     db: AsyncSession = Depends(get_session),
     settings: ServiceSettings = Depends(get_settings),
 ) -> dict[str, Any]:
-    """Coverage, buckets, the planned question count and the run's status."""
+    """Coverage, buckets, the question counter and the run's status."""
     session_id_uuid = _session_uuid(session_id)
     session, stats = await _review_or_404(db, session_id_uuid, settings)
     run = await db.scalar(select(ReviewRun).where(ReviewRun.session_id == session_id_uuid))
+    return review_payload(session, stats, run, max_questions=settings.max_questions)
+
+
+def review_payload(
+    session: Any, stats: Any, run: Any, *, max_questions: int
+) -> dict[str, Any]:
+    """The body of GET /review.
+
+    A function rather than a route body, because a route body is a place bugs
+    hide: this one lost its `return` in an edit and nothing noticed, since no
+    test could reach it without a database. Everything below is pure.
+    """
     # The stored count, NOT a fresh greedy simulation: the number was computed
     # when the belief was written, and recomputing it here made every page load
     # pay the most expensive computation in the system.
@@ -117,33 +130,48 @@ async def review_status_view(
         "status": run.status if run else "pending",
         "questions_planned": run.questions_planned if run else None,
         "questions_asked": run.questions_asked if run else 0,
-        "coverage_before": float(run.coverage_before) if run and run.coverage_before is not None else None,
-        "coverage_after": float(run.coverage_after) if run and run.coverage_after is not None else None,
+        "coverage_before": (
+            float(run.coverage_before)
+            if run and run.coverage_before is not None
+            else None
+        ),
+        "coverage_after": (
+            float(run.coverage_after)
+            if run and run.coverage_after is not None
+            else None
+        ),
         "stop_reason": stats.stop_reason,
         "engine_version": stats.engine_version,
     }
     payload["coverage"] = round(session._coverage(), 4)
     payload["unresolved"] = round(session.unresolved(), 4)
-    payload["plan"] = plan_progress(run, max_questions=settings.max_questions)
+    payload["plan"] = plan_progress(run, max_questions=max_questions)
     return payload
 
 
 def plan_progress(run: Any, *, max_questions: int) -> dict[str, Any]:
-    """The DM's own progress through the questions, in numbers that stay TRUE.
+    """How far the DM is through the questions, in numbers that stay TRUE.
 
-    'questions' is the greedy simulation's length, and the simulation STOPS at
-    `max_questions`: when it stops there the honest reading is a LOWER BOUND
-    ("8 or more"), because the stopping criterion may still be out of reach.
-    Reporting it as "about 8 questions to finish" is a promise the engine cannot
-    keep - and did not keep: a session answered all eight and ended with 82% of
-    what matters still unattributed.
+    Two numbers, and both are FACTS: how many questions they have answered, and
+    how many one review asks. What is deliberately NOT here is any "N questions
+    to finish". The length of a review is not knowable in advance - it is a
+    function of the answers, because every answer moves the belief and the
+    stopping rule reads the state that produces.
+
+    The greedy simulation that used to be shown here is a BEST CASE: it assumes
+    the DM answers every question the way the evidence points. On a real session
+    it said 6; the DM answered 8; the session still had 84% of what matters
+    unattributed; re-run on the state those answers produced, the same
+    simulation says 8 - the entire budget. So the DM was shown "about 6
+    questions to finish" and then "8 of 6 answered", and both numbers were
+    artefacts of asking a question that has no answer (S9.4). The stored count
+    is still computed and returned in the run block, as a diagnostic.
     """
-    planned = getattr(run, "questions_planned", None) if run is not None else None
+    answered = (getattr(run, "questions_asked", 0) or 0) if run is not None else 0
     return {
-        "questions": planned,
-        "answered": (getattr(run, "questions_asked", 0) or 0) if run is not None else 0,
+        "answered": answered,
         "max_questions": max_questions,
-        "is_lower_bound": bool(planned and planned >= max_questions),
+        "budget_spent": answered >= max_questions,
     }
 
 
@@ -303,6 +331,56 @@ async def finish_review(
             )
         )
     return outcome.as_payload()
+
+
+@router.get("/scenes")
+async def scene_view(
+    session_id: str,
+    db: AsyncSession = Depends(get_session),
+    settings: ServiceSettings = Depends(get_settings),
+) -> dict[str, Any]:
+    """Where the session happens, and who the record puts there (S12.6).
+
+    Read by the DM, who is the only one able to correct a reading of their own
+    table: the panel shows each stretch with its place, its moment count and the
+    characters the reading put in it and elsewhere. Nothing here is a decision -
+    the exclusions are already baked into the belief - it is the evidence behind
+    them, which is what makes them arguable.
+    """
+    session_id_uuid = _session_uuid(session_id)
+    rows = (
+        await db.scalars(
+            select(SessionScene)
+            .where(SessionScene.session_id == session_id_uuid)
+            .order_by(SessionScene.index)
+        )
+    ).all()
+    return {"session_id": session_id, "scenes": [scene_payload(row) for row in rows]}
+
+
+def scene_payload(row: Any) -> dict[str, Any]:
+    """One stored stretch, in the shape the panel reads.
+
+    Pure and separate from the route for the same reason as review_payload: a
+    route body is the one place in this service that no test reaches without a
+    database, and a payload built inline there is a payload nothing checks.
+    """
+    return {
+        "index": row.index,
+        "location": row.location,
+        "reason": row.reason,
+        "moments": row.end_ordinal - row.start_ordinal + 1,
+        "start_sec": float(row.start_sec) if row.start_sec is not None else None,
+        "end_sec": float(row.end_sec) if row.end_sec is not None else None,
+        "first_ref": row.first_ref,
+        "last_ref": row.last_ref,
+        "present": list(row.present_names or []),
+        "absent": list(row.absent_names or []),
+        "npcs": list(row.npcs or []),
+        "present_member_ids": [str(value) for value in (row.present_member_ids or [])],
+        "absent_member_ids": [str(value) for value in (row.absent_member_ids or [])],
+        "revision": row.revision,
+    }
 
 
 @router.get("/attribution")
@@ -529,51 +607,16 @@ def _snapshot_with(session, previous: Mapping[str, Any] | None = None) -> dict[s
     Re-deriving them here would be a second source of truth, and dropping them -
     which is what this did - left every later read without the labels it needs
     to put a name on a voice.
+
+    The belief itself goes through the SAME encoder the compute pass uses. This
+    function used to carry its own copy of that dictionary, and the copy had
+    already lost a key: 'propagated_refs', the record of which moments an answer
+    moved. Losing it meant the next answer re-read the session as "everything is
+    inferred", i.e. on the stricter status bar - so answering a question made
+    the coverage the DM sees go DOWN, and it stayed down until the next
+    recompute (see encode_belief_state).
     """
-    belief = session.belief()
     snapshot: dict[str, Any] = dict(previous or {})
-    snapshot.update({
-        "candidates": list(belief.candidates),
-        "nodes": {
-            ref: {
-                "ref": node.ref,
-                "voice_id": node.voice_id,
-                "stakes": node.stakes,
-                "seconds": node.seconds,
-                "capability_reqs": list(node.capability_reqs),
-                "text": node.text,
-                "alpha": node.alpha,
-                "similarity": node.similarity,
-            }
-            for ref, node in belief.nodes.items()
-        },
-        "potentials": {ref: dict(values) for ref, values in belief.potentials.items()},
-        "edges": [
-            {
-                "left": edge.left,
-                "right": edge.right,
-                "log_same": edge.log_same,
-                "log_diff": edge.log_diff,
-                "kind": edge.kind,
-            }
-            for edge in belief.edges
-        ],
-        "voices": {
-            vid: {
-                "id": state.id,
-                "refs": list(state.refs),
-                "posterior": state.posterior,
-                "purity": state.purity,
-            }
-            for vid, state in belief.voices.items()
-        },
-        "corroborating": dict(belief.corroborating),
-        "voice_lr": dict(belief.voice_lr),
-        "answers": dict(belief.answers),
-        "voice_answers": dict(belief.voice_answers),
-        "learned": {k: sorted(v) for k, v in belief.learned.items()},
-        "split_voices": sorted(belief.split_voices),
-        "merged_voices": dict(belief.merged_voices),
-        "asked_texts": [s.question.prompt_text for s in session.asked],
-    })
+    snapshot.update(review_service.encode_belief_state(session.belief()))
+    snapshot["asked_texts"] = [s.question.prompt_text for s in session.asked]
     return snapshot
