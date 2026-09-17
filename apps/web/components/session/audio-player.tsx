@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type Ref } from "react";
 import { RlIcon, RlIconChip } from "@/components/ravenlore";
 import { fmtClock } from "@/components/session/transcript";
+import { waveformPeaks } from "@/lib/waveform";
 
 /** Bars in the waveform. Enough to read as a shape, few enough to be cheap. */
 const BARS = 132;
@@ -84,27 +85,7 @@ export function AudioPlayer({
   const total = duration > 0 ? duration : durationSec ?? 0;
   const progress = total > 0 ? Math.min(1, current / total) : 0;
 
-  // The envelope: a deterministic shape for this session, tapering at the ends
-  // so it reads as a recording rather than a bar chart.
-  const bars = useMemo(() => {
-    let h = 2166136261;
-    for (let i = 0; i < seed.length; i += 1) {
-      h ^= seed.charCodeAt(i);
-      h = Math.imul(h, 16777619);
-    }
-    const out: number[] = [];
-    for (let i = 0; i < BARS; i += 1) {
-      h ^= h << 13;
-      h ^= h >>> 17;
-      h ^= h << 5;
-      const noise = ((h >>> 0) % 1000) / 1000;
-      // A slow envelope under the noise keeps neighbouring bars related.
-      const shape = 0.45 + 0.55 * Math.sin((i / BARS) * Math.PI);
-      const taper = Math.min(1, Math.min(i, BARS - 1 - i) / 6 + 0.25);
-      out.push(Math.max(0.12, Math.min(1, (0.35 + 0.65 * noise) * shape * taper)));
-    }
-    return out;
-  }, [seed]);
+  const bars = useMemo(() => waveformPeaks(seed, BARS), [seed]);
 
   const seekToFraction = useCallback(
     (fraction: number) => {

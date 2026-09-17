@@ -558,6 +558,71 @@ select option {
     border-color: var(--rl-border-parchment-strong);
     box-shadow: 0 6px 20px rgba(30, 20, 10, 0.14);
   }
+  /* A card whose link is an overlay (interactive children inside the card). */
+  .rl-card--linkable {
+    transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  }
+  .rl-card--linkable:hover,
+  .rl-card--linkable:focus-within {
+    transform: translateY(-2px);
+    border-color: var(--rl-border-parchment-strong);
+    box-shadow: 0 6px 20px rgba(30, 20, 10, 0.14);
+  }
+
+  /* Decorative recording envelope on a session card. */
+  .rl-card-wave {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    height: 34px;
+    overflow: hidden;
+  }
+  .rl-card-wave-bar {
+    flex: 1 1 0;
+    min-width: 1px;
+    border-radius: 999px;
+    background-color: color-mix(in srgb, var(--rl-text-on-parchment-muted) 30%, transparent);
+  }
+  .rl-card-wave-empty {
+    display: grid;
+    place-items: center;
+    height: 34px;
+    border-bottom: 1px dashed var(--rl-border-parchment-strong);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--rl-text-on-parchment-muted);
+  }
+
+  /* Pipeline progress: one segment per stage of the session. */
+  .rl-stages {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+  }
+  .rl-stage {
+    display: block;
+    width: 16px;
+    height: 4px;
+    border-radius: 999px;
+    background-color: color-mix(in srgb, var(--rl-text-on-parchment-muted) 22%, transparent);
+  }
+  .rl-stage--done {
+    background-color: color-mix(in srgb, var(--tint, var(--rl-accent-500)) 70%, transparent);
+  }
+  .rl-stage--active {
+    animation: rl-stage-pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes rl-stage-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.4;
+    }
+  }
+
   .rl-card-title {
     font-family: var(--rl-font-serif);
     font-size: 20px;
