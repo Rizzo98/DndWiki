@@ -11,13 +11,13 @@ import { Alert, Badge, Button, Card, Collapsible, EmptyState, Field, FileInput, 
 import { AudioPlayer } from "@/components/session/audio-player";
 import { SessionReviewCard } from "@/components/session/review";
 import { SessionScenesCard } from "@/components/session/scenes";
-import { VoicesPanel } from "@/components/session/voices-panel";
 import { SessionPlanCard } from "@/components/session/session-plan";
 import { SessionSummaryCard } from "@/components/session/session-summary";
 import { LOW_SPEAKER_CONFIDENCE, TranscriptViewer, speakerConfidenceByLabel } from "@/components/session/transcript";
 import { AuthGate, useAuth } from "@/lib/auth";
-import { campaignsApi, contentApi, objectUrl, sessionsApi, usersApi, wikiApi, type Campaign, type CampaignMember, type PageSummary, type PlanChangeEdit, type PlanRelationEdit, type SessionDetail, type SessionPlan, type SessionSummary, type SpeakerAssignment, type SummaryEdit } from "@/lib/api";
+import { campaignsApi, contentApi, objectUrl, sessionsApi, usersApi, wikiApi, type CampaignMember, type PageSummary, type PlanChangeEdit, type PlanRelationEdit, type SessionDetail, type SessionPlan, type SessionSummary, type SpeakerAssignment, type SummaryEdit } from "@/lib/api";
 import { buildLinkIndex, type LinkIndex } from "@/components/linked-text";
+import { useCampaign } from "@/lib/campaign-context";
 import { errMessage, useAsyncData } from "@/lib/use-async";
 
 const ACTIVE_STATUSES = new Set([
@@ -50,7 +50,8 @@ const TRANSCRIPT_PENDING_STATUSES = new Set([
 
 export default function SessionDetailPage({ params }: { params: { id: string; sessionId: string } }) {
   const { token, isDeveloper } = useAuth();
-  const { data: campaign } = useAsyncData<Campaign>((t) => campaignsApi.get(t, params.id), [params.id]);
+  // The workspace layout already loaded (and keeps fresh) this campaign.
+  const { campaign } = useCampaign();
   const { data: session, error, loading, reload } = useAsyncData<SessionDetail>((t) => sessionsApi.get(t, params.sessionId), [params.sessionId]);
   const { data: speakers, reload: reloadSpeakers } = useAsyncData<SpeakerAssignment[]>((t) => sessionsApi.speakers(t, params.sessionId), [params.sessionId]);
   const { data: members } = useAsyncData<CampaignMember[]>((t) => campaignsApi.members(t, params.id), [params.id]);
@@ -96,7 +97,6 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
   const currentPromptVersion = llmConfig?.prompt_version ?? null;
 
   const [file, setFile] = useState<File | null>(null);
-  const [replacing, setReplacing] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState({ title: "", session_no: "" });
   const [assignForm, setAssignForm] = useState<Record<string, { member_id: string }>>({});
@@ -434,7 +434,6 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
       const updated = await sessionsApi.uploadRecording(token, params.sessionId, file);
       setNotice(`Recording uploaded — status is now "${updated.status}". The pipeline has started.`);
       setFile(null);
-      setReplacing(false);
       setAudioSrc(objectUrl(updated.raw_audio_url));
       reload();
       reloadSpeakers();
@@ -443,17 +442,6 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
     } finally {
       setBusy(false);
     }
-  }
-
-  function askReplace() {
-    if (
-      !window.confirm(
-        "Replace the recording?\n\nThe current transcript and diarization will be erased and the pipeline will restart from scratch.",
-      )
-    ) {
-      return;
-    }
-    setReplacing(true);
   }
 
   function startEdit() {
@@ -555,10 +543,10 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
     }
   }
 
-  if (loading) return <p className="text-sm text-slate-400">Loading session…</p>;
+  if (loading) return <p className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">Loading session…</p>;
   if (error || !session) return <Alert tone="error">{error ?? "Session not found"}</Alert>;
 
-  const isDm = campaign?.my_role === "dm";
+  const isDm = campaign.my_role === "dm";
 
   // Once every diarized speaker has been named, the Speakers section adds no
   // information for players — hide it. The DM always keeps it: assignments can
@@ -592,17 +580,71 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
     <AuthGate>
     <div className="space-y-6">
       <div>
-        <Link href={`/campaigns/${params.id}`} className="text-xs text-slate-500 hover:text-slate-300">← back to campaign</Link>
+        <Link href={`/campaigns/${params.id}/sessions`} className="text-xs text-[color:var(--rl-text-on-parchment-muted)] hover:text-[color:var(--rl-text-on-parchment-primary)]">← all sessions</Link>
         <div className="mt-1 flex flex-wrap items-center gap-3">
-          <h1 className="text-3xl font-bold">{session.title ?? "Untitled session"}</h1>
+          <h1 className="rl-title text-3xl">{session.title ?? "Untitled session"}</h1>
           {session.session_no ? <Badge tone="slate">#{session.session_no}</Badge> : null}
           <SessionStatusBadge status={session.status} />
+          {/* No "session details" panel: the two things a DM ever edits about a
+              recording live behind this button, next to the title they change. */}
+          {isDm ? (
+            <Button
+              variant="ghost"
+              className="px-2 py-1 text-xs"
+              onClick={editing ? () => setEditing(false) : startEdit}
+            >
+              {editing ? "Cancel" : "Edit"}
+            </Button>
+          ) : null}
         </div>
-        <p className="mt-2 text-sm text-slate-400">
+        <p className="mt-2 text-sm text-[color:var(--rl-text-on-parchment-muted)]">
           recorded {fmtDate(session.recorded_at)} · duration {fmtDuration(session.duration_sec)}
         </p>
-        {session.error ? <p className="mt-2 text-sm text-red-300">error: {session.error}</p> : null}
+        {session.error ? <p className="mt-2 text-sm rl-text-villain">error: {session.error}</p> : null}
+
+        {editing ? (
+          <form onSubmit={saveMeta} className="mt-4 grid gap-3 sm:grid-cols-[1fr_8rem_auto]">
+            <Field label="Title">
+              <TextInput value={editForm.title} onChange={(e) => setEditForm({ ...editForm, title: e.target.value })} />
+            </Field>
+            <Field label="Session #">
+              <TextInput type="number" min={1} value={editForm.session_no} onChange={(e) => setEditForm({ ...editForm, session_no: e.target.value })} />
+            </Field>
+            <div className="flex items-end gap-2">
+              <Button type="submit" disabled={busy}>Save</Button>
+              <Button variant="ghost" type="button" onClick={() => setEditing(false)}>Cancel</Button>
+            </div>
+          </form>
+        ) : null}
       </div>
+
+      {/* The recording is the spine of the page: it sits directly under the
+          title, and it is an upload prompt only until a file exists. */}
+      {session.raw_audio_url ? (
+        <AudioPlayer
+          src={audioSrc}
+          audioRef={audioRef}
+          seed={params.sessionId}
+          meta={session.recorded_at ? "Recorded " + fmtDate(session.recorded_at) : "Session audio"}
+          durationSec={session.duration_sec}
+        />
+      ) : (
+        <Card>
+          <h2 className="rl-title mb-1 text-lg">Upload the recording</h2>
+          <p className="rl-body mb-4">
+            Point at the phone recording of this session (m4a/mp3/wav). The pipeline transcribes it, works out who
+            spoke and proposes the wiki changes it implies — you confirm before anything is written.
+          </p>
+          <form onSubmit={upload} className="space-y-3">
+            <Field label="Audio file" hint="Phone recording (m4a/mp3/wav…)">
+              <FileInput accept="audio/*" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+            </Field>
+            <Button type="submit" disabled={busy || !file}>
+              Upload &amp; start pipeline
+            </Button>
+          </form>
+        </Card>
+      )}
 
       {notice ? <Alert tone="success">{notice}</Alert> : null}
       {formError ? <Alert tone="error">{formError}</Alert> : null}
@@ -663,143 +705,41 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
         />
       ) : null}
 
-      {isDm ? (
-        <Card>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-lg font-semibold">Session details</h2>
-            {!editing ? (
-              <Button variant="secondary" onClick={startEdit}>Edit</Button>
-            ) : null}
-          </div>
-          {editing ? (
-            <form onSubmit={saveMeta} className="mt-4 grid gap-3 sm:grid-cols-[1fr_8rem_auto]">
-              <Field label="Title">
-                <TextInput value={editForm.title} onChange={(e) => setEditForm({ ...editForm, title: e.target.value })} />
-              </Field>
-              <Field label="Session #">
-                <TextInput type="number" min={1} value={editForm.session_no} onChange={(e) => setEditForm({ ...editForm, session_no: e.target.value })} />
-              </Field>
-              <div className="flex items-end gap-2">
-                <Button type="submit" disabled={busy}>Save</Button>
-                <Button variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>
-              </div>
-            </form>
-          ) : null}
-        </Card>
-      ) : null}
-
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-lg font-semibold">Upload recording</h2>
-            {session.raw_audio_url && !replacing ? (
-              <Button variant="danger" onClick={askReplace}>Replace recording</Button>
-            ) : null}
-          </div>
-
-          {session.raw_audio_url && !replacing ? (
-            <div className="rounded-lg border border-slate-800 bg-slate-800/40 px-4 py-3 text-sm text-slate-400">
-              A recording is already attached — the transcript and diarization were generated from it.
-              Replacing it erases both and restarts the pipeline, so this is only possible through the
-              "Replace recording" button above.
-            </div>
-          ) : null}
-
-          {!session.raw_audio_url || replacing ? (
-            <form onSubmit={upload} className="space-y-3">
-              {replacing ? (
-                <Alert tone="info">
-                  You are replacing the current recording — the existing transcript and diarization will be erased.
-                </Alert>
-              ) : null}
-              <Field label="Audio file" hint="Phone recording (m4a/mp3/wav…)">
-                <FileInput accept="audio/*" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-              </Field>
-              <div className="flex gap-2">
-                <Button type="submit" disabled={busy || !file}>
-                  {session.raw_audio_url ? "Replace & restart pipeline" : "Upload & start pipeline"}
-                </Button>
-                {session.raw_audio_url ? (
-                  <Button variant="ghost" type="button" onClick={() => setReplacing(false)}>Cancel</Button>
-                ) : null}
-              </div>
-            </form>
-          ) : null}
-        </Card>
-
-        <Card>
-          <h2 className="mb-4 text-lg font-semibold">Recording</h2>
-          <AudioPlayer src={audioSrc} audioRef={audioRef} />
-        </Card>
-      </div>
-
       {/*
-        The raw transcript is an audit artifact, not the main UX. It stays fully
-        available, one click down, and it is where a DM goes to check a moment -
-        not where the page starts.
+        The legacy speaker panel, demoted and collapsed. Naming diarization
+        labels by hand is the ESCAPE HATCH, not the required path: the review
+        above is how a session gets its speakers now. It only exists while the
+        attribution engine is off (see showSpeakersCard) — with the engine on,
+        the review speaks in the engine's own units and this would be inert.
       */}
-      <Collapsible
-        tone="subtle"
-        summary={
-          <span>
-            Raw transcript
-            <span className="ml-2 font-normal text-slate-500">
-              the diarized, text-corrected lines everything else is derived from
+      {showSpeakersCard ? (
+        <Collapsible
+          tone="subtle"
+          summary={
+            <span>
+              Speaker labels
+              <span className="ml-2 font-normal text-[color:var(--rl-text-on-parchment-muted)]">
+                the anonymous labels behind the transcript, and how to correct them
+              </span>
             </span>
-          </span>
-        }
-      >
-        <TranscriptViewer
-          transcriptUrl={TRANSCRIPT_PENDING_STATUSES.has(session.status) ? null : session.transcript_url}
-          pendingHint={TRANSCRIPT_PENDING_STATUSES.has(session.status)
-            ? "Transcription and refinement in progress — the refined transcript will appear here once it is ready."
-            : null}
-          speakerNames={speakerNames}
-          onSeek={seek}
-        />
-      </Collapsible>
-
-      {/*
-        The old speaker panel, demoted. Naming labels by hand is the ESCAPE
-        HATCH, not the required path: the review above is how a session gets its
-        speakers now, and this section is what a DM reaches for when the engine
-        got something wrong.
-      */}
-      <Collapsible
-        tone="subtle"
-        summary={
-          <span>
-            Voices we found
-            <span className="ml-2 font-normal text-slate-500">
-              the anonymous voice groups behind the transcript, and how to correct them
-            </span>
-          </span>
-        }
-      >
-        <div className="space-y-6">
-          <VoicesPanel
-            token={token}
-            sessionId={params.sessionId}
-            members={members ?? []}
-            sessionStatus={session.status}
-          />
-          {showSpeakersCard ? (
+          }
+        >
             <div>
               <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
-              <h2 className="text-lg font-semibold">Speakers</h2>
+              <h2 className="rl-title text-lg">Speakers</h2>
               {isDm && toConfirm + toName > 0 ? (
                 <Badge tone="amber">{toConfirm + toName} awaiting you</Badge>
               ) : null}
             </div>
-            <span className="text-xs text-slate-500">
+            <span className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
               Red labels have low diarization confidence — double-check them. Accept a proposed match to keep it (the voice is then learned for future
               sessions), correct it from the dropdown, or name the speakers left without a match.
             </span>
           </div>
           {isDm && toConfirm + toName > 0 ? (
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2">
-              <span className="text-xs text-slate-400">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-card)] px-3 py-2">
+              <span className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
                 {toName > 0
                   ? `${toName} speaker${toName === 1 ? "" : "s"} still need a name`
                   : "every speaker has a name"}
@@ -816,7 +756,7 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
           {speakers && speakers.length === 0 ? (
             <EmptyState>No diarized speakers yet — they appear after transcription.</EmptyState>
           ) : (
-            <div className="divide-y divide-slate-800">
+            <div className="divide-y divide-[color:var(--rl-border-parchment)]">
               {speakers?.map((s) => {
                 const unassigned = !s.member_id && !s.user_id;
                 // The member behind the current assignment: the one the DM
@@ -837,8 +777,8 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
                 return (
                   <div key={s.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
                     <div>
-                      <div className="flex items-center gap-2 text-sm font-medium text-slate-100">
-                        <span className={lowConfidence ? "font-mono text-red-300" : "font-mono"}>{s.speaker_label}</span>
+                      <div className="flex items-center gap-2 text-sm font-medium text-[color:var(--rl-text-on-parchment-primary)]">
+                        <span className={lowConfidence ? "font-mono rl-text-villain" : "font-mono"}>{s.speaker_label}</span>
                         <Badge tone={s.status === "confirmed" ? "green" : s.status === "auto" ? "blue" : "amber"}>{s.status}</Badge>
                         {lowConfidence ? (
                           <span title={`Diarization confidence ${fmtPercent(labelConf)} is below the ${Math.round(LOW_SPEAKER_CONFIDENCE * 100)}% threshold — the attribution may be wrong`}>
@@ -846,9 +786,9 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
                           </span>
                         ) : null}
                       </div>
-                      <div className="mt-0.5 text-xs text-slate-500">
+                      <div className="mt-0.5 text-xs text-[color:var(--rl-text-on-parchment-muted)]">
                         {assignedName ? (
-                          <span className="font-medium text-slate-300">{assignedName}</span>
+                          <span className="font-medium text-[color:var(--rl-text-on-parchment-primary)]">{assignedName}</span>
                         ) : (
                           "not assigned — needs a name"
                         )}
@@ -894,7 +834,7 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
                         </Button>
                       </div>
                     ) : unassigned ? (
-                      <span className="text-xs text-slate-500">awaiting DM assignment</span>
+                      <span className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">awaiting DM assignment</span>
                     ) : null}
                   </div>
                 );
@@ -902,9 +842,35 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
             </div>
           )}
             </div>
-          ) : null}
-        </div>
+        </Collapsible>
+      ) : null}
+
+      {/*
+        The raw transcript is an audit artifact, not the main UX. It closes the
+        page, one click down: it is where a DM goes to check a moment, not what
+        the page leads with.
+      */}
+      <Collapsible
+        tone="subtle"
+        summary={
+          <span>
+            Raw transcript
+            <span className="ml-2 font-normal text-[color:var(--rl-text-on-parchment-muted)]">
+              the diarized, text-corrected lines everything else is derived from
+            </span>
+          </span>
+        }
+      >
+        <TranscriptViewer
+          transcriptUrl={TRANSCRIPT_PENDING_STATUSES.has(session.status) ? null : session.transcript_url}
+          pendingHint={TRANSCRIPT_PENDING_STATUSES.has(session.status)
+            ? "Transcription and refinement in progress — the refined transcript will appear here once it is ready."
+            : null}
+          speakerNames={speakerNames}
+          onSeek={seek}
+        />
       </Collapsible>
+
     </div>
     </AuthGate>
   );

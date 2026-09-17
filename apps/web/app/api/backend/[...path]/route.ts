@@ -46,7 +46,13 @@ async function handle(req: Request, ctx: { params: { path: string[] } }) {
     );
   }
 
-  const payload = await upstream.arrayBuffer();
+  // 204/205/304 are null-body statuses: the Response constructor throws
+  // ("Invalid response status code") when handed a body for them — even an
+  // empty one — which turned every "revoke invite"/"remove member"/"delete
+  // cover" into a 500 at the BFF.
+  const nullBody =
+    upstream.status === 204 || upstream.status === 205 || upstream.status === 304;
+  const payload = nullBody ? null : await upstream.arrayBuffer();
   const responseHeaders: Record<string, string> = {
     "content-type": upstream.headers.get("content-type") ?? "application/json",
   };

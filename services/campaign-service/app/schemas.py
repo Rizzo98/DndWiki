@@ -79,6 +79,9 @@ class CampaignOut(BaseModel):
     settings: dict[str, Any]
     created_at: datetime
     my_role: str | None = None
+    # Freshly presigned GET URL for the cover object; never persisted and
+    # null while the campaign has no cover (or storage is unreachable).
+    cover_url: str | None = None
 
 
 class CampaignMemberOut(BaseModel):

@@ -2,17 +2,1003 @@
 @tailwind components;
 @tailwind utilities;
 
-/* The whole app is a dark slate theme. Tell native form controls (select
-   dropdown popups, scrollbars, audio/video chrome) to render dark as well —
-   otherwise the dropdown list opens as white text on a white background and
-   is unreadable. */
+/* =============================================================================
+   Ravenlore design tokens
+   -----------------------------------------------------------------------------
+   The canonical palette/chrome of the product (see
+   .agents/skills/ravenlore-frontend-design). Two zones, two temperatures:
+   warm-black chrome for navigation/branding/media, warm parchment for content.
+   Never inline a raw hex in a component — add a token here instead.
+   ========================================================================== */
 :root {
-  color-scheme: dark;
+  /* Dark chrome: nav, hero banners, audio player, "create new" panels */
+  --rl-bg-dark-900: #18120d;
+  --rl-bg-dark-800: #221a14;
+  --rl-bg-dark-700: #2c221a;
+  --rl-border-dark: #3a2c22;
+
+  /* Parchment: the reading/scannning surface */
+  --rl-bg-parchment: #f1e6d3;
+  --rl-bg-card: #faf4e8;
+  --rl-border-parchment: #e3d5bb;
+  /* Parchment one step deeper — wells, inputs, hovered rows */
+  --rl-bg-parchment-sunk: #e9dcc5;
+  --rl-border-parchment-strong: #d8c3a1;
+
+  /* Accent — the single "fire" colour, used sparingly */
+  --rl-accent-500: #bd5a3a;
+  --rl-accent-600: #a44b2e;
+  --rl-accent-100: #f3ddd0;
+
+  /* Text */
+  --rl-text-on-dark-primary: #f3ece0;
+  --rl-text-on-dark-muted: #a89484;
+  --rl-text-on-parchment-primary: #2a2016;
+  --rl-text-on-parchment-muted: #7d6d58;
+
+  /* Content categories (semantic; also used for status tints) */
+  --rl-cat-villain: #b5442f;
+  --rl-cat-place: #7a4a33;
+  --rl-cat-npc: #6c5a9e;
+  --rl-cat-item: #c07a2e;
+  --rl-cat-faction: #8a7130;
+  --rl-cat-neutral: #4f7a5c;
+  /* Two extra earthy hues: speaker chips in a transcript can need more
+     distinct colours than there are content categories. */
+  --rl-cat-ink: #3f5a7a;
+  --rl-cat-plum: #7a4a5e;
+
+  /* Typography */
+  --rl-font-serif: "Playfair Display", "Cormorant Garamond", "Iowan Old Style", Georgia, "Times New Roman", serif;
+  --rl-font-sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+  /* Radius & elevation */
+  --rl-radius-sm: 8px;
+  --rl-radius-md: 14px;
+  --rl-radius-lg: 20px;
+  --rl-shadow-card: 0 2px 10px rgba(30, 20, 10, 0.08);
+  --rl-shadow-raised: 0 8px 24px rgba(20, 12, 6, 0.25);
+
+  /* The app background is parchment, so native controls (select popups,
+     scrollbars, date pickers) follow the light scheme. Dark chrome surfaces
+     that embed native widgets opt back in — see .rl-audio-panel, .rl-sidebar. */
+  color-scheme: light;
 }
 
-/* Belt-and-braces: pin the popup colors explicitly for browsers/OS themes
-   that render a light option list regardless of color-scheme. */
+/* Belt-and-braces: pin the popup colors explicitly so a control never opens
+   as white-on-white on an OS theme that overrides color-scheme. */
 select option {
-  background-color: #1e293b; /* slate-800 — matches the Select control */
-  color: #f1f5f9; /* slate-100 */
+  background-color: var(--rl-bg-card);
+  color: var(--rl-text-on-parchment-primary);
+}
+
+@layer base {
+  body {
+    font-family: var(--rl-font-sans);
+  }
+}
+
+@layer components {
+  /* ------------------------------------------------------------- typography */
+  .rl-serif {
+    font-family: var(--rl-font-serif);
+  }
+
+  /* Section kickers: "RECENT ACTIVITY", "DUNGEON MASTER" */
+  .rl-eyebrow {
+    display: block;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--rl-text-on-parchment-muted);
+  }
+  .rl-eyebrow--accent {
+    color: var(--rl-accent-500);
+  }
+  .rl-eyebrow--on-dark {
+    color: var(--rl-text-on-dark-muted);
+  }
+
+  .rl-muted {
+    color: var(--rl-text-on-parchment-muted);
+  }
+  /* Paints text in the current category/status tint (set --tint). */
+  .rl-tint {
+    color: var(--tint, var(--rl-text-on-parchment-muted));
+  }
+  .rl-body {
+    font-size: 14px;
+    line-height: 1.55;
+    color: var(--rl-text-on-parchment-muted);
+  }
+
+  /* The page/panel headline: serif is for titles only. */
+  .rl-title {
+    font-family: var(--rl-font-serif);
+    font-weight: 700;
+    line-height: 1.2;
+    color: var(--rl-text-on-parchment-primary);
+  }
+
+  /* ---------------------------------------------------------------- surfaces */
+  /* The app background IS the parchment: components sit on it as cards, they do
+     not float on a dark void. Dark chrome is reserved for the sidebar, banners
+     and media (see the two-temperature rule in the skill). */
+  .rl-app {
+    background-color: var(--rl-bg-parchment);
+    color: var(--rl-text-on-parchment-primary);
+  }
+
+  /* Campaign context inside the sidebar: the campaign at hand, its workspace
+     tabs, and the wiki categories under "The world". */
+  .rl-nav-group {
+    display: block;
+    padding: 18px 12px 6px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--rl-text-on-dark-muted);
+  }
+
+  .rl-sidebar-section {
+    margin-top: 12px;
+    border-top: 1px solid var(--rl-border-dark);
+    padding: 14px 12px 6px;
+  }
+  .rl-sidebar-section-title {
+    display: block;
+    overflow: hidden;
+    font-family: var(--rl-font-serif);
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.25;
+    color: var(--rl-text-on-dark-primary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Narrow screens: the campaign tabs as a scrollable strip above the content. */
+  .rl-tabstrip {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 6px;
+    scrollbar-width: thin;
+  }
+  .rl-tab {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--rl-border-parchment);
+    border-radius: 999px;
+    background-color: color-mix(in srgb, var(--rl-bg-card) 70%, transparent);
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--rl-text-on-parchment-muted);
+    transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  }
+  .rl-tab:hover {
+    border-color: var(--rl-border-parchment-strong);
+    color: var(--rl-text-on-parchment-primary);
+  }
+  .rl-tab--active {
+    border-color: var(--rl-accent-100);
+    background-color: var(--rl-accent-100);
+    color: var(--rl-accent-600);
+  }
+
+  /* Avatar on a parchment panel (the party list). */
+  .rl-avatar--light {
+    background-color: color-mix(in srgb, var(--rl-accent-500) 16%, transparent);
+    color: var(--rl-accent-600);
+  }
+
+  /* --------------------------------------------------------------- sidebar */
+  .rl-sidebar {
+    display: flex;
+    flex-direction: column;
+    width: 16rem;
+    color-scheme: dark;
+    background-color: var(--rl-bg-dark-900);
+    border-right: 1px solid var(--rl-border-dark);
+    color: var(--rl-text-on-dark-primary);
+  }
+
+  .rl-sidebar-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border-bottom: 1px solid var(--rl-border-dark);
+    padding: 18px 18px 16px;
+    font-family: var(--rl-font-serif);
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--rl-text-on-dark-primary);
+  }
+
+  .rl-sidebar-footer {
+    margin-top: auto;
+    border-top: 1px solid var(--rl-border-dark);
+    padding: 14px;
+  }
+
+  .rl-avatar {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background-color: color-mix(in srgb, var(--rl-accent-500) 26%, transparent);
+    color: var(--rl-text-on-dark-primary);
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .rl-avatar--sm {
+    width: 24px;
+    height: 24px;
+    font-size: 11px;
+  }
+
+  /* The account block doubles as the profile link. */
+  .rl-user-link {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border-radius: var(--rl-radius-sm);
+    padding: 8px 10px;
+    transition: background-color 0.15s ease;
+  }
+  .rl-user-link:hover {
+    background-color: var(--rl-bg-dark-800);
+  }
+  .rl-user-link--active {
+    background-color: var(--rl-bg-dark-700);
+  }
+  .rl-user-link-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--rl-text-on-dark-primary);
+  }
+  .rl-user-link-hint {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--rl-text-on-dark-muted);
+  }
+
+  /* ------------------------------------------------- semantic status tints */
+  /* The screens written before the redesign classify things by status; these
+     classes are the design-system spelling of "villain red", "working amber"… */
+  .rl-text-accent {
+    color: var(--rl-accent-500);
+  }
+  .rl-text-accent-strong {
+    color: var(--rl-accent-600);
+  }
+  .rl-text-villain {
+    color: var(--rl-cat-villain);
+  }
+  /* Amber is the lightest of the category hues — darkened when it carries
+     actual text on parchment. */
+  .rl-text-item {
+    color: color-mix(in srgb, var(--rl-cat-item) 72%, #3a2410);
+  }
+  .rl-text-neutral {
+    color: var(--rl-cat-neutral);
+  }
+  .rl-text-npc {
+    color: var(--rl-cat-npc);
+  }
+  .rl-text-place {
+    color: var(--rl-cat-place);
+  }
+  .rl-text-ink {
+    color: var(--rl-cat-ink);
+  }
+  .rl-text-plum {
+    color: var(--rl-cat-plum);
+  }
+  .rl-bg-accent-soft {
+    background-color: var(--rl-accent-100);
+  }
+  .rl-bg-villain-soft {
+    background-color: color-mix(in srgb, var(--rl-cat-villain) 12%, transparent);
+  }
+  .rl-bg-item-soft {
+    background-color: color-mix(in srgb, var(--rl-cat-item) 15%, transparent);
+  }
+  .rl-bg-neutral-soft {
+    background-color: color-mix(in srgb, var(--rl-cat-neutral) 15%, transparent);
+  }
+  .rl-bg-npc-soft {
+    background-color: color-mix(in srgb, var(--rl-cat-npc) 14%, transparent);
+  }
+  .rl-bg-place-soft {
+    background-color: color-mix(in srgb, var(--rl-cat-place) 14%, transparent);
+  }
+  .rl-bg-ink-soft {
+    background-color: color-mix(in srgb, var(--rl-cat-ink) 13%, transparent);
+  }
+  .rl-bg-plum-soft {
+    background-color: color-mix(in srgb, var(--rl-cat-plum) 13%, transparent);
+  }
+  .rl-border-item {
+    border-color: color-mix(in srgb, var(--rl-cat-item) 50%, transparent);
+  }
+  .rl-ring-item {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--rl-cat-item) 45%, transparent);
+  }
+  .rl-ring-item-inset {
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--rl-cat-item) 45%, transparent);
+  }
+  .rl-ring-accent {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--rl-accent-500) 45%, transparent);
+  }
+  .rl-ring-villain {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--rl-cat-villain) 65%, transparent);
+  }
+
+  .rl-hairline {
+    border: 0;
+    border-top: 1px solid var(--rl-border-parchment);
+  }
+
+  /* ----------------------------------------------------------- app chrome */
+  /* The top bar is dark chrome: warm-black, hairline bottom edge, accent for
+     the active destination (see the nav-item pattern in the skill). */
+  .rl-nav {
+    border-bottom: 1px solid var(--rl-border-dark);
+    background-color: color-mix(in srgb, var(--rl-bg-dark-900) 92%, transparent);
+    backdrop-filter: blur(10px);
+  }
+
+  .rl-nav-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border-radius: var(--rl-radius-sm);
+    padding: 6px 12px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--rl-text-on-dark-muted);
+    transition: background-color 0.15s ease, color 0.15s ease;
+  }
+  .rl-nav-item:hover {
+    background-color: var(--rl-bg-dark-800);
+    color: var(--rl-text-on-dark-primary);
+  }
+  .rl-nav-item--active {
+    background-color: var(--rl-bg-dark-700);
+    color: var(--rl-accent-500);
+  }
+
+  /* ----------------------------------------------------------------- hero */
+  /* A banner card on the parchment: dark chrome, but a block like any other. */
+  .rl-hero {
+    position: relative;
+    display: flex;
+    align-items: flex-end;
+    min-height: 224px;
+    border: 1px solid var(--rl-border-dark);
+    border-radius: var(--rl-radius-lg);
+    box-shadow: var(--rl-shadow-raised);
+    overflow: hidden;
+    /* No artwork ships with the app yet, so the banner is painted with
+       firelight: two warm glows over a leather-black base. Swap in a photo by
+       adding background-image on top of this stack. */
+    background-image:
+      radial-gradient(110% 130% at 6% -30%, rgba(189, 90, 58, 0.42), transparent 58%),
+      radial-gradient(85% 120% at 94% -15%, rgba(192, 122, 46, 0.24), transparent 62%),
+      linear-gradient(168deg, var(--rl-bg-dark-700) 0%, var(--rl-bg-dark-900) 82%);
+    background-size: cover;
+    background-position: center;
+  }
+
+  /* Cover art layer, under the overlay's scrim. */
+  .rl-hero-cover {
+    position: absolute;
+    inset: 0;
+    background-position: center;
+    background-size: cover;
+  }
+
+  .rl-hero-overlay {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    padding: 28px 28px 24px;
+    background-image: linear-gradient(
+      to top,
+      var(--rl-bg-dark-900) 0%,
+      rgba(24, 18, 13, 0.72) 45%,
+      rgba(24, 18, 13, 0) 100%
+    );
+  }
+
+  /* Over a photo the scrim has to carry more of the legibility. */
+  .rl-hero--cover .rl-hero-overlay {
+    background-image: linear-gradient(
+      to top,
+      var(--rl-bg-dark-900) 0%,
+      rgba(24, 18, 13, 0.86) 48%,
+      rgba(24, 18, 13, 0.34) 100%
+    );
+  }
+
+  .rl-hero-eyebrow {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    /* The accent, lifted just enough to stay readable on near-black firelight. */
+    color: color-mix(in srgb, var(--rl-accent-500) 72%, var(--rl-text-on-dark-primary));
+  }
+
+  .rl-hero-title {
+    margin: 8px 0;
+    font-family: var(--rl-font-serif);
+    font-size: 34px;
+    font-weight: 700;
+    line-height: 1.1;
+    color: var(--rl-text-on-dark-primary);
+  }
+
+  .rl-hero-desc {
+    max-width: 62ch;
+    font-size: 14px;
+    line-height: 1.55;
+    color: var(--rl-text-on-dark-muted);
+  }
+
+  /* ---------------------------------------------------------------- buttons */
+  .rl-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    border-radius: var(--rl-radius-sm);
+    padding: 9px 16px;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.1;
+    white-space: nowrap;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  }
+  .rl-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+  .rl-btn--primary {
+    background-color: var(--rl-accent-500);
+    color: #fdf6ec;
+  }
+  .rl-btn--primary:hover:not(:disabled) {
+    background-color: var(--rl-accent-600);
+  }
+  .rl-btn--outline {
+    border: 1px solid var(--rl-border-parchment);
+    background-color: transparent;
+    color: var(--rl-text-on-parchment-primary);
+  }
+  .rl-btn--outline:hover:not(:disabled) {
+    border-color: var(--rl-border-parchment-strong);
+    background-color: rgba(42, 32, 22, 0.04);
+  }
+  .rl-btn--on-dark {
+    border: 1px solid var(--rl-border-dark);
+    background-color: transparent;
+    color: var(--rl-text-on-dark-primary);
+  }
+  .rl-btn--on-dark:hover:not(:disabled) {
+    background-color: var(--rl-bg-dark-800);
+  }
+  .rl-btn--ghost {
+    background-color: transparent;
+    color: var(--rl-text-on-parchment-muted);
+  }
+  .rl-btn--ghost:hover:not(:disabled) {
+    color: var(--rl-text-on-parchment-primary);
+  }
+  .rl-btn--danger {
+    background-color: var(--rl-cat-villain);
+    color: #fdf6ec;
+  }
+  .rl-btn--danger:hover:not(:disabled) {
+    background-color: color-mix(in srgb, var(--rl-cat-villain) 84%, #000);
+  }
+  .rl-btn--sm {
+    padding: 6px 12px;
+    font-size: 13px;
+  }
+  .rl-btn--block {
+    width: 100%;
+  }
+
+  /* ------------------------------------------------------------------- tags */
+  /* Tint comes from --tint so one class covers every category/status colour. */
+  .rl-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    --tint: var(--rl-text-on-parchment-muted);
+    background-color: color-mix(in srgb, var(--tint) 13%, transparent);
+    color: var(--tint);
+  }
+  .rl-tag--on-dark {
+    background-color: color-mix(in srgb, var(--tint) 26%, transparent);
+    color: color-mix(in srgb, var(--tint) 72%, #fff);
+  }
+
+  /* ------------------------------------------------------------------ cards */
+  .rl-card {
+    display: block;
+    border: 1px solid var(--rl-border-parchment);
+    border-radius: var(--rl-radius-md);
+    background-color: var(--rl-bg-card);
+    box-shadow: var(--rl-shadow-card);
+    padding: 18px;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  }
+  a.rl-card:hover {
+    transform: translateY(-2px);
+    border-color: var(--rl-border-parchment-strong);
+    box-shadow: 0 6px 20px rgba(30, 20, 10, 0.14);
+  }
+  .rl-card-title {
+    font-family: var(--rl-font-serif);
+    font-size: 20px;
+    font-weight: 700;
+    line-height: 1.25;
+    color: var(--rl-text-on-parchment-primary);
+  }
+  .rl-card-meta {
+    font-size: 12px;
+    color: var(--rl-text-on-parchment-muted);
+  }
+  .rl-open {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 13px;
+    font-weight: 600;
+    /* accent-600 rather than 500: small text on parchment needs the darker step */
+    color: var(--rl-accent-600);
+  }
+
+  /* Tinted square icon chip — stat tiles, card sigils, list-row icons. */
+  .rl-icon-chip {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    border-radius: var(--rl-radius-sm);
+    background-color: color-mix(in srgb, var(--tint, var(--rl-cat-neutral)) 15%, transparent);
+    color: var(--tint, var(--rl-cat-neutral));
+  }
+
+  /* ------------------------------------------------------------- stat tiles */
+  /* 1px gaps over a border-coloured bed give hairlines on both axes at any
+     wrap count — no :nth-child border bookkeeping. */
+  .rl-stat-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1px;
+    border: 1px solid var(--rl-border-parchment);
+    border-radius: var(--rl-radius-md);
+    background-color: var(--rl-border-parchment);
+    box-shadow: var(--rl-shadow-card);
+    overflow: hidden;
+  }
+  @media (min-width: 900px) {
+    .rl-stat-row {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+  }
+  .rl-stat {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background-color: var(--rl-bg-card);
+    padding: 16px 18px;
+  }
+  .rl-stat-value {
+    font-size: 19px;
+    font-weight: 700;
+    line-height: 1.1;
+    color: var(--rl-text-on-parchment-primary);
+    font-variant-numeric: tabular-nums;
+  }
+  .rl-stat-label {
+    font-size: 12px;
+    color: var(--rl-text-on-parchment-muted);
+  }
+
+  /* ------------------------------------------------- panels & list rows */
+  .rl-panel {
+    border: 1px solid var(--rl-border-parchment);
+    border-radius: var(--rl-radius-md);
+    background-color: var(--rl-bg-card);
+    box-shadow: var(--rl-shadow-card);
+    overflow: hidden;
+  }
+  .rl-panel-head {
+    padding: 15px 16px 12px;
+  }
+  .rl-list-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 11px 16px;
+    border-top: 1px solid var(--rl-border-parchment);
+    transition: background-color 0.15s ease;
+  }
+  a.rl-list-row:hover {
+    background-color: var(--rl-bg-parchment-sunk);
+  }
+  .rl-list-row-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--rl-text-on-parchment-primary);
+  }
+  .rl-list-row-sub {
+    font-size: 12px;
+    color: var(--rl-text-on-parchment-muted);
+  }
+  .rl-chevron {
+    margin-left: auto;
+    flex-shrink: 0;
+    color: var(--rl-text-on-parchment-muted);
+  }
+
+  /* ------------------------------------------------------------- dark panel */
+  .rl-dark-panel {
+    position: relative;
+    border: 1px solid var(--rl-border-dark);
+    border-radius: var(--rl-radius-md);
+    background-color: var(--rl-bg-dark-900);
+    background-image: radial-gradient(120% 120% at 100% 0%, rgba(189, 90, 58, 0.16), transparent 62%);
+    box-shadow: var(--rl-shadow-raised);
+    padding: 18px;
+    color: var(--rl-text-on-dark-primary);
+  }
+  .rl-dark-title {
+    font-family: var(--rl-font-sans);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--rl-text-on-dark-muted);
+  }
+  .rl-dark-note {
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--rl-text-on-dark-muted);
+  }
+  /* Category tints are tuned for parchment; over dark chrome the glyph has to
+     sit lighter to stay legible. */
+  .rl-dark-panel .rl-icon-chip,
+  .rl-audio-panel .rl-icon-chip {
+    background-color: color-mix(in srgb, var(--tint, var(--rl-cat-neutral)) 28%, transparent);
+    color: color-mix(in srgb, var(--tint, var(--rl-cat-neutral)) 55%, var(--rl-text-on-dark-primary));
+  }
+
+  /* -------------------------------------------------- audio (dark media) */
+  /* The recording player is the app's signature surface: always dark chrome,
+     whatever the page around it is made of. */
+  .rl-audio-panel {
+    /* the native <audio> chrome has to render dark on this panel */
+    color-scheme: dark;
+    border: 1px solid var(--rl-border-dark);
+    border-radius: var(--rl-radius-lg);
+    background-color: var(--rl-bg-dark-900);
+    background-image: radial-gradient(120% 130% at 100% 0%, rgba(189, 90, 58, 0.16), transparent 62%);
+    box-shadow: var(--rl-shadow-raised);
+    padding: 16px 18px 18px;
+  }
+  .rl-audio-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .rl-audio-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--rl-text-on-dark-primary);
+  }
+  .rl-audio-sub {
+    margin-top: 2px;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--rl-text-on-dark-muted);
+  }
+
+  /* Transport row: skip / play / skip, then the waveform. */
+  .rl-audio-body {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .rl-audio-play {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background-color: var(--rl-text-on-dark-primary);
+    color: var(--rl-bg-dark-900);
+    transition: transform 0.12s ease, background-color 0.15s ease;
+  }
+  .rl-audio-play:hover {
+    background-color: #fff;
+    transform: scale(1.04);
+  }
+  .rl-audio-skip {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    color: var(--rl-text-on-dark-muted);
+    transition: background-color 0.15s ease, color 0.15s ease;
+  }
+  .rl-audio-skip:hover {
+    background-color: var(--rl-bg-dark-800);
+    color: var(--rl-text-on-dark-primary);
+  }
+  .rl-audio-icon {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--rl-radius-sm);
+    color: var(--rl-text-on-dark-muted);
+    transition: background-color 0.15s ease, color 0.15s ease;
+  }
+  .rl-audio-icon:hover {
+    background-color: var(--rl-bg-dark-800);
+    color: var(--rl-text-on-dark-primary);
+  }
+  .rl-audio-time {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--rl-text-on-dark-muted);
+  }
+
+  /* Waveform scrubber. The bars are decorative (see audio-player.tsx); the
+     progress, the seek and the times are real. */
+  .rl-wave {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    height: 68px;
+    overflow: hidden;
+    cursor: pointer;
+    touch-action: none;
+    outline: none;
+  }
+  .rl-wave:focus-visible {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--rl-accent-500) 60%, transparent);
+    border-radius: var(--rl-radius-sm);
+  }
+  .rl-wave-bar {
+    flex: 1 1 0;
+    min-width: 1px;
+    border-radius: 999px;
+    background-color: color-mix(in srgb, var(--rl-text-on-dark-muted) 42%, transparent);
+    transition: background-color 0.08s linear;
+  }
+  .rl-wave-bar--played {
+    background-color: var(--rl-accent-500);
+  }
+  .rl-wave:hover .rl-wave-bar {
+    background-color: color-mix(in srgb, var(--rl-text-on-dark-primary) 40%, transparent);
+  }
+  .rl-wave:hover .rl-wave-bar--played {
+    background-color: color-mix(in srgb, var(--rl-accent-500) 80%, #fff);
+  }
+
+  /* ------------------------------------------------------------- form fields */
+  .rl-input {
+    width: 100%;
+    border: 1px solid var(--rl-border-dark);
+    border-radius: var(--rl-radius-sm);
+    background-color: var(--rl-bg-dark-800);
+    padding: 9px 12px;
+    font-size: 14px;
+    color: var(--rl-text-on-dark-primary);
+    outline: none;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+  }
+  .rl-input::placeholder {
+    color: var(--rl-text-on-dark-muted);
+    opacity: 0.8;
+  }
+  .rl-input:focus {
+    border-color: var(--rl-accent-500);
+    background-color: var(--rl-bg-dark-700);
+  }
+  .rl-field-label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--rl-text-on-dark-muted);
+  }
+
+  /* Inputs that sit on a parchment card: one step sunk from the card fill. */
+  .rl-input-light {
+    width: 100%;
+    border: 1px solid var(--rl-border-parchment);
+    border-radius: var(--rl-radius-sm);
+    background-color: var(--rl-bg-parchment-sunk);
+    padding: 9px 12px;
+    font-size: 14px;
+    color: var(--rl-text-on-parchment-primary);
+    outline: none;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+  }
+  .rl-input-light::placeholder {
+    color: var(--rl-text-on-parchment-muted);
+  }
+  .rl-input-light:focus {
+    border-color: var(--rl-accent-500);
+    background-color: var(--rl-bg-card);
+  }
+
+  .rl-file {
+    display: block;
+    width: 100%;
+    font-size: 13px;
+    color: var(--rl-text-on-parchment-muted);
+  }
+  .rl-file::file-selector-button {
+    margin-right: 12px;
+    border: 1px solid var(--rl-border-parchment-strong);
+    border-radius: var(--rl-radius-sm);
+    background-color: var(--rl-bg-card);
+    padding: 8px 12px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--rl-text-on-parchment-primary);
+    cursor: pointer;
+  }
+  .rl-file::file-selector-button:hover {
+    background-color: var(--rl-bg-parchment-sunk);
+  }
+
+  .rl-search {
+    position: relative;
+  }
+  .rl-search input {
+    width: 100%;
+    border: 1px solid var(--rl-border-parchment);
+    border-radius: 999px;
+    background-color: var(--rl-bg-parchment-sunk);
+    padding: 9px 16px 9px 38px;
+    font-size: 14px;
+    color: var(--rl-text-on-parchment-primary);
+    outline: none;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+  }
+  .rl-search input::placeholder {
+    color: var(--rl-text-on-parchment-muted);
+  }
+  .rl-search input:focus {
+    border-color: var(--rl-accent-500);
+    background-color: var(--rl-bg-card);
+  }
+  .rl-search-icon {
+    position: absolute;
+    top: 50%;
+    left: 13px;
+    transform: translateY(-50%);
+    color: var(--rl-text-on-parchment-muted);
+    pointer-events: none;
+  }
+
+  /* Filter pills */
+  .rl-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--rl-border-parchment);
+    border-radius: 999px;
+    background-color: transparent;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--rl-text-on-parchment-muted);
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  }
+  .rl-chip:hover {
+    border-color: var(--rl-border-parchment-strong);
+    color: var(--rl-text-on-parchment-primary);
+  }
+  .rl-chip--active {
+    border-color: var(--rl-accent-100);
+    background-color: var(--rl-accent-100);
+    color: var(--rl-accent-600);
+  }
+
+  /* ------------------------------------------------------- feedback & states */
+  .rl-alert {
+    border: 1px solid;
+    border-radius: var(--rl-radius-sm);
+    padding: 12px 16px;
+    font-size: 14px;
+  }
+  .rl-alert--error {
+    border-color: color-mix(in srgb, var(--rl-cat-villain) 38%, transparent);
+    background-color: color-mix(in srgb, var(--rl-cat-villain) 9%, transparent);
+    color: #8f3524;
+  }
+  .rl-alert--success {
+    border-color: color-mix(in srgb, var(--rl-cat-neutral) 38%, transparent);
+    background-color: color-mix(in srgb, var(--rl-cat-neutral) 11%, transparent);
+    color: #3c6247;
+  }
+  .rl-alert--info {
+    border-color: var(--rl-border-parchment);
+    background-color: var(--rl-bg-card);
+    color: var(--rl-text-on-parchment-muted);
+  }
+  .rl-alert--error-on-dark {
+    border-color: color-mix(in srgb, var(--rl-cat-villain) 55%, transparent);
+    background-color: color-mix(in srgb, var(--rl-cat-villain) 18%, transparent);
+    color: #f0c8be;
+  }
+
+  .rl-empty {
+    border: 1px dashed var(--rl-border-parchment-strong);
+    border-radius: var(--rl-radius-md);
+    background-color: color-mix(in srgb, var(--rl-bg-card) 55%, transparent);
+    padding: 40px 24px;
+    text-align: center;
+  }
+  .rl-empty-title {
+    font-family: var(--rl-font-serif);
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--rl-text-on-parchment-primary);
+  }
+
+  .rl-skeleton {
+    border-radius: var(--rl-radius-md);
+    background-image: linear-gradient(
+      90deg,
+      rgba(42, 32, 22, 0.06) 0%,
+      rgba(42, 32, 22, 0.13) 50%,
+      rgba(42, 32, 22, 0.06) 100%
+    );
+    animation: rl-pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes rl-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.55;
+    }
+  }
 }

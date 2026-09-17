@@ -15,11 +15,11 @@ export default function NewCampaignPage() {
     <AuthGate>
     <div className="mx-auto max-w-2xl space-y-6">
       <div>
-        <Link href="/campaigns" className="text-sm text-slate-400 transition hover:text-slate-200">
+        <Link href="/campaigns" className="text-sm text-[color:var(--rl-text-on-parchment-muted)] transition hover:text-[color:var(--rl-text-on-parchment-primary)]">
           ← Back to campaigns
         </Link>
-        <h1 className="mt-2 text-3xl font-bold">New campaign</h1>
-        <p className="mt-1 text-sm text-slate-400">
+        <h1 className="rl-title mt-2 text-3xl">New campaign</h1>
+        <p className="mt-1 text-sm text-[color:var(--rl-text-on-parchment-muted)]">
           You become the Dungeon Master of the campaign you create. Add the players at your
           table now — you can always manage the roster later from the campaign workspace.
         </p>

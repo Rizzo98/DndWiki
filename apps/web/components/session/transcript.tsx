@@ -46,14 +46,14 @@ interface TranscriptDoc {
 }
 
 const SPEAKER_CHIP_STYLES = [
-  "bg-blue-500/15 text-blue-300",
-  "bg-emerald-500/15 text-emerald-300",
-  "bg-amber-500/15 text-amber-300",
-  "bg-violet-500/15 text-violet-300",
-  "bg-rose-500/15 text-rose-300",
-  "bg-cyan-500/15 text-cyan-300",
-  "bg-orange-500/15 text-orange-300",
-  "bg-pink-500/15 text-pink-300",
+  "rl-bg-place-soft rl-text-place",
+  "rl-bg-neutral-soft rl-text-neutral",
+  "rl-bg-item-soft rl-text-item",
+  "rl-bg-npc-soft rl-text-npc",
+  "rl-bg-villain-soft rl-text-villain",
+  "rl-bg-ink-soft rl-text-ink",
+  "rl-bg-item-soft rl-text-item",
+  "rl-bg-plum-soft rl-text-plum",
 ];
 
 function chipStyle(index: number): string {
@@ -130,7 +130,7 @@ export function TranscriptViewer({
 
   if (!transcriptUrl) {
     return (
-      <div className="rounded-lg border border-dashed border-slate-800 px-4 py-10 text-center text-sm text-slate-500">
+      <div className="rounded-lg border border-dashed border-[color:var(--rl-border-parchment)] px-4 py-10 text-center text-sm text-[color:var(--rl-text-on-parchment-muted)]">
         {pendingHint ??
           'The refined transcript appears here once the transcription pipeline finishes.'}
       </div>
@@ -138,7 +138,7 @@ export function TranscriptViewer({
   }
 
   if (loading && !transcript) {
-    return <p className="text-sm text-slate-400">Loading transcript…</p>;
+    return <p className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">Loading transcript…</p>;
   }
 
   if (error) {
@@ -171,19 +171,19 @@ export function TranscriptViewer({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-[color:var(--rl-text-on-parchment-muted)]">
         {transcript?.language ? <Badge tone="slate">lang {transcript.language}</Badge> : null}
         {transcript?.model ? <Badge tone="slate">model {transcript.model}</Badge> : null}
         <span>{segments.length} segment{segments.length === 1 ? "" : "s"}</span>
         <span>· {fmtClock(totalDuration)}</span>
         {lowConfidenceSegments.length > 0 ? (
-          <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-red-300" title="Diarization confidence below the threshold — these labels may be mis-attributed. Re-assign them in the Speakers panel.">
+          <span className="rounded-full rl-bg-villain-soft px-2 py-0.5 rl-text-villain" title="Diarization confidence below the threshold — these labels may be mis-attributed. Re-assign them in the Speakers panel.">
             ⚠ {lowConfidenceSegments.length} low-confidence {lowConfidenceSegments.length === 1 ? "label" : "labels"}
           </span>
         ) : null}
         <div className="ml-auto flex gap-2">
           {transcriptUrl ? (
-            <a href={objectUrl(transcriptUrl)!} target="_blank" rel="noreferrer" className="text-ember-400 hover:underline">
+            <a href={objectUrl(transcriptUrl)!} target="_blank" rel="noreferrer" className="rl-text-accent hover:underline">
               transcript JSON
             </a>
           ) : null}
@@ -193,7 +193,7 @@ export function TranscriptViewer({
       {/* Scrollable transcript: long sessions must not stretch the page forever. */}
       <div className="max-h-[60vh] overflow-y-auto pr-1">
         {segments.length === 0 ? (
-          <p className="text-sm text-slate-500">The transcript has no segments.</p>
+          <p className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">The transcript has no segments.</p>
         ) : (
           <ul className="space-y-1.5">
             {segments.map((seg, i) => {
@@ -206,7 +206,7 @@ export function TranscriptViewer({
               const lowConfidence =
                 confidence !== null && confidence !== undefined && confidence < LOW_SPEAKER_CONFIDENCE;
               const chipClass = lowConfidence
-                ? "bg-red-500/20 text-red-300 ring-1 ring-red-500/70"
+                ? "rl-bg-villain-soft rl-text-villain rl-ring-villain"
                 : chipStyle(labelIdx);
               return (
                 <li key={i}>
@@ -217,15 +217,15 @@ export function TranscriptViewer({
                         ? `${name} — low diarization confidence (${Math.round(confidence * 100)}%); reassign in the Speakers panel`
                         : "Jump to this moment in the recording"
                     }
-                    className="group flex w-full items-start gap-3 rounded-lg px-2 py-1.5 text-left transition hover:bg-slate-800/60"
+                    className="group flex w-full items-start gap-3 rounded-lg px-2 py-1.5 text-left transition hover:bg-[color:var(--rl-bg-parchment-sunk)]"
                   >
-                    <span className="mt-0.5 shrink-0 font-mono text-xs text-slate-500 tabular-nums">
+                    <span className="mt-0.5 shrink-0 font-mono text-xs text-[color:var(--rl-text-on-parchment-muted)] tabular-nums">
                       {fmtClock(seg.start ?? 0)}
                     </span>
                     <span className={`mt-0.5 inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-semibold ${chipClass}`}>
                       {name}
                     </span>
-                    <span className="text-sm leading-relaxed text-slate-200">
+                    <span className="text-sm leading-relaxed text-[color:var(--rl-text-on-parchment-primary)]">
                       {seg.text?.trim() || "…"}
                     </span>
                   </button>

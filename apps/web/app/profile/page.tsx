@@ -92,13 +92,13 @@ export default function ProfilePage() {
     }
   }
 
-  if (loading) return <p className="text-sm text-slate-400">Loading profile…</p>;
+  if (loading) return <p className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">Loading profile…</p>;
   if (error || !me) return <Alert tone="error">{error ?? "Profile unavailable"}</Alert>;
 
   return (
     <AuthGate>
     <div className="space-y-8">
-      <h1 className="text-3xl font-bold">Profile</h1>
+      <h1 className="rl-title text-3xl">Profile</h1>
 
       {notice ? <Alert tone="success">{notice}</Alert> : null}
       {formError ? <Alert tone="error">{formError}</Alert> : null}
@@ -108,25 +108,25 @@ export default function ProfilePage() {
           <div className="flex items-center gap-4">
             {me.avatar_url ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={objectUrl(me.avatar_url) ?? undefined} alt="avatar" className="h-16 w-16 rounded-full object-cover ring-2 ring-slate-700" />
+              <img src={objectUrl(me.avatar_url) ?? undefined} alt="avatar" className="h-16 w-16 rounded-full object-cover border-2 border-[color:var(--rl-border-parchment-strong)]" />
             ) : (
-              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-slate-800 text-2xl">🎭</div>
+              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-[color:var(--rl-bg-parchment-sunk)] text-2xl">🎭</div>
             )}
             <div>
               <div className="text-lg font-semibold">{me.display_name}</div>
-              <div className="text-xs text-slate-500">{me.email ?? "no email"}</div>
-              <div className="font-mono text-[11px] text-slate-600">{me.id}</div>
+              <div className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">{me.email ?? "no email"}</div>
+              <div className="font-mono text-[11px] text-[color:var(--rl-text-on-parchment-muted)]">{me.id}</div>
             </div>
           </div>
 
-          <form onSubmit={saveName} className="mt-5 space-y-2 border-t border-slate-800 pt-5">
+          <form onSubmit={saveName} className="mt-5 space-y-2 border-t border-[color:var(--rl-border-parchment)] pt-5">
             <Field label="Display name">
               <TextInput required value={name || me.display_name} onChange={(e) => setName(e.target.value)} />
             </Field>
             <Button type="submit" disabled={busy}>Save name</Button>
           </form>
 
-          <form onSubmit={uploadAvatar} className="mt-5 space-y-2 border-t border-slate-800 pt-5">
+          <form onSubmit={uploadAvatar} className="mt-5 space-y-2 border-t border-[color:var(--rl-border-parchment)] pt-5">
             <Field label="Avatar" hint="png/jpeg/webp, max 2 MB">
               <FileInput accept="image/png,image/jpeg,image/webp" onChange={(e) => setAvatarFile(e.target.files?.[0] ?? null)} />
             </Field>
@@ -135,8 +135,8 @@ export default function ProfilePage() {
         </Card>
 
         <Card>
-          <h2 className="mb-4 text-lg font-semibold">Voiceprint enrollment</h2>
-          <p className="mb-4 text-sm text-slate-400">
+          <h2 className="rl-title mb-4 text-lg">Voiceprint enrollment</h2>
+          <p className="mb-4 text-sm text-[color:var(--rl-text-on-parchment-muted)]">
             Enroll a 10–30 s clip of yourself speaking so sessions are attributed to you automatically.
           </p>
           <form onSubmit={enroll} className="space-y-3">
@@ -154,23 +154,23 @@ export default function ProfilePage() {
             <Button type="submit" disabled={busy || !voiceFile || !voiceCampaign}>Enroll voiceprint</Button>
           </form>
 
-          <h3 className="mb-2 mt-6 text-xs font-bold uppercase tracking-wider text-slate-500">My voiceprints</h3>
+          <h3 className="mb-2 mt-6 text-xs font-bold uppercase tracking-wider text-[color:var(--rl-text-on-parchment-muted)]">My voiceprints</h3>
           {profiles && profiles.length === 0 ? (
             <EmptyState>No voiceprints enrolled.</EmptyState>
           ) : (
             <ul className="space-y-2">
               {profiles?.map((p) => (
-                <li key={p.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 px-3 py-2 text-sm">
+                <li key={p.id} className="flex items-center justify-between gap-2 rounded-lg border border-[color:var(--rl-border-parchment)] px-3 py-2 text-sm">
                   <div>
-                    <div className="text-xs font-medium text-slate-300">{campaignName(p.campaign_id)}</div>
-                    <div className="text-xs text-slate-500">v{p.embedding_version} · {fmtDate(p.created_at)}</div>
+                    <div className="text-xs font-medium text-[color:var(--rl-text-on-parchment-primary)]">{campaignName(p.campaign_id)}</div>
+                    <div className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">v{p.embedding_version} · {fmtDate(p.created_at)}</div>
                     {p.sample_url ? (
-                      <a href={objectUrl(p.sample_url) ?? "#"} target="_blank" rel="noreferrer" className="text-xs text-ember-400 hover:underline">
+                      <a href={objectUrl(p.sample_url) ?? "#"} target="_blank" rel="noreferrer" className="text-xs rl-text-accent hover:underline">
                         listen to sample
                       </a>
                     ) : null}
                   </div>
-                  <Button variant="ghost" className="text-red-300 hover:bg-red-950/40" onClick={() => removeProfile(p.id)} disabled={busy}>
+                  <Button variant="ghost" className="rl-text-villain hover:bg-[color:color-mix(in_srgb,var(--rl-cat-villain)_14%,transparent)]" onClick={() => removeProfile(p.id)} disabled={busy}>
                     Delete
                   </Button>
                 </li>

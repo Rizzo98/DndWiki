@@ -10,6 +10,9 @@ dependencies = [
     "asyncpg>=0.29",
     "pydantic-settings>=2.4",
     "alembic>=1.13",
+    # Required by FastAPI for File/UploadFile endpoints (campaign cover upload)
+    "python-multipart>=0.0.9",
+    "aioboto3>=13.0",
 ]
 
 [project.optional-dependencies]

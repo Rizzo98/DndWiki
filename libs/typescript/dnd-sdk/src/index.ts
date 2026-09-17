@@ -30,6 +30,12 @@ export interface Campaign {
   created_at: string;
   /** Filled by the API with the calling user's role in this campaign. */
   my_role: Role | null;
+  /**
+   * Cover art, as a freshly presigned URL (null when the campaign has none).
+   * Short-lived: never cached, never persisted — refetch the campaign when it
+   * matters. Set by the DM through PUT /api/campaigns/{id}/cover.
+   */
+  cover_url?: string | null;
 }
 
 export interface CampaignMember {

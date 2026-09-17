@@ -95,7 +95,7 @@ export function UserPicker({
   if (value) {
     return (
       <div className="flex items-center gap-2">
-        <span className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100">
+        <span className="rounded-lg border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-parchment-sunk)] px-3 py-2 text-sm text-[color:var(--rl-text-on-parchment-primary)]">
           {label ?? "Loading…"}
         </span>
         <Button variant="ghost" type="button" onClick={() => onChange(null)}>
@@ -116,14 +116,14 @@ export function UserPicker({
         onFocus={() => results.length > 0 && setOpen(true)}
         placeholder="Type to search users (2+ chars)"
       />
-      {searching ? <p className="mt-1 text-xs text-slate-500">Searching…</p> : null}
+      {searching ? <p className="mt-1 text-xs text-[color:var(--rl-text-on-parchment-muted)]">Searching…</p> : null}
       {open && results.length > 0 ? (
-        <ul className="absolute z-10 mt-1 w-full overflow-hidden rounded-lg border border-slate-700 bg-slate-800 shadow-xl">
+        <ul className="absolute z-10 mt-1 w-full overflow-hidden rounded-lg border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-parchment-sunk)] shadow-xl">
           {results.map((u) => (
             <li key={u.id}>
               <button
                 type="button"
-                className="block w-full px-3 py-2 text-left text-sm text-slate-100 hover:bg-slate-700"
+                className="block w-full px-3 py-2 text-left text-sm text-[color:var(--rl-text-on-parchment-primary)] hover:bg-[color:var(--rl-bg-parchment-sunk)]"
                 onClick={() => {
                   onChange(u.id);
                   setQuery("");
@@ -317,18 +317,18 @@ export function MembersTab({ campaign }: { campaign: Campaign }) {
       {error ? <Alert tone="error">{error}</Alert> : null}
 
       <Card>
-        <h2 className="mb-4 text-lg font-semibold">Roster</h2>
+        <h2 className="rl-title mb-4 text-lg">Roster</h2>
         {loading ? (
-          <p className="text-sm text-slate-400">Loading members…</p>
+          <p className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">Loading members…</p>
         ) : rows.length === 0 ? (
           <EmptyState>No members yet. Add your first player below.</EmptyState>
         ) : (
-          <div className="divide-y divide-slate-800">
+          <div className="divide-y divide-[color:var(--rl-border-parchment)]">
             {rows.map((m) => (
               <div key={m.id} className="flex flex-wrap items-center justify-between gap-2 py-3">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm font-medium text-slate-100">{m.player_name || "Unnamed player"}</span>
+                    <span className="text-sm font-medium text-[color:var(--rl-text-on-parchment-primary)]">{m.player_name || "Unnamed player"}</span>
                     {m.role === "dm" ? <Badge tone="amber">dm</Badge> : <Badge tone="blue">player</Badge>}
                     {m.user_id ? (
                       <Badge tone="emerald">account: {m.displayName ?? m.user_id.slice(0, 8)}</Badge>
@@ -336,11 +336,11 @@ export function MembersTab({ campaign }: { campaign: Campaign }) {
                       <Badge tone="slate">no account</Badge>
                     )}
                   </div>
-                  <div className="mt-0.5 text-xs text-slate-400">
+                  <div className="mt-0.5 text-xs text-[color:var(--rl-text-on-parchment-muted)]">
                     {"Character: " + (m.character_name || "—")} · joined {fmtDate(m.joined_at)}
                   </div>
                   {m.character_description ? (
-                    <div className="mt-1 max-w-xl text-xs italic text-slate-500 line-clamp-2">
+                    <div className="mt-1 max-w-xl text-xs italic text-[color:var(--rl-text-on-parchment-muted)] line-clamp-2">
                       {m.character_description}
                     </div>
                   ) : null}
@@ -350,7 +350,7 @@ export function MembersTab({ campaign }: { campaign: Campaign }) {
                     Edit
                   </Button>
                   {m.role !== "dm" ? (
-                    <Button variant="ghost" onClick={() => removeMember(m.id)} disabled={busy} className="text-red-300 hover:bg-red-950/40">
+                    <Button variant="ghost" onClick={() => removeMember(m.id)} disabled={busy} className="rl-text-villain hover:bg-[color:color-mix(in_srgb,var(--rl-cat-villain)_14%,transparent)]">
                       Remove
                     </Button>
                   ) : null}
@@ -364,7 +364,7 @@ export function MembersTab({ campaign }: { campaign: Campaign }) {
       <Card>
         {editing ? (
           <>
-            <h2 className="mb-4 text-lg font-semibold">Edit {editing.player_name || "member"}</h2>
+            <h2 className="rl-title mb-4 text-lg">Edit {editing.player_name || "member"}</h2>
             <MemberForm
               key={editing.id}
               initial={{ player_name: editing.player_name, character_name: editing.character_name, character_description: editing.character_description ?? "", user_id: editing.user_id }}
@@ -382,7 +382,7 @@ export function MembersTab({ campaign }: { campaign: Campaign }) {
           </>
         ) : (
           <>
-            <h2 className="mb-4 text-lg font-semibold">Add player</h2>
+            <h2 className="rl-title mb-4 text-lg">Add player</h2>
             <MemberForm
               key="new"
               initial={{ player_name: "", character_name: "", character_description: "", user_id: null }}

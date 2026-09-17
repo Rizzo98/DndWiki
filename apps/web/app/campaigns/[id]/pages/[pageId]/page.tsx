@@ -11,7 +11,8 @@ import { PageLinkEditor } from "@/components/page-link-editor";
 import { RelationsCard } from "@/components/page-relations";
 import { Alert, Badge, Button, Card, Field, PageStatusBadge, Select, TextArea, TextInput, VisibilityBadge, fmtDate, fmtPercent } from "@/components/ui";
 import { AuthGate, useAuth } from "@/lib/auth";
-import { campaignsApi, PAGE_KIND_TITLES, sessionsApi, VISIBILITIES, wikiApi, type Campaign, type PageDetail, type PageSummary, type PageVersion, type Session, type TimelineEvent, type WikiVisibility } from "@/lib/api";
+import { PAGE_KIND_TITLES, sessionsApi, VISIBILITIES, wikiApi, type PageDetail, type PageSummary, type PageVersion, type Session, type TimelineEvent, type WikiVisibility } from "@/lib/api";
+import { useCampaign } from "@/lib/campaign-context";
 import { errMessage, useAsyncData } from "@/lib/use-async";
 
 /** Static info fields edited through the character GUI form (mirrors
@@ -116,7 +117,8 @@ function splitLines(value: string): string[] {
 
 export default function PageDetailPage({ params }: { params: { id: string; pageId: string } }) {
   const { token } = useAuth();
-  const { data: campaign } = useAsyncData<Campaign>((t) => campaignsApi.get(t, params.id), [params.id]);
+  // The workspace layout already loaded (and keeps fresh) this campaign.
+  const { campaign } = useCampaign();
   const { data: page, error, loading, reload } = useAsyncData<PageDetail>((t) => wikiApi.page(t, params.pageId), [params.pageId]);
   const { data: versions, reload: reloadVersions } = useAsyncData<PageVersion[]>((t) => wikiApi.versions(t, params.pageId), [params.pageId]);
   // Sessions of the campaign, so session references render by NAME not id.
@@ -204,10 +206,10 @@ export default function PageDetailPage({ params }: { params: { id: string; pageI
     contentJson: "",
   });
 
-  if (loading) return <p className="text-sm text-slate-400">Loading page…</p>;
+  if (loading) return <p className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">Loading page…</p>;
   if (error || !page) return <Alert tone="error">{error ?? "Page not found"}</Alert>;
 
-  const isDm = campaign?.my_role === "dm";
+  const isDm = campaign.my_role === "dm";
   const isCharacter = page.kind === "character";
   const isLocation = page.kind === "location";
   const isSimpleKind = page.kind === "faction" || page.kind === "item" || page.kind === "quest";
@@ -520,16 +522,16 @@ export default function PageDetailPage({ params }: { params: { id: string; pageI
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <Link href={`/campaigns/${params.id}`} className="text-xs text-slate-500 hover:text-slate-300">← back to campaign</Link>
-          <h1 className="mt-1 text-3xl font-bold">{page.title}</h1>
+          <Link href={`/campaigns/${params.id}`} className="text-xs text-[color:var(--rl-text-on-parchment-muted)] hover:text-[color:var(--rl-text-on-parchment-primary)]">← back to campaign</Link>
+          <h1 className="rl-title mt-1 text-3xl">{page.title}</h1>
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
             <Badge tone="slate">{PAGE_KIND_TITLES[page.kind] ?? page.kind}</Badge>
             <PageStatusBadge status={page.status} />
             <VisibilityBadge visibility={page.visibility} />
-            <span className="text-slate-500">slug: {page.slug}</span>
-            <span className="text-slate-500">updated {fmtDate(page.updated_at)}</span>
+            <span className="text-[color:var(--rl-text-on-parchment-muted)]">slug: {page.slug}</span>
+            <span className="text-[color:var(--rl-text-on-parchment-muted)]">updated {fmtDate(page.updated_at)}</span>
             {page.confidence !== null && page.confidence !== undefined ? (
-              <span className="text-slate-500">confidence {fmtPercent(page.confidence)}</span>
+              <span className="text-[color:var(--rl-text-on-parchment-muted)]">confidence {fmtPercent(page.confidence)}</span>
             ) : null}
           </div>
         </div>
@@ -538,7 +540,7 @@ export default function PageDetailPage({ params }: { params: { id: string; pageI
       {/* DM actions as a compact top menu */}
       {isDm ? (
         <Card className="flex flex-wrap items-center gap-x-4 gap-y-2 py-3">
-          <span className="text-xs font-bold uppercase tracking-wide text-slate-500">DM actions</span>
+          <span className="text-xs font-bold uppercase tracking-wide text-[color:var(--rl-text-on-parchment-muted)]">DM actions</span>
           <Button variant="secondary" onClick={toggleEdit}>
             {editing ? "Cancel edit" : "Edit"}
           </Button>
@@ -552,7 +554,7 @@ export default function PageDetailPage({ params }: { params: { id: string; pageI
               Archive
             </Button>
           ) : null}
-          <label className="ml-auto flex items-center gap-2 text-xs text-slate-400">
+          <label className="ml-auto flex items-center gap-2 text-xs text-[color:var(--rl-text-on-parchment-muted)]">
             Visibility
             <Select
               className="w-40"
@@ -575,26 +577,26 @@ export default function PageDetailPage({ params }: { params: { id: string; pageI
         const linked = timelineEvents?.find((te) => te.page_id === page.id);
         return (
           <Card className="flex flex-wrap items-center gap-x-4 gap-y-2 py-3">
-            <span className="text-xs font-bold uppercase tracking-wide text-slate-500">Timeline</span>
+            <span className="text-xs font-bold uppercase tracking-wide text-[color:var(--rl-text-on-parchment-muted)]">Timeline</span>
             {linked ? (
               <>
                 {linked.in_world_date ? (
-                  <span className="text-sm text-slate-200">{linked.in_world_date}</span>
+                  <span className="text-sm text-[color:var(--rl-text-on-parchment-primary)]">{linked.in_world_date}</span>
                 ) : (
-                  <span className="text-sm text-slate-500">No in-world date set</span>
+                  <span className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">No in-world date set</span>
                 )}
                 <Badge tone={linked.approved ? "green" : "amber"}>
                   {linked.approved ? "approved" : "pending DM approval"}
                 </Badge>
                 <Link
-                  href={"/campaigns/" + params.id + "?tab=timeline"}
-                  className="text-xs text-slate-500 hover:text-slate-300"
+                  href={"/campaigns/" + params.id + "/timeline"}
+                  className="text-xs text-[color:var(--rl-text-on-parchment-muted)] hover:text-[color:var(--rl-text-on-parchment-primary)]"
                 >
                   ← back to timeline
                 </Link>
               </>
             ) : (
-              <span className="text-sm text-slate-500">Not linked to the campaign timeline yet.</span>
+              <span className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">Not linked to the campaign timeline yet.</span>
             )}
           </Card>
         );
@@ -602,7 +604,7 @@ export default function PageDetailPage({ params }: { params: { id: string; pageI
 
       {!editing ? (
         <Card>
-          <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-slate-500">Content</h2>
+          <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-[color:var(--rl-text-on-parchment-muted)]">Content</h2>
           <PageContent
             content={page.content_json ?? {}}
             campaignId={params.id}
@@ -617,7 +619,7 @@ export default function PageDetailPage({ params }: { params: { id: string; pageI
         </Card>
       ) : (
         <Card>
-          <h2 className="mb-4 text-lg font-semibold">
+          <h2 className="rl-title mb-4 text-lg">
             {isCharacter
               ? "Edit character"
               : isLocation
@@ -725,8 +727,8 @@ export default function PageDetailPage({ params }: { params: { id: string; pageI
                   <TextArea rows={2} value={editForm.aliases} onChange={(e) => setChar("aliases", e.target.value)} />
                 </Field>
                 {LOCATION_TYPE_GROUPS.filter((g) => g.types.includes(editForm.locationType)).map((group) => (
-                  <div key={group.title} className="space-y-3 rounded-lg border border-slate-800 bg-slate-950/30 p-3">
-                    <h4 className="text-xs font-bold uppercase tracking-wide text-slate-500">{group.title}</h4>
+                  <div key={group.title} className="space-y-3 rounded-lg border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-card)] p-3">
+                    <h4 className="text-xs font-bold uppercase tracking-wide text-[color:var(--rl-text-on-parchment-muted)]">{group.title}</h4>
                     <div className="grid gap-3 sm:grid-cols-2">
                       {group.fields.map((field) =>
                         field.list ? (
@@ -856,11 +858,11 @@ export default function PageDetailPage({ params }: { params: { id: string; pageI
       <RelationsCard campaignId={params.id} pageId={page.id} token={token} isDm={isDm} />
 
       <Card>
-        <h2 className="mb-4 text-lg font-semibold">Version history</h2>
+        <h2 className="rl-title mb-4 text-lg">Version history</h2>
         {versions && versions.length === 0 ? (
-          <p className="text-sm text-slate-500">No versions yet.</p>
+          <p className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">No versions yet.</p>
         ) : (
-          <div className="divide-y divide-slate-800">
+          <div className="divide-y divide-[color:var(--rl-border-parchment)]">
             {versions?.map((v) => {
               // The portrait preview is only valid when the snapshot's image is
               // still the current one (no presigned URL exists for old images).
@@ -868,13 +870,13 @@ export default function PageDetailPage({ params }: { params: { id: string; pageI
               return (
                 <div key={v.id} className="py-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-sm font-semibold text-slate-200">v{v.version_no}</span>
-                    <span className="text-xs text-slate-500">{fmtDate(v.created_at)}</span>
+                    <span className="text-sm font-semibold text-[color:var(--rl-text-on-parchment-primary)]">v{v.version_no}</span>
+                    <span className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">{fmtDate(v.created_at)}</span>
                   </div>
-                  {v.change_note ? <p className="mt-1 text-sm text-slate-400">{v.change_note}</p> : null}
+                  {v.change_note ? <p className="mt-1 text-sm text-[color:var(--rl-text-on-parchment-muted)]">{v.change_note}</p> : null}
                   <details className="mt-2">
-                    <summary className="cursor-pointer text-xs text-slate-500 hover:text-slate-300">preview content</summary>
-                    <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/40 p-4">
+                    <summary className="cursor-pointer text-xs text-[color:var(--rl-text-on-parchment-muted)] hover:text-[color:var(--rl-text-on-parchment-primary)]">preview content</summary>
+                    <div className="mt-3 rounded-lg border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-card)] p-4">
                       <PageContent
                         content={v.content_json}
                         campaignId={params.id}

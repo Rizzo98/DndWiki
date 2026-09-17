@@ -206,7 +206,7 @@ export function SessionReviewCard({
   if (phase === "loading") {
     return (
       <Card>
-        <div className="flex items-center gap-3 text-sm text-slate-400">
+        <div className="flex items-center gap-3 text-sm text-[color:var(--rl-text-on-parchment-muted)]">
           <Spinner /> Checking what we still need to ask…
         </div>
       </Card>
@@ -225,8 +225,8 @@ export function SessionReviewCard({
     <Card className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold text-slate-100">Who said what</h2>
-          <p className="text-sm text-slate-400">
+          <h2 className="rl-title text-lg text-[color:var(--rl-text-on-parchment-primary)]">Who said what</h2>
+          <p className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">
             We work out the speakers from the audio and the conversation. You only need to
             settle what we genuinely cannot.
           </p>
@@ -273,8 +273,8 @@ export function SessionReviewCard({
       ) : null}
 
       {phase === "ready" ? (
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800 pt-3">
-          <p className="text-xs text-slate-500">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[color:var(--rl-border-parchment)] pt-3">
+          <p className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
             You can stop at any point: the session is not blocked on this.
           </p>
           <Button variant="ghost" onClick={() => void finish()} disabled={busy}>
@@ -307,16 +307,16 @@ export function QuestionCard({
   onSeek?: (seconds: number) => void;
 }) {
   return (
-    <div className="space-y-4 rounded-lg border border-slate-800 bg-slate-950/60 p-4">
+    <div className="space-y-4 rounded-lg border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-card)] p-4">
       <div className="space-y-2">
-        <p className="text-base font-medium text-slate-100">{question.prompt_text}</p>
+        <p className="text-base font-medium text-[color:var(--rl-text-on-parchment-primary)]">{question.prompt_text}</p>
         {question.hook.quote ? (
-          <blockquote className="border-l-2 border-slate-700 pl-3 text-sm italic text-slate-400">
+          <blockquote className="border-l-2 border-[color:var(--rl-border-parchment)] pl-3 text-sm italic text-[color:var(--rl-text-on-parchment-muted)]">
             “{question.hook.quote}”
           </blockquote>
         ) : null}
         {question.hook.note ? (
-          <p className="text-xs text-slate-500">{question.hook.note}</p>
+          <p className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">{question.hook.note}</p>
         ) : null}
       </div>
 
@@ -347,7 +347,7 @@ export function QuestionCard({
       {onSkip ? (
         <button
           type="button"
-          className="text-xs text-slate-500 underline-offset-2 hover:underline"
+          className="text-xs text-[color:var(--rl-text-on-parchment-muted)] underline-offset-2 hover:underline"
           onClick={() => void onSkip()}
           disabled={busy}
         >

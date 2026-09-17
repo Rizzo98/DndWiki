@@ -122,9 +122,9 @@ export function RelationsCard({
   return (
     <Card>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold">Relations</h2>
+        <h2 className="rl-title text-lg">Relations</h2>
         {relations && relations.length > 0 ? (
-          <span className="text-xs text-slate-500">{relations.length} relation{relations.length === 1 ? "" : "s"}</span>
+          <span className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">{relations.length} relation{relations.length === 1 ? "" : "s"}</span>
         ) : null}
       </div>
 
@@ -132,7 +132,7 @@ export function RelationsCard({
       {error ? <Alert tone="error">{error}</Alert> : null}
 
       {isDm ? (
-        <form onSubmit={addRelation} className="space-y-3 border-b border-slate-800 pb-4">
+        <form onSubmit={addRelation} className="space-y-3 border-b border-[color:var(--rl-border-parchment)] pb-4">
           <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_10rem]">
             <Field label="Search page">
               <TextInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by title…" />
@@ -149,15 +149,15 @@ export function RelationsCard({
 
           <div>
             {searchLoading ? (
-              <p className="text-xs text-slate-500">Loading pages…</p>
+              <p className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">Loading pages…</p>
             ) : candidates.length === 0 ? (
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
                 {debouncedQ || kind
                   ? "No matching pages (already-related and archived pages are hidden)."
                   : "Type to search campaign pages, or pick a kind to browse."}
               </p>
             ) : (
-              <ul className="max-h-48 divide-y divide-slate-800 overflow-y-auto rounded-lg border border-slate-800">
+              <ul className="max-h-48 divide-y divide-[color:var(--rl-border-parchment)] overflow-y-auto rounded-lg border border-[color:var(--rl-border-parchment)]">
                 {candidates.map((p) => {
                   const active = selected?.id === p.id;
                   return (
@@ -167,8 +167,8 @@ export function RelationsCard({
                         onClick={() => setSelected(p)}
                         className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm transition ${
                           active
-                            ? "bg-amber-500/10 text-amber-200 ring-1 ring-inset ring-amber-500/40"
-                            : "text-slate-200 hover:bg-slate-800/60"
+                            ? "rl-bg-item-soft rl-text-item rl-ring-item-inset"
+                            : "text-[color:var(--rl-text-on-parchment-primary)] hover:bg-[color:var(--rl-bg-parchment-sunk)]"
                         }`}
                       >
                         <span className="truncate">{p.title}</span>
@@ -184,19 +184,19 @@ export function RelationsCard({
           <div className="grid items-end gap-3 sm:grid-cols-[minmax(0,1fr)_10rem_auto]">
             <Field label="Related page">
               {selected ? (
-                <div className="flex items-center justify-between gap-2 rounded-lg border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm text-amber-300">
+                <div className="flex items-center justify-between gap-2 rounded-lg border rl-border-item rl-bg-item-soft px-3 py-2 text-sm rl-text-item">
                   <span className="truncate">{selected.title}</span>
                   <button
                     type="button"
                     onClick={() => setSelected(null)}
-                    className="shrink-0 text-slate-400 hover:text-slate-200"
+                    className="shrink-0 text-[color:var(--rl-text-on-parchment-muted)] hover:text-[color:var(--rl-text-on-parchment-primary)]"
                     aria-label="Clear selection"
                   >
                     ✕
                   </button>
                 </div>
               ) : (
-                <div className="rounded-lg border border-slate-800 bg-slate-800/40 px-3 py-2 text-sm text-slate-500">
+                <div className="rounded-lg border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-parchment-sunk)] px-3 py-2 text-sm text-[color:var(--rl-text-on-parchment-muted)]">
                   No page selected
                 </div>
               )}
@@ -223,21 +223,21 @@ export function RelationsCard({
       ) : null}
 
       {relations && relations.length === 0 ? (
-        <p className="mt-4 text-sm text-slate-500">No relations yet.</p>
+        <p className="mt-4 text-sm text-[color:var(--rl-text-on-parchment-muted)]">No relations yet.</p>
       ) : (
         <ul className="mt-4 space-y-2">
           {relations?.map((r) => (
             <li key={r.id} className="flex items-center justify-between gap-2 text-sm">
-              <span className="text-slate-300">
-                <span className="text-slate-500">{r.relation_type}</span> →{" "}
-                <Link href={`/campaigns/${campaignId}/pages/${r.related_page_id}`} className="text-ember-400 hover:underline">
+              <span className="text-[color:var(--rl-text-on-parchment-primary)]">
+                <span className="text-[color:var(--rl-text-on-parchment-muted)]">{r.relation_type}</span> →{" "}
+                <Link href={`/campaigns/${campaignId}/pages/${r.related_page_id}`} className="rl-text-accent hover:underline">
                   {r.related_title ?? r.related_page_id}
                 </Link>
               </span>
               {isDm ? (
                 <Button
                   variant="ghost"
-                  className="text-red-300 hover:bg-red-950/40"
+                  className="rl-text-villain hover:bg-[color:color-mix(in_srgb,var(--rl-cat-villain)_14%,transparent)]"
                   onClick={() => removeRelation(r.id)}
                   disabled={busy}
                 >

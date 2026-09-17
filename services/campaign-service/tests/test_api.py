@@ -319,6 +319,132 @@ async def test_archive_player_forbidden(client, user_id, dm_id, session_factory,
     assert resp.status_code == 403
 
 
+# ------------------------------------------------------------------ cover
+
+COVER_BYTES = b"\x89PNG\r\n\x1a\n not-really-a-png"
+
+
+async def test_upload_campaign_cover_dm(client, claims, dm_id, storage, seed_campaign):
+    """The DM uploads a cover and gets a freshly presigned cover_url back."""
+    claims["sub"] = str(dm_id)
+    campaign = await seed_campaign(dm_id=dm_id)
+    key = f"covers/{campaign.id}.png"
+
+    resp = await client.put(
+        f"/api/campaigns/{campaign.id}/cover",
+        files={"file": ("cover.png", COVER_BYTES, "image/png")},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["cover_url"] == f"https://presigned/campaign-assets/{key}"
+    # the uri lives in settings (no migration), the presigned url is not persisted
+    assert body["settings"]["cover_uri"] == f"campaign-assets/{key}"
+    assert storage.uploads == [("campaign-assets", key, COVER_BYTES, "image/png")]
+
+    # detail and list hand out the same presigned url
+    detail = await client.get(f"/api/campaigns/{campaign.id}")
+    assert detail.json()["cover_url"] == body["cover_url"]
+    listing = await client.get("/api/campaigns")
+    assert listing.json()[0]["cover_url"] == body["cover_url"]
+
+
+async def test_upload_campaign_cover_keeps_settings_keys(
+    client, claims, dm_id, storage, seed_campaign
+):
+    """Re-uploading with another extension repoints the uri and drops the old object."""
+    claims["sub"] = str(dm_id)
+    campaign = await seed_campaign(dm_id=dm_id, settings={"default_visibility": "public"})
+    old_key = f"covers/{campaign.id}.png"
+
+    resp = await client.put(
+        f"/api/campaigns/{campaign.id}/cover",
+        files={"file": ("cover.png", COVER_BYTES, "image/png")},
+    )
+    assert resp.status_code == 200
+
+    resp = await client.put(
+        f"/api/campaigns/{campaign.id}/cover",
+        files={"file": ("cover.webp", COVER_BYTES, "image/webp")},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["settings"]["cover_uri"] == f"campaign-assets/covers/{campaign.id}.webp"
+    assert body["settings"]["default_visibility"] == "public"
+    assert storage.deleted == [("campaign-assets", old_key)]
+
+
+async def test_upload_campaign_cover_player_forbidden(
+    client, user_id, dm_id, session_factory, storage, seed_campaign
+):
+    campaign = await seed_campaign(dm_id=dm_id)
+    await _member(session_factory, campaign.id, user_id)
+    resp = await client.put(
+        f"/api/campaigns/{campaign.id}/cover",
+        files={"file": ("cover.png", COVER_BYTES, "image/png")},
+    )
+    assert resp.status_code == 403
+    assert storage.uploads == []
+
+
+async def test_upload_campaign_cover_unsupported_type_415(
+    client, claims, dm_id, storage, seed_campaign
+):
+    claims["sub"] = str(dm_id)
+    campaign = await seed_campaign(dm_id=dm_id)
+    resp = await client.put(
+        f"/api/campaigns/{campaign.id}/cover",
+        files={"file": ("cover.gif", b"GIF89a", "image/gif")},
+    )
+    assert resp.status_code == 415
+    assert storage.uploads == []
+
+
+async def test_upload_campaign_cover_empty_400(client, claims, dm_id, storage, seed_campaign):
+    claims["sub"] = str(dm_id)
+    campaign = await seed_campaign(dm_id=dm_id)
+    resp = await client.put(
+        f"/api/campaigns/{campaign.id}/cover",
+        files={"file": ("cover.png", b"", "image/png")},
+    )
+    assert resp.status_code == 400
+
+
+async def test_delete_campaign_cover(client, claims, dm_id, storage, seed_campaign):
+    """DELETE clears settings.cover_uri and best-effort removes the object."""
+    claims["sub"] = str(dm_id)
+    campaign = await seed_campaign(dm_id=dm_id)
+    key = f"covers/{campaign.id}.png"
+    await client.put(
+        f"/api/campaigns/{campaign.id}/cover",
+        files={"file": ("cover.png", COVER_BYTES, "image/png")},
+    )
+
+    resp = await client.delete(f"/api/campaigns/{campaign.id}/cover")
+    assert resp.status_code == 204
+    assert storage.deleted == [("campaign-assets", key)]
+
+    detail = await client.get(f"/api/campaigns/{campaign.id}")
+    assert detail.json()["cover_url"] is None
+    assert "cover_uri" not in detail.json()["settings"]
+
+
+async def test_delete_campaign_cover_player_forbidden(
+    client, user_id, dm_id, session_factory, seed_campaign
+):
+    campaign = await seed_campaign(dm_id=dm_id)
+    await _member(session_factory, campaign.id, user_id)
+    resp = await client.delete(f"/api/campaigns/{campaign.id}/cover")
+    assert resp.status_code == 403
+
+
+async def test_campaign_detail_cover_url_null_without_cover(client, claims, dm_id, seed_campaign):
+    claims["sub"] = str(dm_id)
+    campaign = await seed_campaign(dm_id=dm_id)
+    resp = await client.get(f"/api/campaigns/{campaign.id}")
+    assert resp.status_code == 200
+    assert resp.json()["cover_url"] is None
+
+
 # ---------------------------------------------------------------- members
 
 

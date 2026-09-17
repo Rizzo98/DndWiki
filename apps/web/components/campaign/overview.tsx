@@ -63,41 +63,41 @@ export function OverviewTab({ campaign, onChanged }: { campaign: Campaign; onCha
       <Card>
         <dl className="grid gap-4 sm:grid-cols-2">
           <div>
-            <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Name</dt>
-            <dd className="mt-1 text-slate-100">{campaign.name}</dd>
+            <dt className="text-xs font-semibold uppercase tracking-wide text-[color:var(--rl-text-on-parchment-muted)]">Name</dt>
+            <dd className="mt-1 text-[color:var(--rl-text-on-parchment-primary)]">{campaign.name}</dd>
           </div>
           <div>
-            <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Slug</dt>
-            <dd className="mt-1 font-mono text-sm text-slate-300">{campaign.slug}</dd>
+            <dt className="text-xs font-semibold uppercase tracking-wide text-[color:var(--rl-text-on-parchment-muted)]">Slug</dt>
+            <dd className="mt-1 font-mono text-sm text-[color:var(--rl-text-on-parchment-primary)]">{campaign.slug}</dd>
           </div>
           <div>
-            <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Status</dt>
+            <dt className="text-xs font-semibold uppercase tracking-wide text-[color:var(--rl-text-on-parchment-muted)]">Status</dt>
             <dd className="mt-1">
               <Badge tone={campaign.status === "active" ? "green" : "slate"}>{campaign.status}</Badge>
             </dd>
           </div>
           <div>
-            <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Language</dt>
-            <dd className="mt-1 text-sm text-slate-300">{campaignLanguageLabel(campaign.language)}</dd>
+            <dt className="text-xs font-semibold uppercase tracking-wide text-[color:var(--rl-text-on-parchment-muted)]">Language</dt>
+            <dd className="mt-1 text-sm text-[color:var(--rl-text-on-parchment-primary)]">{campaignLanguageLabel(campaign.language)}</dd>
           </div>
           <div>
-            <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">DM user id</dt>
-            <dd className="mt-1 font-mono text-xs text-slate-400">{campaign.dm_user_id}</dd>
+            <dt className="text-xs font-semibold uppercase tracking-wide text-[color:var(--rl-text-on-parchment-muted)]">DM user id</dt>
+            <dd className="mt-1 font-mono text-xs text-[color:var(--rl-text-on-parchment-muted)]">{campaign.dm_user_id}</dd>
           </div>
           <div>
-            <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Created</dt>
-            <dd className="mt-1 text-sm text-slate-300">{fmtDate(campaign.created_at)}</dd>
+            <dt className="text-xs font-semibold uppercase tracking-wide text-[color:var(--rl-text-on-parchment-muted)]">Created</dt>
+            <dd className="mt-1 text-sm text-[color:var(--rl-text-on-parchment-primary)]">{fmtDate(campaign.created_at)}</dd>
           </div>
         </dl>
         {campaign.description ? (
-          <p className="mt-4 border-t border-slate-800 pt-4 text-sm text-slate-300">{campaign.description}</p>
+          <p className="mt-4 border-t border-[color:var(--rl-border-parchment)] pt-4 text-sm text-[color:var(--rl-text-on-parchment-primary)]">{campaign.description}</p>
         ) : null}
       </Card>
 
       {isDm ? (
         <Card>
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-lg font-semibold">DM actions</h2>
+            <h2 className="rl-title text-lg">DM actions</h2>
             <div className="flex gap-2">
               <Button variant="secondary" onClick={() => setEditing((v) => !v)}>{editing ? "Cancel" : "Edit details"}</Button>
               <Button variant={campaign.status === "archived" ? "secondary" : "danger"} onClick={toggleArchive} disabled={busy}>

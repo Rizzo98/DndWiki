@@ -70,35 +70,35 @@ export function SessionScenesCard({
     <Card className="space-y-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold text-slate-100">Where this session happens</h2>
-          <p className="text-sm text-slate-400">
+          <h2 className="rl-title text-lg text-[color:var(--rl-text-on-parchment-primary)]">Where this session happens</h2>
+          <p className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">
             {scenes.length} stretch{scenes.length === 1 ? "" : "es"} of the session, as read from
             the transcript{note}.
           </p>
         </div>
         <button
           type="button"
-          className="text-sm text-ember-400 hover:underline"
+          className="text-sm rl-text-accent hover:underline"
           onClick={() => setOpen((value) => !value)}
         >
           {open ? "Hide" : "Show"}
         </button>
       </div>
 
-      {error ? <p className="text-xs text-slate-500">{error}</p> : null}
+      {error ? <p className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">{error}</p> : null}
 
       {open ? (
         <ol className="space-y-3">
           {scenes.map((scene) => (
             <li
               key={scene.index}
-              className="rounded-lg border border-slate-800 bg-slate-950/60 p-3"
+              className="rounded-lg border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-card)] p-3"
             >
               <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <span className="font-medium text-slate-200">
+                <span className="font-medium text-[color:var(--rl-text-on-parchment-primary)]">
                   {scene.index}. {scene.location}
                 </span>
-                <span className="text-xs text-slate-500">
+                <span className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
                   {scene.moments} moments
                   {scene.start_sec != null ? " \u00b7 from " + fmtDuration(scene.start_sec) : ""}
                   {scene.end_sec != null ? " to " + fmtDuration(scene.end_sec) : ""}
@@ -107,7 +107,7 @@ export function SessionScenesCard({
                       {" \u00b7 "}
                       <button
                         type="button"
-                        className="text-ember-400 hover:underline"
+                        className="rl-text-accent hover:underline"
                         onClick={() => onSeek(scene.start_sec as number)}
                       >
                         listen
@@ -117,20 +117,20 @@ export function SessionScenesCard({
                 </span>
               </div>
               {scene.reason ? (
-                <p className="mt-1 text-xs text-slate-500">starts: {scene.reason}</p>
+                <p className="mt-1 text-xs text-[color:var(--rl-text-on-parchment-muted)]">starts: {scene.reason}</p>
               ) : null}
-              <p className="mt-2 text-sm text-slate-300">
-                <span className="text-slate-500">there: </span>
+              <p className="mt-2 text-sm text-[color:var(--rl-text-on-parchment-primary)]">
+                <span className="text-[color:var(--rl-text-on-parchment-muted)]">there: </span>
                 {scene.present.length > 0 ? scene.present.join(", ") : "not stated"}
               </p>
               {scene.absent.length > 0 ? (
-                <p className="text-sm text-amber-300/90">
-                  <span className="text-slate-500">somewhere else: </span>
+                <p className="text-sm rl-text-item">
+                  <span className="text-[color:var(--rl-text-on-parchment-muted)]">somewhere else: </span>
                   {scene.absent.join(", ")}
                 </p>
               ) : null}
               {scene.npcs.length > 0 ? (
-                <p className="text-xs text-slate-500">NPCs in play: {scene.npcs.join(", ")}</p>
+                <p className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">NPCs in play: {scene.npcs.join(", ")}</p>
               ) : null}
             </li>
           ))}

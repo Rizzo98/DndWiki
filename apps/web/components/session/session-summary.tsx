@@ -57,33 +57,33 @@ function nextEditKey(): string {
 // Inline actions for a single queued change: the shared <Button> is sized for
 // the main actions, not for a row of a list.
 const ROW_ACTION =
-  "rounded-md px-2 py-1 text-xs font-medium text-slate-400 transition hover:bg-slate-700/60 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-50";
+  "rounded-md px-2 py-1 text-xs font-medium text-[color:var(--rl-text-on-parchment-muted)] transition hover:bg-[color:var(--rl-bg-parchment-sunk)] hover:text-[color:var(--rl-text-on-parchment-primary)] disabled:cursor-not-allowed disabled:opacity-50";
 /** Save: the one affirmative action inside a row. */
 const ROW_ACTION_PRIMARY =
-  "rounded-md bg-ember-500 px-2.5 py-1 text-xs font-semibold text-slate-950 transition hover:bg-ember-400 disabled:cursor-not-allowed disabled:opacity-50";
+  "rl-btn rl-btn--primary px-2.5 py-1 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-50";
 const ROW_ACTION_DANGER =
-  "rounded-md px-2 py-1 text-xs font-medium text-slate-400 transition hover:bg-red-500/10 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-50";
+  "rounded-md px-2 py-1 text-xs font-medium text-[color:var(--rl-text-on-parchment-muted)] transition hover:bg-[color:color-mix(in_srgb,var(--rl-cat-villain)_14%,transparent)] hover:text-[color:var(--rl-cat-villain)] disabled:cursor-not-allowed disabled:opacity-50";
 
 /** The summary lines a change is about, quoted and collapsed when numerous. */
 function TargetPills({ targets }: { targets: string[] }) {
-  if (!targets.length) return <span className="text-xs text-slate-500">the whole summary</span>;
+  if (!targets.length) return <span className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">the whole summary</span>;
   const shown = targets.slice(0, MAX_QUOTED_TARGETS);
   const hidden = targets.length - shown.length;
   return (
     <span className="flex flex-wrap items-center gap-1">
-      <span className="text-xs text-slate-500">
+      <span className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
         {targets.length === 1 ? "line:" : `${targets.length} lines:`}
       </span>
       {shown.map((line, i) => (
         <span
           key={`${i}-${line.slice(0, 16)}`}
           title={line}
-          className="max-w-[32ch] truncate rounded bg-slate-800/80 px-1.5 py-0.5 text-xs italic text-slate-400"
+          className="max-w-[32ch] truncate rounded bg-[color:var(--rl-bg-parchment-sunk)] px-1.5 py-0.5 text-xs italic text-[color:var(--rl-text-on-parchment-muted)]"
         >
           “{line}”
         </span>
       ))}
-      {hidden > 0 ? <span className="text-xs text-slate-500">+{hidden} more</span> : null}
+      {hidden > 0 ? <span className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">+{hidden} more</span> : null}
     </span>
   );
 }
@@ -258,7 +258,7 @@ export function SessionSummaryCard({
     return (
       <Card>
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-lg font-semibold">Session summary</h2>
+          <h2 className="rl-title text-lg">Session summary</h2>
         </div>
         <div className="mt-4">
           <EmptyState>
@@ -299,7 +299,7 @@ export function SessionSummaryCard({
     <Card>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-lg font-semibold">Session summary</h2>
+          <h2 className="rl-title text-lg">Session summary</h2>
           {isDraft ? (
             <span title="Nothing has been written to the wiki yet — review the lines below, then confirm.">
               <Badge tone="amber">draft · awaiting review</Badge>
@@ -325,7 +325,7 @@ export function SessionSummaryCard({
       </div>
 
       {pipelineRunning ? (
-        <p className="mb-3 text-xs text-amber-300">
+        <p className="mb-3 text-xs rl-text-item">
           {sessionStatus === "summarizing"
             ? "Rebuilding the summary…"
             : "Summary confirmed — computing the proposed wiki changes you review next…"}
@@ -333,7 +333,7 @@ export function SessionSummaryCard({
       ) : null}
 
       {reviewOpen ? (
-        <p className="mb-2 text-xs text-slate-500">
+        <p className="mb-2 text-xs text-[color:var(--rl-text-on-parchment-muted)]">
           Tick the lines that are wrong (tick none to talk about the summary as a whole), describe the
           change and add it to the list — the rewrite applies every listed change at once. The wiki is
           only generated once you confirm.
@@ -347,7 +347,7 @@ export function SessionSummaryCard({
             <li
               key={`${i}-${line.slice(0, 24)}`}
               className={`flex items-start gap-3 rounded-lg px-2 py-1.5 text-sm leading-relaxed transition ${
-                checked ? "bg-ember-500/10 ring-1 ring-ember-500/40" : "hover:bg-slate-800/50"
+                checked ? "rl-bg-accent-soft rl-ring-accent" : "hover:bg-[color:var(--rl-bg-parchment-sunk)]"
               }`}
             >
               {reviewOpen ? (
@@ -355,13 +355,13 @@ export function SessionSummaryCard({
                   type="checkbox"
                   checked={checked}
                   onChange={() => toggleLine(line)}
-                  className="mt-1 h-4 w-4 shrink-0 accent-ember-500"
+                  className="mt-1 h-4 w-4 shrink-0 accent-[color:var(--rl-accent-500)]"
                   aria-label={`select summary line ${i + 1}`}
                 />
               ) : (
-                <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-slate-600" />
+                <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-[color:var(--rl-bg-parchment-sunk)]" />
               )}
-              <span className={`text-slate-200 ${reviewOpen ? "cursor-pointer" : ""}`} onClick={reviewOpen ? () => toggleLine(line) : undefined}>
+              <span className={`text-[color:var(--rl-text-on-parchment-primary)] ${reviewOpen ? "cursor-pointer" : ""}`} onClick={reviewOpen ? () => toggleLine(line) : undefined}>
                 <LinkedText text={line} campaignId={campaignId} index={linkIndex} />
               </span>
             </li>
@@ -370,11 +370,11 @@ export function SessionSummaryCard({
       </ul>
 
       {reviewOpen ? (
-        <div className="mt-4 rounded-xl border border-slate-800 bg-slate-800/30 p-4">
-          <div className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+        <div className="mt-4 rounded-xl border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-parchment-sunk)] p-4">
+          <div className="mb-2 text-xs font-bold uppercase tracking-wider text-[color:var(--rl-text-on-parchment-muted)]">
             Ask for a change
           </div>
-          <p className="mb-2 text-xs text-slate-400">
+          <p className="mb-2 text-xs text-[color:var(--rl-text-on-parchment-muted)]">
             {selected.length === 0
               ? "No line selected: the request concerns the whole summary."
               : `${selected.length} line${selected.length > 1 ? "s" : ""} selected.`}
@@ -382,7 +382,7 @@ export function SessionSummaryCard({
           {selected.length ? (
             <ul className="mb-2 space-y-1">
               {selected.map((line) => (
-                <li key={line} className="truncate text-xs italic text-slate-400">
+                <li key={line} className="truncate text-xs italic text-[color:var(--rl-text-on-parchment-muted)]">
                   “{line}”
                 </li>
               ))}
@@ -404,7 +404,7 @@ export function SessionSummaryCard({
             >
               Add change
             </Button>
-            <span className="text-xs text-slate-500">
+            <span className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
               {atChangeLimit
                 ? `That is the maximum of ${MAX_CHANGES} changes at a time.`
                 : "The ticked lines are attached to the change."}
@@ -413,16 +413,16 @@ export function SessionSummaryCard({
 
           {/* The queued changes: one entry per request, each editable and
               removable. This list is what the rewrite is built from. */}
-          <div className="mt-4 border-t border-slate-800 pt-3">
+          <div className="mt-4 border-t border-[color:var(--rl-border-parchment)] pt-3">
             <div className="mb-2 flex items-center gap-2">
-              <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
+              <span className="text-xs font-bold uppercase tracking-wider text-[color:var(--rl-text-on-parchment-muted)]">
                 Changes to apply
               </span>
               <Badge tone={pendingEdits.length ? "amber" : "slate"}>{pendingEdits.length}</Badge>
             </div>
 
             {pendingEdits.length === 0 ? (
-              <p className="rounded-lg border border-dashed border-slate-800 px-3 py-2.5 text-xs text-slate-500">
+              <p className="rounded-lg border border-dashed border-[color:var(--rl-border-parchment)] px-3 py-2.5 text-xs text-[color:var(--rl-text-on-parchment-muted)]">
                 No change added yet. Describe the correction above and press “Add change” — the
                 rewrite is built from this list only.
               </p>
@@ -435,13 +435,13 @@ export function SessionSummaryCard({
                       key={edit.key}
                       className={`rounded-lg border px-3 py-2.5 text-xs transition ${
                         isEditing
-                          ? "border-ember-500/50 bg-slate-900/80"
-                          : "border-slate-800 bg-slate-900/60"
+                          ? "border-[color:color-mix(in_srgb,var(--rl-accent-500)_50%,transparent)] bg-[color:var(--rl-bg-card)]"
+                          : "border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-card)]"
                       }`}
                     >
                       {isEditing ? (
                         <div>
-                          <div className="mb-1.5 text-xs font-semibold text-ember-400">
+                          <div className="mb-1.5 text-xs font-semibold rl-text-accent">
                             Editing change {i + 1}
                           </div>
                           <TextArea
@@ -451,7 +451,7 @@ export function SessionSummaryCard({
                             onChange={(e) => setEditDraft(e.target.value)}
                             disabled={Boolean(reviewBusy) || pipelineRunning}
                           />
-                          <div className="mt-2 text-slate-500">
+                          <div className="mt-2 text-[color:var(--rl-text-on-parchment-muted)]">
                             <div className="mb-1 flex flex-wrap items-center gap-2">
                               <span>Lines concerned:</span>
                               <button
@@ -478,10 +478,10 @@ export function SessionSummaryCard({
                               <ul className="space-y-1">
                                 {editTargets.map((line) => (
                                   <li key={line} className="flex items-start gap-1.5">
-                                    <span className="italic text-slate-400">“{line}”</span>
+                                    <span className="italic text-[color:var(--rl-text-on-parchment-muted)]">“{line}”</span>
                                     <button
                                       type="button"
-                                      className="shrink-0 text-slate-600 hover:text-red-300"
+                                      className="shrink-0 text-[color:var(--rl-text-on-parchment-muted)] hover:text-[color:var(--rl-cat-villain)]"
                                       onClick={() =>
                                         setEditTargets((prev) => prev.filter((l) => l !== line))
                                       }
@@ -519,10 +519,10 @@ export function SessionSummaryCard({
                       ) : (
                         <div>
                           <div className="flex items-start gap-2">
-                            <span className="mt-px inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-slate-700/70 text-[10px] font-semibold text-slate-300">
+                            <span className="mt-px inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[color:var(--rl-bg-parchment-sunk)] text-[10px] font-semibold text-[color:var(--rl-text-on-parchment-primary)]">
                               {i + 1}
                             </span>
-                            <p className="flex-1 whitespace-pre-wrap leading-relaxed text-slate-200">
+                            <p className="flex-1 whitespace-pre-wrap leading-relaxed text-[color:var(--rl-text-on-parchment-primary)]">
                               {edit.instruction}
                             </p>
                             <div className="flex shrink-0 items-center gap-1">
@@ -570,7 +570,7 @@ export function SessionSummaryCard({
             >
               {reviewBusy === "regenerate" ? "Regenerating…" : "Regenerate summary"}
             </Button>
-            <span className="text-xs text-slate-500">
+            <span className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
               {pendingEdits.length === 0
                 ? "Add at least one change to regenerate."
                 : instruction.trim()
@@ -582,7 +582,7 @@ export function SessionSummaryCard({
       ) : null}
 
       {canReview && isDraft ? (
-        <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-slate-800 pt-4">
+        <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-[color:var(--rl-border-parchment)] pt-4">
           <Button
             variant="danger"
             disabled={Boolean(reviewBusy) || pipelineRunning}
@@ -609,19 +609,19 @@ export function SessionSummaryCard({
             type="button"
             onClick={() => setShowMoments((v) => !v)}
             aria-expanded={showMoments}
-            className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-slate-800/60"
+            className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-[color:var(--rl-bg-parchment-sunk)]"
           >
             <span
               aria-hidden
-              className={"inline-block text-xs text-slate-500 transition-transform " + (showMoments ? "rotate-90" : "")}
+              className={"inline-block text-xs text-[color:var(--rl-text-on-parchment-muted)] transition-transform " + (showMoments ? "rotate-90" : "")}
             >
               ▶
             </span>
-            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-[color:var(--rl-text-on-parchment-muted)]">
               Key moments
             </h3>
             <Badge tone="slate">{summary.timeline_entries.length}</Badge>
-            <span className="ml-auto text-xs text-slate-500">{showMoments ? "Hide" : "Show"}</span>
+            <span className="ml-auto text-xs text-[color:var(--rl-text-on-parchment-muted)]">{showMoments ? "Hide" : "Show"}</span>
           </button>
           {showMoments ? (
             <ul className="mt-1 space-y-1.5">
@@ -629,21 +629,21 @@ export function SessionSummaryCard({
                 const seconds = parseTimeToSeconds(entry.time);
                 return (
                   <li key={i}>
-                    <div className="group flex w-full items-start gap-3 rounded-lg px-2 py-1.5 text-left transition hover:bg-slate-800/60">
+                    <div className="group flex w-full items-start gap-3 rounded-lg px-2 py-1.5 text-left transition hover:bg-[color:var(--rl-bg-parchment-sunk)]">
                       {seconds !== null && onSeek ? (
                         <button
                           onClick={() => onSeek(seconds)}
                           title="Jump to this moment in the recording"
-                          className="mt-0.5 shrink-0 font-mono text-xs text-slate-500 tabular-nums hover:text-ember-400"
+                          className="mt-0.5 shrink-0 font-mono text-xs text-[color:var(--rl-text-on-parchment-muted)] tabular-nums hover:text-[color:var(--rl-accent-500)]"
                         >
                           {entry.time}
                         </button>
                       ) : (
-                        <span className="mt-0.5 shrink-0 font-mono text-xs text-slate-500 tabular-nums">
+                        <span className="mt-0.5 shrink-0 font-mono text-xs text-[color:var(--rl-text-on-parchment-muted)] tabular-nums">
                           {entry.time}
                         </span>
                       )}
-                      <span className="text-sm leading-relaxed text-slate-200">
+                      <span className="text-sm leading-relaxed text-[color:var(--rl-text-on-parchment-primary)]">
                         <LinkedText text={entry.summary} campaignId={campaignId} index={linkIndex} />
                       </span>
                     </div>
@@ -657,14 +657,14 @@ export function SessionSummaryCard({
 
       {hasEvents ? (
         <div className="mt-5">
-          <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+          <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-[color:var(--rl-text-on-parchment-muted)]">
             Important events
           </h3>
           <ul className="space-y-3">
             {summary.events.map((event, i) => (
-              <li key={i} className="rounded-lg border border-slate-800 bg-slate-800/30 px-3 py-2.5">
+              <li key={i} className="rounded-lg border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-parchment-sunk)] px-3 py-2.5">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-sm font-semibold text-slate-100">
+                  <span className="text-sm font-semibold text-[color:var(--rl-text-on-parchment-primary)]">
                     <LinkedText text={event.title} campaignId={campaignId} index={linkIndex} />
                   </span>
                   {event.confidence !== null && event.confidence !== undefined ? (
@@ -672,7 +672,7 @@ export function SessionSummaryCard({
                   ) : null}
                 </div>
                 {event.description ? (
-                  <p className="mt-1 text-sm leading-relaxed text-slate-300">
+                  <p className="mt-1 text-sm leading-relaxed text-[color:var(--rl-text-on-parchment-primary)]">
                     <LinkedText text={event.description} campaignId={campaignId} index={linkIndex} />
                   </p>
                 ) : null}
@@ -684,7 +684,7 @@ export function SessionSummaryCard({
                         name={p}
                         campaignId={campaignId}
                         index={linkIndex}
-                        className="rounded-full bg-slate-700/50 px-2 py-0.5 text-xs text-slate-300"
+                        className="rounded-full bg-[color:var(--rl-bg-parchment-sunk)] px-2 py-0.5 text-xs text-[color:var(--rl-text-on-parchment-primary)]"
                       />
                     ))}
                   </div>
@@ -699,7 +699,7 @@ export function SessionSummaryCard({
         <div className="mt-5 flex flex-wrap gap-6">
           {hasCharacters ? (
             <div>
-              <h3 className="mb-1.5 text-xs font-bold uppercase tracking-wider text-slate-500">Characters</h3>
+              <h3 className="mb-1.5 text-xs font-bold uppercase tracking-wider text-[color:var(--rl-text-on-parchment-muted)]">Characters</h3>
               <div className="flex flex-wrap gap-1.5">
                 {summary.characters.map((c) => (
                   <LinkedChip
@@ -707,7 +707,7 @@ export function SessionSummaryCard({
                     name={c.name}
                     campaignId={campaignId}
                     index={linkIndex}
-                    className="rounded-full bg-blue-500/10 px-2 py-0.5 text-xs text-blue-300"
+                    className="rounded-full rl-bg-place-soft px-2 py-0.5 text-xs rl-text-place"
                   />
                 ))}
               </div>
@@ -715,7 +715,7 @@ export function SessionSummaryCard({
           ) : null}
           {hasLocations ? (
             <div>
-              <h3 className="mb-1.5 text-xs font-bold uppercase tracking-wider text-slate-500">Locations</h3>
+              <h3 className="mb-1.5 text-xs font-bold uppercase tracking-wider text-[color:var(--rl-text-on-parchment-muted)]">Locations</h3>
               <div className="flex flex-wrap gap-1.5">
                 {summary.locations.map((l) => (
                   <LinkedChip
@@ -723,7 +723,7 @@ export function SessionSummaryCard({
                     name={l.name}
                     campaignId={campaignId}
                     index={linkIndex}
-                    className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-300"
+                    className="rounded-full rl-bg-item-soft px-2 py-0.5 text-xs rl-text-item"
                   />
                 ))}
               </div>

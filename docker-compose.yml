@@ -169,7 +169,8 @@ services:
       retries: 20
     networks: [dnd-net]
 
-  # One-shot job: create buckets (recordings, transcripts, wiki-assets)
+  # One-shot job: create buckets (recordings, transcripts, wiki-assets,
+  # campaign-assets = campaign cover art)
   minio-init:
     image: minio/mc:latest
     entrypoint:
@@ -177,7 +178,7 @@ services:
       - -c
       - |
         until mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"; do sleep 2; done
-        mc mb -p local/recordings local/transcripts local/wiki-assets local/voice-samples
+        mc mb -p local/recordings local/transcripts local/wiki-assets local/voice-samples local/campaign-assets
         mc anonymous set download local/wiki-assets || true
         echo "MinIO buckets ready"
     environment:

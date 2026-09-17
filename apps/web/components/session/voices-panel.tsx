@@ -90,7 +90,7 @@ export function VoicesPanel({
     [token, sessionId, load],
   );
 
-  if (loading) return <p className="text-sm text-slate-500">Looking at the voices…</p>;
+  if (loading) return <p className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">Looking at the voices…</p>;
   if (error) return <Alert>{error}</Alert>;
   if (voices.length === 0) {
     return (
@@ -102,16 +102,16 @@ export function VoicesPanel({
 
   return (
     <div className="space-y-3">
-      <p className="text-xs text-slate-500">
+      <p className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
         These are anonymous voice groups, not people. The engine decides who they are; you can
         correct it here.
       </p>
-      <ul className="divide-y divide-slate-800">
+      <ul className="divide-y divide-[color:var(--rl-border-parchment)]">
         {voices.map((voice) => (
           <li key={voice.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
             <div className="flex flex-wrap items-center gap-3">
               <Badge tone="violet">{voice.handle}</Badge>
-              <span className="text-sm text-slate-300">{clock(voice.speech_sec)} of speech</span>
+              <span className="text-sm text-[color:var(--rl-text-on-parchment-primary)]">{clock(voice.speech_sec)} of speech</span>
               {/*
                 A guess with no confident speech behind it is NOT shown. The
                 engine's posterior can read 0.99 for a candidate while every one
@@ -119,15 +119,15 @@ export function VoicesPanel({
                 sure" would describe a conclusion the wiki will never use.
               */}
               {voice.guess_label && (voice.guess_confidence ?? 0) > 0 ? (
-                <span className="text-sm text-slate-400">
-                  we think <span className="text-slate-200">{voice.guess_label}</span>
-                  <span className="ml-1 text-xs text-slate-500">
+                <span className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">
+                  we think <span className="text-[color:var(--rl-text-on-parchment-primary)]">{voice.guess_label}</span>
+                  <span className="ml-1 text-xs text-[color:var(--rl-text-on-parchment-muted)]">
                     ({fmtPercent(voice.guess_confidence ?? 0)} of its speech, certain)
                   </span>
                   {voice.confirmed ? <Badge tone="green">you said so</Badge> : null}
                 </span>
               ) : (
-                <span className="text-sm text-slate-500">
+                <span className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">
                   we can&rsquo;t place this one yet
                 </span>
               )}
@@ -141,7 +141,7 @@ export function VoicesPanel({
           </li>
         ))}
       </ul>
-      <p className="text-xs text-slate-500">
+      <p className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
         &ldquo;We think&rdquo; is the engine&rsquo;s current guess, not a decision: whatever it is not
         sure about is described at party level and never attributed to a character. Answer the
         questions at the top of the page and it settles these on its own.

@@ -1,22 +1,28 @@
-// Small shared UI primitives (dark slate theme, Tailwind).
+// Small shared UI primitives — the legacy call-signs the older screens import.
+//
+// The chrome they render now comes from the Ravenlore design system
+// (components/ravenlore.tsx plus the .rl-* classes in app/globals.css), so a
+// screen written before the redesign still looks like the same product. New
+// work should import components/ravenlore directly.
 
 import Link from "next/link";
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from "react";
+import { RlTag, sessionStatusTint, type RlTint } from "./ravenlore";
 
 // ---------------------------------------------------------------- buttons
 
 type ButtonVariant = "primary" | "secondary" | "danger" | "ghost";
 
-const BUTTON_STYLES: Record<ButtonVariant, string> = {
-  primary: "bg-ember-500 text-slate-950 hover:bg-ember-400 disabled:opacity-50",
-  secondary: "border border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700 disabled:opacity-50",
-  danger: "bg-red-600/90 text-white hover:bg-red-500 disabled:opacity-50",
-  ghost: "text-slate-300 hover:bg-slate-800 disabled:opacity-50",
+const BUTTON_VARIANT_CLASS: Record<ButtonVariant, string> = {
+  primary: "rl-btn--primary",
+  secondary: "rl-btn--outline",
+  danger: "rl-btn--danger",
+  ghost: "rl-btn--ghost",
 };
 
 /** Button styling shared by <Button> and <ButtonLink>. */
 export function buttonClass(variant: ButtonVariant = "primary", className = ""): string {
-  return `inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed ${BUTTON_STYLES[variant]} ${className}`;
+  return ("rl-btn " + BUTTON_VARIANT_CLASS[variant] + " " + className).trim();
 }
 
 export function Button({
@@ -51,143 +57,92 @@ export function ButtonLink({
 export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">{label}</span>
+      <span className="rl-eyebrow mb-1.5">{label}</span>
       {children}
-      {hint ? <span className="mt-1 block text-xs text-slate-500">{hint}</span> : null}
+      {hint ? <span className="rl-card-meta mt-1.5 block">{hint}</span> : null}
     </label>
   );
 }
 
 export function TextInput(props: InputHTMLAttributes<HTMLInputElement>) {
-  return (
-    <input
-      className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-ember-500"
-      {...props}
-    />
-  );
+  return <input className="rl-input-light" {...props} />;
 }
 
 export function TextArea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return (
-    <textarea
-      className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-ember-500"
-      {...props}
-    />
-  );
+  return <textarea className="rl-input-light" {...props} />;
 }
 
 export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
-  return (
-    <select
-      className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-ember-500"
-      {...props}
-    />
-  );
+  return <select className="rl-input-light" {...props} />;
 }
 
 export function FileInput(props: InputHTMLAttributes<HTMLInputElement>) {
-  return (
-    <input
-      type="file"
-      className="block w-full text-sm text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-700 file:px-3 file:py-2 file:text-sm file:font-semibold file:text-slate-100 hover:file:bg-slate-600"
-      {...props}
-    />
-  );
+  return <input type="file" className="rl-file" {...props} />;
 }
 
 // ------------------------------------------------------------------- card
 
 export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return (
-    <div className={`rounded-xl border border-slate-800 bg-slate-900 p-5 ${className}`}>{children}</div>
-  );
+  return <div className={"rl-card " + className}>{children}</div>;
 }
 
 // ------------------------------------------------------------------ badge
 
 type BadgeTone = "slate" | "blue" | "amber" | "emerald" | "red" | "violet" | "orange" | "green";
 
+/** Legacy badge tones mapped onto the design system's category tints. */
+const BADGE_TINT: Record<BadgeTone, RlTint> = {
+  slate: "muted",
+  blue: "place",
+  amber: "item",
+  emerald: "neutral",
+  green: "neutral",
+  red: "villain",
+  violet: "npc",
+  orange: "item",
+};
+
 export function Badge({ children, tone = "slate" }: { children: ReactNode; tone?: BadgeTone }) {
-  const tones: Record<BadgeTone, string> = {
-    slate: "bg-slate-700/60 text-slate-200",
-    blue: "bg-blue-500/15 text-blue-300",
-    amber: "bg-amber-500/15 text-amber-300",
-    emerald: "bg-emerald-500/15 text-emerald-300",
-    green: "bg-green-500/15 text-green-300",
-    red: "bg-red-500/15 text-red-300",
-    violet: "bg-violet-500/15 text-violet-300",
-    orange: "bg-orange-500/15 text-orange-300",
-  };
-  return (
-    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold ${tones[tone]}`}>
-      {children}
-    </span>
-  );
+  return <RlTag tint={BADGE_TINT[tone] ?? "muted"}>{children}</RlTag>;
 }
 
 // --------------------------------------------------------------- statuses
 
-export const SESSION_STATUS_TONE: Record<string, BadgeTone> = {
-  uploaded: "slate",
-  recorded: "blue",
-  transcribing: "amber",
-  transcribed: "green",
-  refining: "amber",
-  refined: "blue",
-  identifying_speakers: "violet",
-  speakers_identified: "violet",
-  // retired as a blocking state; shown only for in-flight sessions
-  speaker_pending: "orange",
-  attributing: "violet",
-  attribution_ready: "violet",
-  // the resting review state: the pipeline is waiting for the DM, not working
-  attribution_review: "blue",
-  summarizing: "amber",
-  summary_ready: "violet",
-  generating_wiki: "violet",
-  wiki_plan_ready: "violet",
-  applying_wiki: "amber",
-  content_ready: "emerald",
-  reviewed: "green",
-  published: "green",
-  failed: "red",
-};
-
 export function SessionStatusBadge({ status }: { status: string }) {
-  return <Badge tone={SESSION_STATUS_TONE[status] ?? "slate"}>{status.replace(/_/g, " ")}</Badge>;
+  return <RlTag tint={sessionStatusTint(status)}>{status.replace(/_/g, " ")}</RlTag>;
 }
 
 // A page is either a draft, published or archived — there is no 'pending
 // review' state (the pipeline only writes confirmed changes).
-export const PAGE_STATUS_TONE: Record<string, BadgeTone> = {
-  draft: "slate",
-  published: "green",
-  archived: "slate",
+const PAGE_STATUS_TINT: Record<string, RlTint> = {
+  draft: "muted",
+  pending_review: "item",
+  published: "neutral",
+  archived: "muted",
 };
 
 export function PageStatusBadge({ status }: { status: string }) {
-  return <Badge tone={PAGE_STATUS_TONE[status] ?? "slate"}>{status.replace(/_/g, " ")}</Badge>;
+  return <RlTag tint={PAGE_STATUS_TINT[status] ?? "muted"}>{status.replace(/_/g, " ")}</RlTag>;
 }
 
-export const VISIBILITY_TONE: Record<string, BadgeTone> = {
-  public: "green",
-  dm_only: "amber",
-  hidden: "red",
+const VISIBILITY_TINT: Record<string, RlTint> = {
+  public: "neutral",
+  dm_only: "item",
+  hidden: "villain",
 };
 
 export function VisibilityBadge({ visibility }: { visibility: string }) {
-  return <Badge tone={VISIBILITY_TONE[visibility] ?? "slate"}>{visibility.replace(/_/g, " ")}</Badge>;
+  return <RlTag tint={VISIBILITY_TINT[visibility] ?? "muted"}>{visibility.replace(/_/g, " ")}</RlTag>;
 }
 
 // -------------------------------------------------------------- feedback
 
 export function Alert({ tone = "error", children }: { tone?: "error" | "success" | "info"; children: ReactNode }) {
-  const tones = {
-    error: "border-red-800 bg-red-950/50 text-red-200",
-    success: "border-emerald-800 bg-emerald-950/50 text-emerald-200",
-    info: "border-slate-700 bg-slate-800/60 text-slate-300",
-  };
-  return <div className={`rounded-lg border px-4 py-3 text-sm ${tones[tone]}`}>{children}</div>;
+  return (
+    <div role={tone === "error" ? "alert" : "status"} className={"rl-alert rl-alert--" + tone}>
+      {children}
+    </div>
+  );
 }
 
 /**
@@ -213,27 +168,29 @@ export function Collapsible({
   return (
     <details
       open={defaultOpen}
-      className={`group rounded-xl border p-5 ${
-        tone === "subtle" ? "border-slate-800/60 bg-slate-900/40" : "border-slate-800 bg-slate-900"
-      }`}
+      className={"group rl-panel" + (tone === "subtle" ? " border-dashed opacity-95" : "")}
     >
-      <summary className="cursor-pointer list-none text-sm font-semibold text-slate-200 marker:hidden">
+      <summary className="cursor-pointer list-none px-5 py-4 text-sm font-semibold marker:hidden">
         <span className="inline-flex items-center gap-2">
-          <span className="text-slate-500 transition-transform group-open:rotate-90">▶</span>
+          <span className="text-[color:var(--rl-text-on-parchment-muted)] transition-transform group-open:rotate-90">
+            ▶
+          </span>
           {summary}
         </span>
       </summary>
-      <div className="mt-4">{children}</div>
+      <div className="border-t border-[color:var(--rl-border-parchment)] px-5 py-4">{children}</div>
     </details>
   );
 }
 
 export function EmptyState({ children }: { children: ReactNode }) {
-  return <div className="rounded-lg border border-dashed border-slate-800 px-4 py-10 text-center text-sm text-slate-500">{children}</div>;
+  return <div className="rl-empty text-sm">{children}</div>;
 }
 
 export function Spinner() {
-  return <div className="h-4 w-4 animate-spin rounded-full border-2 border-slate-600 border-t-ember-500" />;
+  return (
+    <div className="h-4 w-4 animate-spin rounded-full border-2 border-[color:var(--rl-border-parchment-strong)] border-t-[color:var(--rl-accent-500)]" />
+  );
 }
 
 // ----------------------------------------------------------------- utils
@@ -249,10 +206,10 @@ export function fmtDuration(sec?: number | null): string {
   if (sec === null || sec === undefined) return "—";
   const m = Math.floor(sec / 60);
   const s = Math.round(sec % 60);
-  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+  return m > 0 ? m + "m " + s + "s" : s + "s";
 }
 
 export function fmtPercent(value?: number | null): string {
   if (value === null || value === undefined) return "—";
-  return `${Math.round(value * 100)}%`;
+  return Math.round(value * 100) + "%";
 }

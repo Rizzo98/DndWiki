@@ -1,14 +1,19 @@
-"""FastAPI dependencies: service-token auth (mirrors session-service)."""
+"""FastAPI dependencies: service-token auth + app.state accessors."""
 
 from __future__ import annotations
 
 from dnd_common.auth import decode_token
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.config import ServiceSettings, get_settings
+from app.storage import ObjectStorage
 
 _bearer = HTTPBearer(auto_error=False)
+
+
+def get_storage(request: Request) -> ObjectStorage:
+    return request.app.state.storage
 
 
 def require_service(

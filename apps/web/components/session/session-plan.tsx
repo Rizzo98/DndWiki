@@ -175,13 +175,13 @@ const NO_DRAFTS: Record<string, string> = {};
 
 /** Read-only look of an input: same box, muted, nothing to type into. */
 const READONLY_CONTROL =
-  "w-full rounded-lg border border-slate-800 bg-slate-900/50 px-3 py-2 text-sm text-slate-300 outline-none";
+  "w-full rounded-lg border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-card)] px-3 py-2 text-sm text-[color:var(--rl-text-on-parchment-primary)] outline-none";
 
 function Chevron({ open }: { open: boolean }) {
   return (
     <span
       aria-hidden
-      className={"inline-block text-xs text-slate-500 transition-transform " + (open ? "rotate-90" : "")}
+      className={"inline-block text-xs text-[color:var(--rl-text-on-parchment-muted)] transition-transform " + (open ? "rotate-90" : "")}
     >
       ▶
     </span>
@@ -236,10 +236,10 @@ function ChangeForm({
       <Field label="Title">
         {readOnly ? (
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-semibold text-slate-100">{change.title}</span>
+            <span className="text-sm font-semibold text-[color:var(--rl-text-on-parchment-primary)]">{change.title}</span>
             {titleChanged ? (
-              <span className="text-xs text-slate-500">
-                was <span className="text-red-300 line-through">{change.before?.title}</span>
+              <span className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
+                was <span className="rl-text-villain line-through">{change.before?.title}</span>
               </span>
             ) : null}
           </div>
@@ -293,12 +293,12 @@ function ChangeForm({
                   />
                 )}
                 {readOnly && changed ? (
-                  <span className="mt-1 block text-xs text-slate-500">
+                  <span className="mt-1 block text-xs text-[color:var(--rl-text-on-parchment-muted)]">
                     {was === undefined ? (
-                      <span className="text-green-300">new field</span>
+                      <span className="rl-text-neutral">new field</span>
                     ) : (
                       <>
-                        was <span className="text-red-300 line-through">{displayValue(was)}</span>
+                        was <span className="rl-text-villain line-through">{displayValue(was)}</span>
                       </>
                     )}
                   </span>
@@ -310,15 +310,15 @@ function ChangeForm({
       )}
 
       {removed.length ? (
-        <div className="rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2">
-          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+        <div className="rounded-lg border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-card)] px-3 py-2">
+          <div className="text-xs font-semibold uppercase tracking-wide text-[color:var(--rl-text-on-parchment-muted)]">
             Dropped from the page
           </div>
           <ul className="mt-1 space-y-0.5">
             {removed.map((path) => (
-              <li key={path} className="text-xs text-slate-400">
+              <li key={path} className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
                 <span className="font-semibold">{fieldLabel(path)}</span>:{" "}
-                <span className="text-red-300 line-through">{displayValue(before[path])}</span>
+                <span className="rl-text-villain line-through">{displayValue(before[path])}</span>
               </li>
             ))}
           </ul>
@@ -361,7 +361,7 @@ function ChangeForm({
 
       <Field label="Visibility">
         {readOnly ? (
-          <div className="text-sm text-slate-300">{change.after.visibility.replace(/_/g, " ")}</div>
+          <div className="text-sm text-[color:var(--rl-text-on-parchment-primary)]">{change.after.visibility.replace(/_/g, " ")}</div>
         ) : (
           <Select
             className="w-48"
@@ -376,7 +376,7 @@ function ChangeForm({
       </Field>
 
       {readOnly ? (
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
           This is the page the change set will write. Switch to Edit to change it, or Drop to
           leave it out.
         </p>
@@ -534,7 +534,7 @@ export function SessionPlanCard({
     return (
       <Card>
         <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-lg font-semibold">Proposed wiki changes</h2>
+          <h2 className="rl-title text-lg">Proposed wiki changes</h2>
           {generating ? <Badge tone="amber">computing…</Badge> : null}
         </div>
         <div className="mt-4">
@@ -561,7 +561,7 @@ export function SessionPlanCard({
     <Card>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-lg font-semibold">Proposed wiki changes</h2>
+          <h2 className="rl-title text-lg">Proposed wiki changes</h2>
           {isApplied ? (
             <Badge tone="green">applied</Badge>
           ) : isApplying ? (
@@ -579,7 +579,7 @@ export function SessionPlanCard({
         </div>
       </div>
 
-      <p className="mb-3 text-xs text-slate-500">
+      <p className="mb-3 text-xs text-[color:var(--rl-text-on-parchment-muted)]">
         {isApplied
           ? "These changes are in the wiki now (pages published, timeline entries approved)."
           : "Nothing here is in the wiki yet: inspect each change, edit what is wrong, drop what you do not want, then confirm."}
@@ -604,15 +604,15 @@ export function SessionPlanCard({
               type="button"
               onClick={() => setCollapsed((prev) => ({ ...prev, [group.kind]: !isCollapsed }))}
               aria-expanded={!isCollapsed}
-              className="mb-2 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-slate-800/60"
+              className="mb-2 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-[color:var(--rl-bg-parchment-sunk)]"
             >
               <Chevron open={!isCollapsed} />
-              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">{label}</h3>
+              <h3 className="text-xs font-bold uppercase tracking-wider text-[color:var(--rl-text-on-parchment-muted)]">{label}</h3>
               <Badge tone="slate">
                 {group.items.length - groupDropped}
                 {groupDropped ? ` · ${groupDropped} dropped` : ""}
               </Badge>
-              <span className="ml-auto text-xs text-slate-500">{isCollapsed ? "Show" : "Hide"}</span>
+              <span className="ml-auto text-xs text-[color:var(--rl-text-on-parchment-muted)]">{isCollapsed ? "Show" : "Hide"}</span>
             </button>
 
             {isCollapsed ? null : (
@@ -627,8 +627,8 @@ export function SessionPlanCard({
                       className={
                         "rounded-lg border px-3 py-2.5 " +
                         (change.dropped
-                          ? "border-slate-800 bg-slate-900/60 opacity-60"
-                          : "border-slate-800 bg-slate-800/30")
+                          ? "border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-card)] opacity-60"
+                          : "border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-parchment-sunk)]")
                       }
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -637,20 +637,20 @@ export function SessionPlanCard({
                           <span
                             className={
                               "text-sm font-semibold " +
-                              (change.dropped ? "text-slate-500 line-through" : "text-slate-100")
+                              (change.dropped ? "text-[color:var(--rl-text-on-parchment-muted)] line-through" : "text-[color:var(--rl-text-on-parchment-primary)]")
                             }
                           >
                             <LinkedText text={change.title} campaignId={campaignId} index={linkIndex} />
                           </span>
                           {change.before ? (
-                            <span className="text-xs text-slate-500">
+                            <span className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
                               {diffs.length} field{diffs.length === 1 ? "" : "s"} changed
                             </span>
                           ) : null}
                           {change.timeline ? <Badge tone="blue">timeline</Badge> : null}
                           {change.after.confidence !== null &&
                           change.after.confidence !== undefined ? (
-                            <span className="text-xs text-slate-500">
+                            <span className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
                               confidence {Math.round(change.after.confidence * 100)}%
                             </span>
                           ) : null}
@@ -683,7 +683,7 @@ export function SessionPlanCard({
                       </div>
 
                       {expanded ? (
-                        <div className="mt-3 space-y-3 border-t border-slate-800 pt-3">
+                        <div className="mt-3 space-y-3 border-t border-[color:var(--rl-border-parchment)] pt-3">
                           {/* Inspect and Edit render the SAME form; Inspect is
                               simply read-only (and, for updates, annotates every
                               field with the value the page holds today). */}
@@ -748,7 +748,7 @@ export function SessionPlanCard({
 
       {plan.relations.length ? (
         <div className="mt-4">
-          <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+          <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-[color:var(--rl-text-on-parchment-muted)]">
             Links between pages
           </h3>
           <ul className="space-y-1">
@@ -757,11 +757,11 @@ export function SessionPlanCard({
               return (
                 <li
                   key={relation.id}
-                  className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300"
+                  className="flex flex-wrap items-center justify-between gap-2 text-xs text-[color:var(--rl-text-on-parchment-primary)]"
                 >
                   <span className={dropped ? "line-through opacity-60" : ""}>
                     {relation.from_title} → {relation.to_title ?? relation.to_page_id}{" "}
-                    <span className="text-slate-500">
+                    <span className="text-[color:var(--rl-text-on-parchment-muted)]">
                       ({relation.relation_type.replace(/_/g, " ")})
                     </span>
                   </span>
@@ -783,11 +783,11 @@ export function SessionPlanCard({
       ) : null}
 
       {plan.skipped.length ? (
-        <div className="mt-4 rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2">
-          <h3 className="mb-1 text-xs font-bold uppercase tracking-wider text-slate-500">
+        <div className="mt-4 rounded-lg border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-card)] px-3 py-2">
+          <h3 className="mb-1 text-xs font-bold uppercase tracking-wider text-[color:var(--rl-text-on-parchment-muted)]">
             Already in the wiki — not proposed again
           </h3>
-          <p className="text-xs text-slate-400">
+          <p className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
             {plan.skipped.map((s) => s.title).join(", ")}. Their new facts stay on the session
             summary above; edit those pages directly if needed.
           </p>
@@ -795,7 +795,7 @@ export function SessionPlanCard({
       ) : null}
 
       {canReview && !isApplied ? (
-        <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-slate-800 pt-4">
+        <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-[color:var(--rl-border-parchment)] pt-4">
           {dirty ? (
             <Button
               variant="secondary"
@@ -837,7 +837,7 @@ export function SessionPlanCard({
         </div>
       ) : null}
       {canReview && dirty && !isApplied ? (
-        <p className="mt-2 text-right text-xs text-amber-300">
+        <p className="mt-2 text-right text-xs rl-text-item">
           Unsaved edits are saved automatically when you confirm.
         </p>
       ) : null}

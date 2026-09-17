@@ -118,9 +118,9 @@ export function CreateCampaignForm({ onCreated }: { onCreated: (campaign: Campai
           </Select>
         </Field>
 
-        <div className="border-t border-slate-800 pt-3">
+        <div className="border-t border-[color:var(--rl-border-parchment)] pt-3">
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+            <span className="text-xs font-semibold uppercase tracking-wide text-[color:var(--rl-text-on-parchment-muted)]">
               Players (at least one)
             </span>
             <Button type="button" variant="ghost" onClick={() => setMembers((prev) => [...prev, emptyDraft()])}>
@@ -129,11 +129,11 @@ export function CreateCampaignForm({ onCreated }: { onCreated: (campaign: Campai
           </div>
           <div className="space-y-3">
             {members.map((m, i) => (
-              <div key={i} className="space-y-2 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+              <div key={i} className="space-y-2 rounded-lg border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-card)] p-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-slate-500">Player {i + 1}</span>
+                  <span className="text-xs font-semibold text-[color:var(--rl-text-on-parchment-muted)]">Player {i + 1}</span>
                   {members.length > 1 ? (
-                    <Button type="button" variant="ghost" onClick={() => setMembers((prev) => prev.filter((_, j) => j !== i))} className="px-2 py-1 text-xs text-red-300 hover:bg-red-950/40">
+                    <Button type="button" variant="ghost" onClick={() => setMembers((prev) => prev.filter((_, j) => j !== i))} className="px-2 py-1 text-xs rl-text-villain hover:bg-[color:color-mix(in_srgb,var(--rl-cat-villain)_14%,transparent)]">
                       Remove
                     </Button>
                   ) : null}

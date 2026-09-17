@@ -106,11 +106,11 @@ export function CoverageBar({
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-sm">
-        <span className="font-semibold text-slate-200">
+        <span className="font-semibold text-[color:var(--rl-text-on-parchment-primary)]">
           We are confident about {pct}% of your session
         </span>
         {plan ? (
-          <span className="text-slate-400">
+          <span className="text-[color:var(--rl-text-on-parchment-muted)]">
             {plan.budget_spent
               ? `all ${plan.max_questions} questions answered`
               : `question ${plan.answered + 1} of ${plan.max_questions}`}
@@ -118,16 +118,19 @@ export function CoverageBar({
         ) : null}
       </div>
       <div
-        className="h-2 w-full overflow-hidden rounded-full bg-slate-800"
+        className="h-2 w-full overflow-hidden rounded-full bg-[color:var(--rl-bg-parchment-sunk)]"
         role="progressbar"
         aria-valuenow={pct}
         aria-valuemin={0}
         aria-valuemax={100}
       >
-        <div className="h-full rounded-full bg-ember-500 transition-all" style={{ width: `${pct}%` }} />
+        <div
+          className="h-full rounded-full bg-[color:var(--rl-accent-500)] transition-all"
+          style={{ width: `${pct}%` }}
+        />
       </div>
       {unresolved != null && unresolved > 0 ? (
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
           {fmtPercent(unresolved)} of what matters is still unattributed. Anything left
           unresolved is described at party level and never attributed to a character.
         </p>
@@ -148,7 +151,7 @@ export function AttributionBuckets({
   return (
     <div className="flex flex-wrap gap-2">
       {present.map((status) => (
-        <span key={status} className="inline-flex items-center gap-1.5 text-xs text-slate-400">
+        <span key={status} className="inline-flex items-center gap-1.5 text-xs text-[color:var(--rl-text-on-parchment-muted)]">
           <Badge tone={ATTRIBUTION_TONE[status]}>{buckets[status]}</Badge>
           {status.replace(/_/g, " ")}
         </span>

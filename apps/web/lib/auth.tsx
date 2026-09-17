@@ -162,17 +162,15 @@ export function useAuth(): AuthState {
 export function SignInPrompt({ onLogin }: { onLogin: () => void }) {
   return (
     <div className="flex min-h-[60vh] items-center justify-center px-4">
-      <div className="w-full max-w-md rounded-xl border border-slate-800 bg-slate-900 p-8 text-center">
+      {/* Dark chrome: the app's front door sits on the warm-black frame. */}
+      <div className="rl-dark-panel w-full max-w-md p-8 text-center">
         <div className="text-5xl">🎲</div>
-        <h2 className="mt-4 text-2xl font-bold text-slate-100">Welcome to DnD Wiki</h2>
-        <p className="mt-2 text-sm text-slate-400">
+        <h2 className="rl-title mt-4 text-2xl text-[color:var(--rl-text-on-dark-primary)]">Welcome to DnD Wiki</h2>
+        <p className="rl-dark-note mt-2">
           Sign in with your campaign account to browse the wiki, review drafts and
           manage your sessions.
         </p>
-        <button
-          onClick={() => onLogin()}
-          className="mt-6 w-full rounded-lg bg-ember-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-ember-400"
-        >
+        <button onClick={() => onLogin()} className="rl-btn rl-btn--primary rl-btn--block mt-6">
           Sign in with Keycloak
         </button>
       </div>
@@ -182,7 +180,7 @@ export function SignInPrompt({ onLogin }: { onLogin: () => void }) {
 
 export function LoadingScreen() {
   return (
-    <div className="flex min-h-[60vh] items-center justify-center text-slate-400">
+    <div className="flex min-h-[60vh] items-center justify-center text-[color:var(--rl-text-on-parchment-muted)]">
       <div className="animate-pulse text-sm">Loading…</div>
     </div>
   );

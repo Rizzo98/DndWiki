@@ -231,6 +231,32 @@ async def update_campaign(
     return campaign
 
 
+def cover_uri(campaign: Campaign) -> str | None:
+    """The campaign's stored cover uri ("bucket/key"), or None when unset."""
+    uri = (campaign.settings or {}).get("cover_uri")
+    if isinstance(uri, str) and "/" in uri:
+        return uri
+    return None
+
+
+async def set_cover_uri(db: AsyncSession, campaign_id: UUID, uri: str | None) -> Campaign:
+    """Set (uri) or clear (None) the campaign cover uri in settings.
+
+    A NEW dict is assigned so SQLAlchemy marks the JSONB column as changed;
+    clearing removes the key entirely rather than storing a null.
+    """
+    campaign = await get_campaign_or_404(db, campaign_id)
+    settings = dict(campaign.settings or {})
+    if uri is None:
+        settings.pop("cover_uri", None)
+    else:
+        settings["cover_uri"] = uri
+    campaign.settings = settings
+    await db.commit()
+    await db.refresh(campaign)
+    return campaign
+
+
 async def set_campaign_status(db: AsyncSession, campaign_id: UUID, new_status: str) -> Campaign:
     """Move a campaign between active and archived (idempotent-ish: same state 409s)."""
     campaign = await get_campaign_or_404(db, campaign_id)

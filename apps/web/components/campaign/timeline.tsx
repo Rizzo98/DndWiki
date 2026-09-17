@@ -124,7 +124,7 @@ export function TimelineTab({ campaign }: { campaign: Campaign }) {
 
       {isDm ? (
         <Card>
-          <h2 className="mb-4 text-lg font-semibold">Add timeline event</h2>
+          <h2 className="rl-title mb-4 text-lg">Add timeline event</h2>
           <form onSubmit={createEvent} className="space-y-3">
             <div className="grid gap-3 sm:grid-cols-3">
               <Field label="Title" hint="Becomes the event page name">
@@ -135,7 +135,7 @@ export function TimelineTab({ campaign }: { campaign: Campaign }) {
               </Field>
               <Field label="Approved">
                 <select
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-ember-500"
+                  className="w-full rounded-lg border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-parchment-sunk)] px-3 py-2 text-sm text-[color:var(--rl-text-on-parchment-primary)] outline-none focus:border-[color:var(--rl-accent-500)]"
                   value={form.approved ? "1" : "0"}
                   onChange={(e) => setForm({ ...form, approved: e.target.value === "1" })}
                 >
@@ -154,7 +154,7 @@ export function TimelineTab({ campaign }: { campaign: Campaign }) {
 
       <Card>
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold">Timeline</h2>
+          <h2 className="rl-title text-lg">Timeline</h2>
           {isDeveloper ? (
             <Button
               variant="danger"
@@ -167,25 +167,25 @@ export function TimelineTab({ campaign }: { campaign: Campaign }) {
           ) : null}
         </div>
         {loading ? (
-          <p className="text-sm text-slate-400">Loading timeline…</p>
+          <p className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">Loading timeline…</p>
         ) : error ? (
           <Alert tone="error">{error}</Alert>
         ) : events && events.length === 0 ? (
           <EmptyState>No timeline events yet.</EmptyState>
         ) : (
-          <ol className="relative space-y-6 border-l border-slate-800 pl-6">
+          <ol className="relative space-y-6 border-l border-[color:var(--rl-border-parchment)] pl-6">
             {events?.map((ev) => (
               <li key={ev.id} className="relative">
-                <span className="absolute -left-[31px] top-1 h-3 w-3 rounded-full border-2 border-slate-950 bg-ember-500" />
+                <span className="absolute -left-[31px] top-1 h-3 w-3 rounded-full border-2 border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-accent-500)]" />
                 {editingId === ev.id && isDm ? (
-                  <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-800/40 p-4">
+                  <div className="space-y-3 rounded-lg border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-parchment-sunk)] p-4">
                     <div className="grid gap-3 sm:grid-cols-2">
                       <Field label="In-world date">
                         <TextInput value={editForm.in_world_date} onChange={(e) => setEditForm({ ...editForm, in_world_date: e.target.value })} />
                       </Field>
                       <Field label="Approved">
                         <select
-                          className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 outline-none focus:border-ember-500"
+                          className="w-full rounded-lg border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-parchment-sunk)] px-3 py-2 text-sm text-[color:var(--rl-text-on-parchment-primary)] outline-none focus:border-[color:var(--rl-accent-500)]"
                           value={editForm.approved ? "1" : "0"}
                           onChange={(e) => setEditForm({ ...editForm, approved: e.target.value === "1" })}
                         >
@@ -205,25 +205,25 @@ export function TimelineTab({ campaign }: { campaign: Campaign }) {
                 ) : (
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
-                      {ev.in_world_date ? <div className="text-xs font-semibold uppercase tracking-wide text-ember-400">{ev.in_world_date}</div> : null}
+                      {ev.in_world_date ? <div className="text-xs font-semibold uppercase tracking-wide rl-text-accent">{ev.in_world_date}</div> : null}
                       {ev.page_id ? (
                         <Link
                           href={"/campaigns/" + campaign.id + "/pages/" + ev.page_id}
-                          className="mt-1 block text-sm font-medium text-slate-100 hover:text-ember-300 hover:underline"
+                          className="mt-1 block text-sm font-medium text-[color:var(--rl-text-on-parchment-primary)] hover:text-[color:var(--rl-accent-500)] hover:underline"
                         >
                           {ev.page_title ?? ev.summary}
                         </Link>
                       ) : (
-                        <p className="mt-1 text-sm text-slate-200">{ev.summary}</p>
+                        <p className="mt-1 text-sm text-[color:var(--rl-text-on-parchment-primary)]">{ev.summary}</p>
                       )}
-                      <p className="mt-1 text-xs text-slate-500">added {fmtDate(ev.created_at)}</p>
+                      <p className="mt-1 text-xs text-[color:var(--rl-text-on-parchment-muted)]">added {fmtDate(ev.created_at)}</p>
                     </div>
                     <div className="flex items-center gap-2">
                       <Badge tone={ev.approved ? "green" : "amber"}>{ev.approved ? "approved" : "pending"}</Badge>
                       {ev.page_id ? (
                         <Link
                           href={"/campaigns/" + campaign.id + "/pages/" + ev.page_id}
-                          className="rounded-lg px-3 py-1.5 text-sm font-medium text-ember-400 transition hover:bg-slate-800 hover:underline"
+                          className="rounded-lg px-3 py-1.5 text-sm font-medium rl-text-accent transition hover:bg-[color:var(--rl-bg-parchment-sunk)] hover:underline"
                         >
                           Page
                         </Link>

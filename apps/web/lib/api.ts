@@ -379,6 +379,15 @@ export const campaignsApi = {
   update: (token: string, id: string, body: { name?: string; slug?: string; description?: string; language?: string; settings?: Record<string, unknown> }) =>
     request<Campaign>(token, `/api/campaigns/${id}`, jsonInit("PATCH", body)),
   archive: (token: string, id: string) => request<Campaign>(token, `/api/campaigns/${id}/archive`, jsonInit("POST")),
+  /** DM-only: upload/replace the campaign cover art (multipart image). */
+  uploadCover: (token: string, id: string, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return request<Campaign>(token, `/api/campaigns/${id}/cover`, { method: "PUT", body: fd });
+  },
+  /** DM-only: drop the campaign cover art. */
+  deleteCover: (token: string, id: string) =>
+    request<void>(token, `/api/campaigns/${id}/cover`, { method: "DELETE" }),
   restore: (token: string, id: string) => request<Campaign>(token, `/api/campaigns/${id}/restore`, jsonInit("POST")),
 
   members: (token: string, campaignId: string) => request<CampaignMember[]>(token, `/api/campaigns/${campaignId}/members`),
@@ -412,6 +421,16 @@ export const CAMPAIGN_LANGUAGES: { code: string; label: string }[] = [
   { code: "es", label: "Español" },
   { code: "pt", label: "Português" },
 ];
+
+/**
+ * Display label for a recording: the DM's title if there is one, else
+ * "Session 14", else a last-resort placeholder.
+ */
+export function sessionLabel(session: { title: string | null; session_no: number | null }): string {
+  if (session.title) return session.title;
+  if (session.session_no !== null) return "Session " + session.session_no;
+  return "Untitled session";
+}
 
 /** Human label for a campaign language code (falls back to the code). */
 export function campaignLanguageLabel(code: string | null | undefined): string {

@@ -117,7 +117,7 @@ export function LinkedText({
         <Link
           key={at}
           href={`/campaigns/${campaignId}/pages/${target.id}`}
-          className="text-ember-400 hover:underline"
+          className="rl-text-accent hover:underline"
         >
           {isSlugLink ? target.title : raw}
         </Link>

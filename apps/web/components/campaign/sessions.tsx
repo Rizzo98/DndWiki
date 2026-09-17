@@ -72,7 +72,7 @@ export function SessionsTab({ campaign }: { campaign: Campaign }) {
       {formError ? <Alert tone="error">{formError}</Alert> : null}
 
       <Card>
-        <h2 className="mb-4 text-lg font-semibold">Record a session</h2>
+        <h2 className="rl-title mb-4 text-lg">Record a session</h2>
         <form onSubmit={createSession} className="grid gap-3 sm:grid-cols-[1fr_8rem_auto]">
           <Field label="Title">
             <TextInput value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="The Siege of Vharn" />
@@ -84,37 +84,37 @@ export function SessionsTab({ campaign }: { campaign: Campaign }) {
             <Button type="submit" disabled={busy}>Create</Button>
           </div>
         </form>
-        <p className="mt-3 text-xs text-slate-500">
+        <p className="mt-3 text-xs text-[color:var(--rl-text-on-parchment-muted)]">
           After creating, open the session to upload the phone recording — the transcription pipeline starts automatically.
         </p>
       </Card>
 
       <Card>
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-lg font-semibold">Sessions</h2>
-          <p className="text-xs text-slate-500">
+          <h2 className="rl-title text-lg">Sessions</h2>
+          <p className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
             A session can be deleted until its wiki updates are generated.
           </p>
         </div>
         {loading ? (
-          <p className="text-sm text-slate-400">Loading sessions…</p>
+          <p className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">Loading sessions…</p>
         ) : error ? (
           <Alert tone="error">{error}</Alert>
         ) : sessions && sessions.length === 0 ? (
           <EmptyState>No sessions yet — create the first one above.</EmptyState>
         ) : (
-          <div className="divide-y divide-slate-800">
+          <div className="divide-y divide-[color:var(--rl-border-parchment)]">
             {sessions?.map((s) => (
               <div key={s.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
                 <Link
                   href={`/campaigns/${campaign.id}/sessions/${s.id}`}
-                  className="min-w-0 flex-1 rounded-lg transition hover:bg-slate-800/40"
+                  className="min-w-0 flex-1 rounded-lg transition hover:bg-[color:var(--rl-bg-parchment-sunk)]"
                 >
-                  <div className="text-sm font-medium text-slate-100">
+                  <div className="text-sm font-medium text-[color:var(--rl-text-on-parchment-primary)]">
                     {s.title ?? "Untitled session"}
-                    {s.session_no ? <span className="ml-2 text-xs text-slate-500">#{s.session_no}</span> : null}
+                    {s.session_no ? <span className="ml-2 text-xs text-[color:var(--rl-text-on-parchment-muted)]">#{s.session_no}</span> : null}
                   </div>
-                  <div className="mt-0.5 text-xs text-slate-500">
+                  <div className="mt-0.5 text-xs text-[color:var(--rl-text-on-parchment-muted)]">
                     recorded {fmtDate(s.recorded_at)} · {fmtDuration(s.duration_sec)}
                   </div>
                 </Link>
@@ -130,7 +130,7 @@ export function SessionsTab({ campaign }: { campaign: Campaign }) {
                       Delete
                     </Button>
                   ) : null}
-                  <Link href={`/campaigns/${campaign.id}/sessions/${s.id}`} className="text-xs text-slate-600 hover:text-slate-300">
+                  <Link href={`/campaigns/${campaign.id}/sessions/${s.id}`} className="text-xs text-[color:var(--rl-text-on-parchment-muted)] hover:text-[color:var(--rl-text-on-parchment-primary)]">
                     →
                   </Link>
                 </div>

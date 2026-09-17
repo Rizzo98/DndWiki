@@ -20,7 +20,7 @@ import { LinkedText, type LinkIndex } from "./linked-text";
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div>
-      <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">{title}</h3>
+      <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-[color:var(--rl-text-on-parchment-muted)]">{title}</h3>
       {children}
     </div>
   );
@@ -163,13 +163,13 @@ function CharacterPortraitBox({
   const [file, setFile] = useState<File | null>(null);
   const src = imageUrl ? objectUrl(imageUrl) : null;
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-800/40 p-2">
-      <div className="flex h-40 items-center justify-center overflow-hidden rounded-md bg-slate-950">
+    <div className="rounded-lg border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-parchment-sunk)] p-2">
+      <div className="flex h-40 items-center justify-center overflow-hidden rounded-md bg-[color:var(--rl-bg-card)]">
         {src ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={src} alt="Character portrait" className="h-full w-full object-cover" />
         ) : (
-          <span className="text-xs text-slate-600">No portrait yet</span>
+          <span className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">No portrait yet</span>
         )}
       </div>
       {onUploadImage ? (
@@ -325,7 +325,7 @@ export function PageContent({
       extraKeys.length > 0;
 
     if (!hasCharacterContent) {
-      return <p className="text-sm text-slate-500">This page has no content yet.</p>;
+      return <p className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">This page has no content yet.</p>;
     }
 
     // The sections stack tightly (Character type sits directly under
@@ -337,16 +337,16 @@ export function PageContent({
             <dl className="grid grid-cols-[max-content_1fr] items-baseline gap-x-6 gap-y-2">
               {staticRows.map((row) => (
                 <div key={row.key} className="contents">
-                  <dt className="text-sm text-slate-500">{row.label}</dt>
-                  <dd className="text-sm text-slate-200">{linkify(row.value)}</dd>
+                  <dt className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">{row.label}</dt>
+                  <dd className="text-sm text-[color:var(--rl-text-on-parchment-primary)]">{linkify(row.value)}</dd>
                 </div>
               ))}
             </dl>
           ) : null}
           {physicalLook ? (
-            <p className="whitespace-pre-wrap text-slate-200">{linkify(physicalLook)}</p>
+            <p className="whitespace-pre-wrap text-[color:var(--rl-text-on-parchment-primary)]">{linkify(physicalLook)}</p>
           ) : (
-            <p className="text-sm text-slate-500">No physical description yet.</p>
+            <p className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">No physical description yet.</p>
           )}
         </Section>
 
@@ -358,27 +358,27 @@ export function PageContent({
 
         <Section title="Personality">
           {personality ? (
-            <p className="whitespace-pre-wrap text-slate-200">{linkify(personality)}</p>
+            <p className="whitespace-pre-wrap text-[color:var(--rl-text-on-parchment-primary)]">{linkify(personality)}</p>
           ) : (
-            <p className="text-sm text-slate-500">No personality described yet.</p>
+            <p className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">No personality described yet.</p>
           )}
         </Section>
 
         {history ? (
           <Section title="History">
-            <p className="whitespace-pre-wrap text-slate-200">{linkify(history)}</p>
+            <p className="whitespace-pre-wrap text-[color:var(--rl-text-on-parchment-primary)]">{linkify(history)}</p>
           </Section>
         ) : null}
 
         <Section title="Facts">
           {facts.length > 0 ? (
-            <ul className="list-inside list-disc space-y-1 text-slate-300">
+            <ul className="list-inside list-disc space-y-1 text-[color:var(--rl-text-on-parchment-primary)]">
               {facts.map((f) => (
                 <li key={f}>{linkify(f)}</li>
               ))}
             </ul>
           ) : (
-            <p className="text-sm text-slate-500">No facts recorded yet.</p>
+            <p className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">No facts recorded yet.</p>
           )}
         </Section>
 
@@ -386,7 +386,7 @@ export function PageContent({
           <Section title="Aliases">
             <div className="flex flex-wrap gap-2">
               {aliases.map((a) => (
-                <span key={a} className="rounded-full bg-slate-800 px-3 py-1 text-sm text-slate-300">
+                <span key={a} className="rounded-full bg-[color:var(--rl-bg-parchment-sunk)] px-3 py-1 text-sm text-[color:var(--rl-text-on-parchment-primary)]">
                   {a}
                 </span>
               ))}
@@ -396,7 +396,7 @@ export function PageContent({
 
         {sessionReferences.length > 0 ? (
           <Section title="Session references">
-            <p className="mb-2 text-xs text-slate-500">
+            <p className="mb-2 text-xs text-[color:var(--rl-text-on-parchment-muted)]">
               Session-specific details tied to the sessions that produced them.
             </p>
             <ul className="space-y-3">
@@ -406,13 +406,13 @@ export function PageContent({
                 return (
                   <li key={ref.sessionId} className="text-sm">
                     {href ? (
-                      <Link href={href} className="font-mono text-xs text-amber-400 hover:underline">
+                      <Link href={href} className="font-mono text-xs rl-text-item hover:underline">
                         {label}
                       </Link>
                     ) : (
-                      <span className="font-mono text-xs text-slate-500">{label}</span>
+                      <span className="font-mono text-xs text-[color:var(--rl-text-on-parchment-muted)]">{label}</span>
                     )}
-                    <ul className="mt-1 list-inside list-disc space-y-1 text-slate-300">
+                    <ul className="mt-1 list-inside list-disc space-y-1 text-[color:var(--rl-text-on-parchment-primary)]">
                       {ref.facts.map((f) => (
                         <li key={f}>{linkify(f)}</li>
                       ))}
@@ -427,7 +427,7 @@ export function PageContent({
         {extraKeys.length > 0 ? (
           <Section title="Raw content">
             <Card className="overflow-x-auto p-3">
-              <pre className="whitespace-pre-wrap font-mono text-xs text-slate-400">
+              <pre className="whitespace-pre-wrap font-mono text-xs text-[color:var(--rl-text-on-parchment-muted)]">
                 {JSON.stringify(content, null, 2)}
               </pre>
             </Card>
@@ -479,7 +479,7 @@ export function PageContent({
       extraKeys.length > 0;
 
     if (!hasEventContent) {
-      return <p className="text-sm text-slate-500">This event page has no content yet.</p>;
+      return <p className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">This event page has no content yet.</p>;
     }
 
     return (
@@ -488,7 +488,7 @@ export function PageContent({
           <div className="flex flex-wrap items-center gap-2">
             {eventType ? <Badge tone="amber">{eventType}</Badge> : null}
             {inWorldDate ? (
-              <span className="text-xs font-semibold uppercase tracking-wide text-ember-400">{inWorldDate}</span>
+              <span className="text-xs font-semibold uppercase tracking-wide rl-text-accent">{inWorldDate}</span>
             ) : null}
             {eventStatus ? <Badge tone="slate">{eventStatus}</Badge> : null}
           </div>
@@ -496,7 +496,7 @@ export function PageContent({
 
         {summary ? (
           <Section title="Overview">
-            <p className="whitespace-pre-wrap text-slate-200">{linkify(summary)}</p>
+            <p className="whitespace-pre-wrap text-[color:var(--rl-text-on-parchment-primary)]">{linkify(summary)}</p>
           </Section>
         ) : null}
 
@@ -504,7 +504,7 @@ export function PageContent({
           <Section title="Participants">
             <div className="flex flex-wrap gap-2">
               {participants.map((p) => (
-                <span key={p} className="rounded-full bg-slate-800 px-3 py-1 text-sm text-slate-300">
+                <span key={p} className="rounded-full bg-[color:var(--rl-bg-parchment-sunk)] px-3 py-1 text-sm text-[color:var(--rl-text-on-parchment-primary)]">
                   {linkify(p)}
                 </span>
               ))}
@@ -514,13 +514,13 @@ export function PageContent({
 
         {history ? (
           <Section title="History">
-            <p className="whitespace-pre-wrap text-slate-200">{linkify(history)}</p>
+            <p className="whitespace-pre-wrap text-[color:var(--rl-text-on-parchment-primary)]">{linkify(history)}</p>
           </Section>
         ) : null}
 
         {facts.length > 0 ? (
           <Section title="Facts">
-            <ul className="list-inside list-disc space-y-1 text-slate-300">
+            <ul className="list-inside list-disc space-y-1 text-[color:var(--rl-text-on-parchment-primary)]">
               {facts.map((f) => (
                 <li key={f}>{linkify(f)}</li>
               ))}
@@ -532,7 +532,7 @@ export function PageContent({
           <Section title="Aliases">
             <div className="flex flex-wrap gap-2">
               {aliases.map((a) => (
-                <span key={a} className="rounded-full bg-slate-800 px-3 py-1 text-sm text-slate-300">
+                <span key={a} className="rounded-full bg-[color:var(--rl-bg-parchment-sunk)] px-3 py-1 text-sm text-[color:var(--rl-text-on-parchment-primary)]">
                   {a}
                 </span>
               ))}
@@ -542,7 +542,7 @@ export function PageContent({
 
         {sessionReferences.length > 0 ? (
           <Section title="Session references">
-            <p className="mb-2 text-xs text-slate-500">
+            <p className="mb-2 text-xs text-[color:var(--rl-text-on-parchment-muted)]">
               Session-specific details tied to the sessions that produced them.
             </p>
             <ul className="space-y-3">
@@ -552,13 +552,13 @@ export function PageContent({
                 return (
                   <li key={ref.sessionId} className="text-sm">
                     {href ? (
-                      <Link href={href} className="font-mono text-xs text-amber-400 hover:underline">
+                      <Link href={href} className="font-mono text-xs rl-text-item hover:underline">
                         {label}
                       </Link>
                     ) : (
-                      <span className="font-mono text-xs text-slate-500">{label}</span>
+                      <span className="font-mono text-xs text-[color:var(--rl-text-on-parchment-muted)]">{label}</span>
                     )}
-                    <ul className="mt-1 list-inside list-disc space-y-1 text-slate-300">
+                    <ul className="mt-1 list-inside list-disc space-y-1 text-[color:var(--rl-text-on-parchment-primary)]">
                       {ref.facts.map((f) => (
                         <li key={f}>{linkify(f)}</li>
                       ))}
@@ -573,7 +573,7 @@ export function PageContent({
         {extraKeys.length > 0 ? (
           <Section title="Raw content">
             <Card className="overflow-x-auto p-3">
-              <pre className="whitespace-pre-wrap font-mono text-xs text-slate-400">
+              <pre className="whitespace-pre-wrap font-mono text-xs text-[color:var(--rl-text-on-parchment-muted)]">
                 {JSON.stringify(content, null, 2)}
               </pre>
             </Card>
@@ -597,17 +597,17 @@ export function PageContent({
   return (
     <div className="space-y-6">
       {body ? (
-        <p className="whitespace-pre-wrap text-slate-200">{linkify(body)}</p>
+        <p className="whitespace-pre-wrap text-[color:var(--rl-text-on-parchment-primary)]">{linkify(body)}</p>
       ) : null}
       {summary ? (
         <Section title="Overview">
-          <p className="whitespace-pre-wrap text-slate-200">{linkify(summary)}</p>
+          <p className="whitespace-pre-wrap text-[color:var(--rl-text-on-parchment-primary)]">{linkify(summary)}</p>
         </Section>
       ) : null}
 
       {history ? (
         <Section title="History">
-          <p className="whitespace-pre-wrap text-slate-200">{linkify(history)}</p>
+          <p className="whitespace-pre-wrap text-[color:var(--rl-text-on-parchment-primary)]">{linkify(history)}</p>
         </Section>
       ) : null}
 
@@ -616,8 +616,8 @@ export function PageContent({
           <dl className="grid grid-cols-[max-content_1fr] items-baseline gap-x-6 gap-y-2">
             {attributes.map(([key, value]) => (
               <div key={key} className="contents">
-                <dt className="text-sm text-slate-500">{ATTRIBUTE_LABELS[key] ?? key}</dt>
-                <dd className="text-sm text-slate-200">{linkify(value)}</dd>
+                <dt className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">{ATTRIBUTE_LABELS[key] ?? key}</dt>
+                <dd className="text-sm text-[color:var(--rl-text-on-parchment-primary)]">{linkify(value)}</dd>
               </div>
             ))}
           </dl>
@@ -628,7 +628,7 @@ export function PageContent({
         <Section title="Aliases">
           <div className="flex flex-wrap gap-2">
             {aliases.map((a) => (
-              <span key={a} className="rounded-full bg-slate-800 px-3 py-1 text-sm text-slate-300">
+              <span key={a} className="rounded-full bg-[color:var(--rl-bg-parchment-sunk)] px-3 py-1 text-sm text-[color:var(--rl-text-on-parchment-primary)]">
                 {a}
               </span>
             ))}
@@ -638,7 +638,7 @@ export function PageContent({
 
       {facts.length > 0 ? (
         <Section title="Facts">
-          <ul className="list-inside list-disc space-y-1 text-slate-300">
+          <ul className="list-inside list-disc space-y-1 text-[color:var(--rl-text-on-parchment-primary)]">
             {facts.map((f) => (
               <li key={f}>{linkify(f)}</li>
             ))}
@@ -648,7 +648,7 @@ export function PageContent({
 
       {sessionReferences.length > 0 ? (
         <Section title="Session references">
-          <p className="mb-2 text-xs text-slate-500">
+          <p className="mb-2 text-xs text-[color:var(--rl-text-on-parchment-muted)]">
             Session-specific details tied to the sessions that produced them.
           </p>
           <ul className="space-y-3">
@@ -658,13 +658,13 @@ export function PageContent({
               return (
                 <li key={ref.sessionId} className="text-sm">
                   {href ? (
-                    <Link href={href} className="font-mono text-xs text-amber-400 hover:underline">
+                    <Link href={href} className="font-mono text-xs rl-text-item hover:underline">
                       {label}
                     </Link>
                   ) : (
-                    <span className="font-mono text-xs text-slate-500">{label}</span>
+                    <span className="font-mono text-xs text-[color:var(--rl-text-on-parchment-muted)]">{label}</span>
                   )}
-                  <ul className="mt-1 list-inside list-disc space-y-1 text-slate-300">
+                  <ul className="mt-1 list-inside list-disc space-y-1 text-[color:var(--rl-text-on-parchment-primary)]">
                     {ref.facts.map((f) => (
                       <li key={f}>{linkify(f)}</li>
                     ))}
@@ -679,7 +679,7 @@ export function PageContent({
       {extraKeys.length > 0 ? (
         <Section title="Raw content">
           <Card className="overflow-x-auto p-3">
-            <pre className="whitespace-pre-wrap font-mono text-xs text-slate-400">
+            <pre className="whitespace-pre-wrap font-mono text-xs text-[color:var(--rl-text-on-parchment-muted)]">
               {JSON.stringify(content, null, 2)}
             </pre>
           </Card>
@@ -687,7 +687,7 @@ export function PageContent({
       ) : null}
 
       {!hasAnything ? (
-        <p className="text-sm text-slate-500">This page has no content yet.</p>
+        <p className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">This page has no content yet.</p>
       ) : null}
     </div>
   );

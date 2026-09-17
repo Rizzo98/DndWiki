@@ -195,12 +195,12 @@ export function PageLinkEditor({
         }}
         onKeyDown={onKeyDown}
         onBlur={() => setTrigger(null)}
-        className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-ember-500"
+        className="w-full rounded-lg border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-parchment-sunk)] px-3 py-2 text-sm text-[color:var(--rl-text-on-parchment-primary)] placeholder:text-[color:var(--rl-text-on-parchment-muted)] outline-none focus:border-[color:var(--rl-accent-500)]"
       />
       {trigger ? (
-        <div className="absolute left-0 right-0 top-full z-20 mt-1 overflow-hidden rounded-lg border border-slate-700 bg-slate-900 shadow-xl">
+        <div className="absolute left-0 right-0 top-full z-20 mt-1 overflow-hidden rounded-lg border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-card)] shadow-xl">
           {suggestions.length === 0 ? (
-            <div className="px-3 py-2 text-xs text-slate-500">No matching pages</div>
+            <div className="px-3 py-2 text-xs text-[color:var(--rl-text-on-parchment-muted)]">No matching pages</div>
           ) : (
             suggestions.map((page, i) => (
               <button
@@ -211,11 +211,11 @@ export function PageLinkEditor({
                 onClick={() => select(page)}
                 className={
                   "flex w-full items-baseline justify-between gap-3 px-3 py-2 text-left text-sm transition " +
-                  (i === highlight ? "bg-ember-500/15 text-ember-300" : "text-slate-200 hover:bg-slate-800")
+                  (i === highlight ? "rl-bg-accent-soft rl-text-accent" : "text-[color:var(--rl-text-on-parchment-primary)] hover:bg-[color:var(--rl-bg-parchment-sunk)]")
                 }
               >
                 <span className="truncate">{page.title}</span>
-                <span className="shrink-0 text-[10px] uppercase tracking-wide text-slate-500">
+                <span className="shrink-0 text-[10px] uppercase tracking-wide text-[color:var(--rl-text-on-parchment-muted)]">
                   {kindLabel(page.kind)}
                 </span>
               </button>

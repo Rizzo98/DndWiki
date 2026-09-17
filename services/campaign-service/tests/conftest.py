@@ -15,6 +15,24 @@ from sqlalchemy.pool import StaticPool
 from app import deps
 from app.models import Campaign, CampaignMember
 
+
+class FakeStorage:
+    """Records uploads/deletes and returns canned presigned URLs (no MinIO)."""
+
+    def __init__(self) -> None:
+        self.uploads: list[tuple[str, str, bytes, str]] = []
+        self.deleted: list[tuple[str, str]] = []
+
+    async def put_object_stream(self, bucket: str, key: str, stream, content_type: str) -> None:
+        self.uploads.append((bucket, key, stream.read(), content_type))
+
+    async def delete_object(self, bucket: str, key: str) -> None:
+        self.deleted.append((bucket, key))
+
+    async def presigned_get(self, bucket: str, key: str, expires_sec: int | None = None) -> str:
+        return f"https://presigned/{bucket}/{key}"
+
+
 # ---------------------------------------------------------------- fixtures
 
 
@@ -89,11 +107,18 @@ def seed_campaign(session_factory):
 
 
 @pytest.fixture
+def storage() -> FakeStorage:
+    """In-memory stand-in for ObjectStorage (assert on uploads/deletes)."""
+    return FakeStorage()
+
+
+@pytest.fixture
 async def client(
     session_factory,
     claims,
+    storage,
 ) -> AsyncIterator[httpx.AsyncClient]:
-    """ASGI client with the DB session and JWT auth faked."""
+    """ASGI client with the DB session, JWT auth and object storage faked."""
     from app.main import app
 
     async def _override_session() -> AsyncIterator[AsyncSession]:
@@ -103,6 +128,7 @@ async def client(
     app.dependency_overrides[dnd_db.get_session] = _override_session
     app.dependency_overrides[dnd_auth.current_user] = lambda: claims
     app.dependency_overrides[deps.require_service] = lambda: None
+    app.dependency_overrides[deps.get_storage] = lambda: storage
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
