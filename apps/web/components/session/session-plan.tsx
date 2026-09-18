@@ -1,396 +1,75 @@
-// Session plan card: the "git status" of a session.
+// Session plan: the "git status" of a session, as a stack of panels.
 //
 // The confirmed summary is turned into a set of PROPOSED wiki changes — pages
-// to create, pages to update and the timeline entries they back. Nothing is in
-// the wiki yet: this card is where the DM inspects each change (the same form
-// as the editor, read-only, so a creation reads like the page it will become
-// and an update shows the fields it rewrites with the previous value), edits or
-// drops the ones they disagree with, and confirms the whole set. Only then does
-// the pipeline write the pages (published) and the timeline entries (approved).
+// to create, pages to update, the timeline entries they back and the links
+// between them. Nothing is in the wiki yet: every proposed page gets its own
+// panel (never a row inside one shared box), where the DM reads the page
+// exactly as it will be written (Inspect), fixes what is wrong field by field
+// (Edit) or drops it. Confirming the set is the only thing that writes pages
+// (published) and timeline entries (approved) into the wiki.
 
 "use client";
 
 import { useMemo, useState } from "react";
-import { Alert, Badge, Button, Card, EmptyState, Field, Select, TextArea, TextInput, fmtDate } from "@/components/ui";
-import { LinkedText, type LinkIndex } from "@/components/linked-text";
+import { Alert } from "@/components/ui";
 import {
+  RlButton,
+  RlEmptyState,
+  RlIcon,
+  RlIconChip,
+  RlPanel,
+  RlPanelHead,
+  RlStat,
+  RlStatRow,
+  RlTag,
+} from "@/components/ravenlore";
+import { normalizeName, type LinkIndex } from "@/components/linked-text";
+import {
+  PlanChangePanel,
+  draftOf,
+  type ChangeDraft,
+} from "@/components/session/plan-change-panel";
+import {
+  PlanRelationsPanel,
+  endpointResolves,
+  type PlanEndpoint,
+} from "@/components/session/plan-relations-panel";
+import { PAGE_KIND_ICON, PAGE_KIND_TINT } from "@/lib/page-kinds";
+import { pruneContent } from "@/lib/page-fields";
+import {
+  PAGE_KINDS,
   PAGE_KIND_LABELS,
-  PAGE_KIND_TITLES,
+  type PageSummary,
   type PlanChange,
   type PlanChangeEdit,
+  type PlanRelation,
   type PlanRelationEdit,
   type SessionPlan,
   type WikiPageKind,
-  type WikiVisibility,
 } from "@/lib/api";
 
-// ------------------------------------------------------------- diff helpers
-
-const FIELD_LABELS: Record<string, string> = {
-  summary: "Summary",
-  physical_look: "Physical look",
-  personality: "Personality",
-  history: "History",
-  facts: "Durable facts",
-  session_facts: "Session facts",
-  aliases: "Aliases",
-  body: "Body",
-  language: "Language",
-  session_references: "Session references",
-  image_uri: "Portrait",
-  "attributes.character_type": "Type",
-  "attributes.race": "Race",
-  "attributes.class": "Class",
-  "attributes.gender": "Gender",
-  "attributes.height": "Height",
-  "attributes.weight": "Weight",
-  "attributes.age": "Age",
-  "attributes.location_type": "Kind of place",
-  "attributes.region": "Region",
-  "attributes.founded": "Founded",
-  "attributes.population": "Population",
-  "attributes.government": "Government",
-  "attributes.ruler": "Ruler",
-  "attributes.demographics": "Demographics",
-  "attributes.economy": "Economy",
-  "attributes.defenses": "Defenses",
-  "attributes.religion": "Religion",
-  "attributes.districts": "Districts",
-  "attributes.notable_locations": "Notable locations",
-  "attributes.capital": "Capital",
-  "attributes.terrain": "Terrain",
-  "attributes.climate": "Climate",
-  "attributes.pantheon": "Pantheon",
-  "attributes.planes": "Planes",
-  "attributes.owner": "Owner",
-  "attributes.purpose": "Purpose",
-  "attributes.entrance": "Entrance",
-  "attributes.levels": "Levels",
-  "attributes.hazards": "Hazards",
-  "attributes.flora_fauna": "Flora & fauna",
-  "attributes.event_type": "Event type",
-  "attributes.in_world_date": "In-world date",
-  "attributes.participants": "Participants",
-  "attributes.event_status": "Status",
-};
-
-/** Human label of a flattened content path ("attributes.population"). */
-export function fieldLabel(path: string): string {
-  if (FIELD_LABELS[path]) return FIELD_LABELS[path];
-  const last = path.split(".").pop() ?? path;
-  return last.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+/** "1 new page" / "3 new pages". */
+function plural(count: number, one: string, many: string): string {
+  return count + " " + noun(count, one, many);
 }
 
-/** Flatten a content_json into "path -> leaf" pairs (arrays are leaves). */
-export function flattenContent(
-  value: unknown,
-  prefix = "",
-): Record<string, unknown> {
-  if (value === null || value === undefined) return {};
-  if (typeof value !== "object" || Array.isArray(value)) {
-    return prefix ? { [prefix]: value } : {};
-  }
-  const out: Record<string, unknown> = {};
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    Object.assign(out, flattenContent(child, prefix ? prefix + "." + key : key));
-  }
-  return out;
+/** Just the noun, for a label that already shows the number. */
+function noun(count: number, one: string, many: string): string {
+  return count === 1 ? one : many;
 }
 
-/** Set (or delete) a nested value by path, mutating the copy in place. */
-function setPath(target: Record<string, unknown>, path: string, value: unknown): void {
-  const parts = path.split(".");
-  let cursor: Record<string, unknown> = target;
-  for (const part of parts.slice(0, -1)) {
-    const next = cursor[part];
-    if (typeof next !== "object" || next === null || Array.isArray(next)) {
-      cursor[part] = {};
-    }
-    cursor = cursor[part] as Record<string, unknown>;
-  }
-  const last = parts[parts.length - 1];
-  if (value === "" || value === null || value === undefined) delete cursor[last];
-  else cursor[last] = value;
+/** "a, b and c". */
+function joinList(parts: string[]): string {
+  if (parts.length <= 1) return parts.join("");
+  return parts.slice(0, -1).join(", ") + " and " + parts[parts.length - 1];
 }
-
-export interface FieldDiff {
-  path: string;
-  label: string;
-  before: unknown;
-  after: unknown;
-}
-
-/** The fields that differ between the current page and the proposed one. */
-export function diffChange(change: PlanChange): FieldDiff[] {
-  const before = flattenContent(change.before?.content_json ?? {});
-  const after = flattenContent(change.after.content_json ?? {});
-  const paths = Array.from(new Set([...Object.keys(before), ...Object.keys(after)]));
-  const diffs: FieldDiff[] = [];
-  if (change.before && change.before.title !== change.after.title) {
-    diffs.push({
-      path: "title",
-      label: "Title",
-      before: change.before.title,
-      after: change.after.title,
-    });
-  }
-  for (const path of paths) {
-    const a = before[path];
-    const b = after[path];
-    if (JSON.stringify(a ?? null) === JSON.stringify(b ?? null)) continue;
-    diffs.push({ path, label: fieldLabel(path), before: a, after: b });
-  }
-  return diffs;
-}
-
-/** Render a leaf value for display. */
-export function displayValue(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  if (Array.isArray(value)) return value.map((v) => String(v)).join(" · ");
-  if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
-}
-
-/** Leaf value -> the text an editor shows (lists one per line). */
-function editableValue(value: unknown): string {
-  if (Array.isArray(value)) return value.map((v) => String(v)).join("\n");
-  return displayValue(value);
-}
-
-/** Editor text -> the value to store (lists become arrays again). */
-function parseValue(text: string, previous: unknown): unknown {
-  if (Array.isArray(previous)) {
-    return text
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-  }
-  return text.trim();
-}
-
-// ------------------------------------------------------------- form pieces
-
-/** No local field drafts (inspect mode always shows the stored values). */
-const NO_DRAFTS: Record<string, string> = {};
-
-/** Read-only look of an input: same box, muted, nothing to type into. */
-const READONLY_CONTROL =
-  "w-full rounded-lg border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-card)] px-3 py-2 text-sm text-[color:var(--rl-text-on-parchment-primary)] outline-none";
-
-function Chevron({ open }: { open: boolean }) {
-  return (
-    <span
-      aria-hidden
-      className={"inline-block text-xs text-[color:var(--rl-text-on-parchment-muted)] transition-transform " + (open ? "rotate-90" : "")}
-    >
-      ▶
-    </span>
-  );
-}
-
-function ActionChip({ action }: { action: "create" | "update" }) {
-  return action === "create" ? (
-    <Badge tone="green">+ new</Badge>
-  ) : (
-    <Badge tone="amber">~ update</Badge>
-  );
-}
-
-/** The proposed value of a change: what the page will say. */
-function ChangeForm({
-  change,
-  readOnly,
-  drafts,
-  onDraft,
-  rawDraft,
-  onRawDraft,
-  rawError,
-  onTitle,
-  onTimeline,
-  onVisibility,
-}: {
-  change: PlanChange;
-  /** Inspect mode: every control is the editor's, disabled (nothing to type). */
-  readOnly: boolean;
-  drafts: Record<string, string>;
-  onDraft: (path: string, value: string) => void;
-  rawDraft: string | null;
-  onRawDraft: (value: string) => void;
-  rawError: string | null;
-  onTitle: (title: string) => void;
-  onTimeline: (timeline: { summary: string; in_world_date: string | null }) => void;
-  onVisibility: (visibility: WikiVisibility) => void;
-}) {
-  const fields = flattenContent(change.after.content_json ?? {});
-  const before = flattenContent(change.before?.content_json ?? {});
-  // Fields the update drops: they exist in the page today and not in the
-  // proposal (the merge never removes facts silently, so this is rare - and
-  // worth showing).
-  const removed = change.before
-    ? Object.keys(before).filter((path) => !(path in fields))
-    : [];
-  const titleChanged = Boolean(change.before && change.before.title !== change.after.title);
-
-  return (
-    <div className="space-y-3">
-      <Field label="Title">
-        {readOnly ? (
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-semibold text-[color:var(--rl-text-on-parchment-primary)]">{change.title}</span>
-            {titleChanged ? (
-              <span className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
-                was <span className="rl-text-villain line-through">{change.before?.title}</span>
-              </span>
-            ) : null}
-          </div>
-        ) : (
-          <TextInput value={change.title} onChange={(e) => onTitle(e.target.value)} />
-        )}
-      </Field>
-
-      {rawDraft !== null ? (
-        <Field
-          label="content_json"
-          hint={
-            readOnly
-              ? "Raw JSON of the proposed page."
-              : "Raw JSON — the escape hatch for anything the fields do not cover."
-          }
-        >
-          <TextArea
-            rows={12}
-            className={readOnly ? READONLY_CONTROL + " font-mono text-xs" : "font-mono text-xs"}
-            value={rawDraft}
-            readOnly={readOnly}
-            onChange={(e) => onRawDraft(e.target.value)}
-          />
-        </Field>
-      ) : (
-        <div className="grid gap-3 sm:grid-cols-2">
-          {Object.entries(fields).map(([path, value]) => {
-            const was = before[path];
-            const changed =
-              change.before !== null &&
-              JSON.stringify(was ?? null) !== JSON.stringify(value ?? null);
-            const text = drafts[path] ?? editableValue(value);
-            const multiline = Array.isArray(value) || editableValue(value).length > 60;
-            return (
-              <Field key={path} label={fieldLabel(path)}>
-                {multiline ? (
-                  <TextArea
-                    rows={3}
-                    className={readOnly ? READONLY_CONTROL : undefined}
-                    value={text}
-                    readOnly={readOnly}
-                    onChange={(e) => onDraft(path, e.target.value)}
-                  />
-                ) : (
-                  <TextInput
-                    className={readOnly ? READONLY_CONTROL : undefined}
-                    value={text}
-                    readOnly={readOnly}
-                    onChange={(e) => onDraft(path, e.target.value)}
-                  />
-                )}
-                {readOnly && changed ? (
-                  <span className="mt-1 block text-xs text-[color:var(--rl-text-on-parchment-muted)]">
-                    {was === undefined ? (
-                      <span className="rl-text-neutral">new field</span>
-                    ) : (
-                      <>
-                        was <span className="rl-text-villain line-through">{displayValue(was)}</span>
-                      </>
-                    )}
-                  </span>
-                ) : null}
-              </Field>
-            );
-          })}
-        </div>
-      )}
-
-      {removed.length ? (
-        <div className="rounded-lg border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-card)] px-3 py-2">
-          <div className="text-xs font-semibold uppercase tracking-wide text-[color:var(--rl-text-on-parchment-muted)]">
-            Dropped from the page
-          </div>
-          <ul className="mt-1 space-y-0.5">
-            {removed.map((path) => (
-              <li key={path} className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
-                <span className="font-semibold">{fieldLabel(path)}</span>:{" "}
-                <span className="rl-text-villain line-through">{displayValue(before[path])}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-
-      {rawError ? <Alert tone="error">{rawError}</Alert> : null}
-
-      {change.timeline ? (
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Timeline entry">
-            <TextArea
-              rows={2}
-              className={readOnly ? READONLY_CONTROL : undefined}
-              value={change.timeline.summary}
-              readOnly={readOnly}
-              onChange={(e) =>
-                onTimeline({
-                  summary: e.target.value,
-                  in_world_date: change.timeline?.in_world_date ?? null,
-                })
-              }
-            />
-          </Field>
-          <Field label="In-world date">
-            <TextInput
-              className={readOnly ? READONLY_CONTROL : undefined}
-              value={change.timeline.in_world_date ?? ""}
-              readOnly={readOnly}
-              onChange={(e) =>
-                onTimeline({
-                  summary: change.timeline?.summary ?? "",
-                  in_world_date: e.target.value || null,
-                })
-              }
-            />
-          </Field>
-        </div>
-      ) : null}
-
-      <Field label="Visibility">
-        {readOnly ? (
-          <div className="text-sm text-[color:var(--rl-text-on-parchment-primary)]">{change.after.visibility.replace(/_/g, " ")}</div>
-        ) : (
-          <Select
-            className="w-48"
-            value={change.after.visibility}
-            onChange={(e) => onVisibility(e.target.value as WikiVisibility)}
-          >
-            <option value="public">public</option>
-            <option value="dm_only">dm only</option>
-            <option value="hidden">hidden</option>
-          </Select>
-        )}
-      </Field>
-
-      {readOnly ? (
-        <p className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
-          This is the page the change set will write. Switch to Edit to change it, or Drop to
-          leave it out.
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
-// ------------------------------------------------------------- component
 
 export function SessionPlanCard({
   plan,
   campaignId,
   linkIndex,
+  pages = [],
+  sessionNames,
   sessionStatus,
   canReview,
   busy,
@@ -401,6 +80,10 @@ export function SessionPlanCard({
   plan: SessionPlan | null;
   campaignId: string;
   linkIndex?: LinkIndex | null;
+  /** The campaign's pages: the "#" autocomplete and the relation resolver. */
+  pages?: PageSummary[];
+  /** session id -> display name, for the session references of a preview. */
+  sessionNames?: Record<string, string>;
   /** Session status: 'generating_wiki' is the moment the set is computed. */
   sessionStatus?: string;
   /** DM (or dev): may edit and confirm the proposed changes. */
@@ -413,20 +96,19 @@ export function SessionPlanCard({
   /** Save (when needed) and confirm in one go: the parent orders the calls. */
   onConfirm: (changes: PlanChangeEdit[], relations: PlanRelationEdit[]) => void;
 }) {
-  // Local, unsaved edits: the card renders the server state plus these
+  // Local, unsaved edits: the panels render the server state plus these
   // overrides, so a background poll never discards what the DM is typing.
   const [edits, setEdits] = useState<Record<string, Partial<PlanChange>>>({});
   const [droppedRelations, setDroppedRelations] = useState<Record<string, boolean>>({});
-  // One panel per change: read-only (Inspect) or editable (Edit).
+  // One panel per change: opened on demand (a session proposes a lot of pages).
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  // The macro-groups (Characters, Locations, Events) fold too. An entry is the
+  // DM's explicit choice; without one the group follows the review: open while
+  // the set awaits them, folded once it is confirmed (see `groupOpen`).
+  const [groupOverrides, setGroupOverrides] = useState<Record<string, boolean>>({});
+  // The change being edited and the draft that "Apply to the proposal" writes.
   const [editing, setEditing] = useState<string | null>(null);
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  // Raw-JSON escape hatch, per change (a draft typed for one change must not
-  // show up in the panel of another).
-  const [rawDraft, setRawDraft] = useState<Record<string, string>>({});
-  const [rawError, setRawError] = useState<string | null>(null);
-  // Page-type sections start expanded; the DM collapses what they are done with.
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [draft, setDraft] = useState<ChangeDraft | null>(null);
 
   const merged: PlanChange[] = useMemo(
     () =>
@@ -436,73 +118,134 @@ export function SessionPlanCard({
     [plan?.changes, edits],
   );
 
+  const relationDropped = (relation: PlanRelation) =>
+    droppedRelations[relation.id] ?? relation.dropped;
+  const activeRelations = (plan?.relations ?? []).filter((r) => !relationDropped(r));
+
+  // Where a relation's title lands: a page of this change set, a page the
+  // campaign already has, or nothing at all (the link is then skipped).
+  const changeByTitle = useMemo(() => {
+    const map = new Map<string, { kind: WikiPageKind; dropped: boolean }>();
+    for (const change of merged) {
+      map.set(normalizeName(change.title), { kind: change.kind, dropped: change.dropped });
+    }
+    return map;
+  }, [merged]);
+
+  const pageByTitle = useMemo(() => {
+    const map = new Map<string, { kind: WikiPageKind }>();
+    for (const page of pages) map.set(normalizeName(page.title), { kind: page.kind });
+    return map;
+  }, [pages]);
+
+  function resolve(title: string | null, pageId?: string | null): PlanEndpoint {
+    if (!title) {
+      const page = pages.find((candidate) => candidate.id === pageId);
+      return page
+        ? { title: page.title, status: "existing", kind: page.kind }
+        : { title: pageId ? pageId.slice(0, 8) : "—", status: "missing", kind: null };
+    }
+    const key = normalizeName(title);
+    const proposed = changeByTitle.get(key);
+    if (proposed) {
+      return { title, status: proposed.dropped ? "dropped" : "proposed", kind: proposed.kind };
+    }
+    const existing = pageByTitle.get(key);
+    if (existing) return { title, status: "existing", kind: existing.kind };
+    return { title, status: "missing", kind: null };
+  }
+
+  // Links only land when both ends find a page: the relations panel says so
+  // per row, and the confirm summary counts what will actually be written.
+  const landedRelations = activeRelations.filter(
+    (relation) =>
+      endpointResolves(resolve(relation.from_title)) &&
+      endpointResolves(resolve(relation.to_title, relation.to_page_id)),
+  );
+
   const dirty = Object.keys(edits).length > 0 || Object.keys(droppedRelations).length > 0;
-  const active = merged.filter((c) => !c.dropped);
+  const active = merged.filter((change) => !change.dropped);
   const counts = {
-    create: active.filter((c) => c.action === "create").length,
-    update: active.filter((c) => c.action === "update").length,
-    events: active.filter((c) => c.kind === "event" || c.timeline).length,
+    create: active.filter((change) => change.action === "create").length,
+    update: active.filter((change) => change.action === "update").length,
+    events: active.filter((change) => change.kind === "event" || change.timeline).length,
     dropped: merged.length - active.length,
-    relations: (plan?.relations ?? []).filter((r) => !(droppedRelations[r.id] ?? r.dropped))
-      .length,
+    relations: activeRelations.length,
   };
+
+  // One section per page kind, in the wiki's own category order.
+  const groups: { kind: WikiPageKind; items: PlanChange[] }[] = [];
+  for (const kind of [...PAGE_KINDS, ...merged.map((c) => c.kind)]) {
+    const items = merged.filter((change) => change.kind === kind);
+    if (items.length === 0 || groups.some((group) => group.kind === kind)) continue;
+    groups.push({ kind, items });
+  }
+
+  // A confirmed set is a record, not a review: its groups start folded, so the
+  // session page shows what was written and opens a category when asked. While
+  // the set is still the DM's to decide, the categories are open.
+  const settled =
+    plan?.status === "applying" || plan?.status === "applied" || Boolean(plan?.confirmed_at);
+  const groupOpen = (kind: WikiPageKind) => groupOverrides[kind] ?? !settled;
+
+  const allExpanded =
+    groups.length > 0 &&
+    groups.every((group) => groupOpen(group.kind)) &&
+    merged.every((change) => open[change.id]);
+
+  // The confirm summary lists only what there is, and only what lands.
+  const written: string[] = [];
+  if (counts.create > 0) written.push(plural(counts.create, "new page", "new pages"));
+  if (counts.update > 0) written.push(plural(counts.update, "update", "updates"));
+  if (counts.events > 0) written.push(plural(counts.events, "timeline entry", "timeline entries"));
+  if (landedRelations.length > 0) {
+    written.push(plural(landedRelations.length, "link", "links"));
+  }
+  const skippedLinks = counts.relations - landedRelations.length;
+
+  /** One sentence, used both in the panel and in the confirmation dialog. */
+  const confirmSummary =
+    written.length === 0
+      ? "Nothing will be written to the wiki."
+      : joinList(written) + " will be written to the wiki and become visible to the players.";
 
   function patch(change: PlanChange, partial: Partial<PlanChange>) {
     setEdits((prev) => ({ ...prev, [change.id]: { ...prev[change.id], ...partial } }));
   }
 
-  /** Open the editable panel of a change (seeds the field drafts). */
   function startEditing(change: PlanChange) {
-    const fields = flattenContent(change.after.content_json ?? {});
-    const seeded: Record<string, string> = {};
-    for (const [path, value] of Object.entries(fields)) seeded[path] = editableValue(value);
-    setDrafts(seeded);
     setEditing(change.id);
+    setDraft(draftOf(change));
     setOpen((prev) => ({ ...prev, [change.id]: true }));
-    clearRaw(change.id);
-    setRawError(null);
   }
 
-  /** Close the panel of a change (leaving edit mode). */
-  function closePanel(change: PlanChange) {
-    setOpen((prev) => ({ ...prev, [change.id]: false }));
-    if (editing === change.id) setEditing(null);
-    clearRaw(change.id);
-    setRawError(null);
-  }
-
-  /** Drop the raw-JSON draft of one change (back to the field editors). */
-  function clearRaw(id: string) {
-    setRawDraft((prev) => {
-      if (!(id in prev)) return prev;
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
-  }
-
-  function saveEdit(change: PlanChange) {
-    const raw = rawDraft[change.id];
-    if (raw !== undefined && raw !== null) {
-      try {
-        const parsed = JSON.parse(raw) as Record<string, unknown>;
-        patch(change, { after: { ...change.after, content_json: parsed } });
-      } catch (err) {
-        setRawError(err instanceof Error ? err.message : "invalid JSON");
-        return;
-      }
-      setEditing(null);
-      clearRaw(change.id);
-      setRawError(null);
-      return;
-    }
-    const previousFields = flattenContent(change.after.content_json ?? {});
-    const content: Record<string, unknown> = {};
-    for (const [path, value] of Object.entries(previousFields)) {
-      setPath(content, path, parseValue(drafts[path] ?? editableValue(value), value));
-    }
-    patch(change, { after: { ...change.after, content_json: content } });
+  function cancelEditing() {
     setEditing(null);
+    setDraft(null);
+  }
+
+  /** Move the draft into the proposal (still unsaved until the DM confirms). */
+  function applyDraft(change: PlanChange) {
+    if (!draft) return;
+    patch(change, {
+      title: draft.title,
+      after: {
+        ...change.after,
+        content_json: pruneContent(draft.content),
+        visibility: draft.visibility,
+      },
+      timeline: draft.timeline,
+    });
+    cancelEditing();
+  }
+
+  function toggleAll() {
+    const next: Record<string, boolean> = {};
+    for (const change of merged) next[change.id] = !allExpanded;
+    setOpen(next);
+    const nextGroups: Record<string, boolean> = {};
+    for (const group of groups) nextGroups[group.kind] = !allExpanded;
+    setGroupOverrides(nextGroups);
   }
 
   /** The review payload: only the fields the DM actually touched. */
@@ -529,318 +272,278 @@ export function SessionPlanCard({
   if (!plan) {
     // The set is computed while the session runs 'generating_wiki' and is
     // ready when it parks on 'wiki_plan_ready': the panel says which of the
-    // two it is looking at instead of showing an empty review card.
+    // two it is looking at instead of showing an empty review.
     const generating = sessionStatus === "generating_wiki";
     return (
-      <Card>
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className="rl-title text-lg">Proposed wiki changes</h2>
-          {generating ? <Badge tone="amber">computing…</Badge> : null}
-        </div>
-        <div className="mt-4">
-          <EmptyState>
+      <RlPanel>
+        <RlPanelHead
+          eyebrow="Session review"
+          action={generating ? <RlTag tint="item">computing…</RlTag> : undefined}
+        />
+        <div className="border-t border-[color:var(--rl-border-parchment)] px-4 pb-4 pt-5">
+          <RlEmptyState icon="book" tint="muted" title="No proposed changes yet">
             {generating
               ? "The confirmed summary is being turned into the pages and timeline entries it implies — they appear here as soon as they are ready. Nothing is written to the wiki before you confirm them."
               : "Once you confirm the session summary, the pages and events it implies are proposed here — nothing is written to the wiki before you confirm them."}
-          </EmptyState>
+          </RlEmptyState>
         </div>
-      </Card>
+      </RlPanel>
     );
   }
 
   const isApplied = plan.status === "applied";
   const isApplying = plan.status === "applying";
-  const groups: { kind: WikiPageKind; items: PlanChange[] }[] = [];
-  for (const change of merged) {
-    const group = groups.find((g) => g.kind === change.kind);
-    if (group) group.items.push(change);
-    else groups.push({ kind: change.kind, items: [change] });
-  }
+  const locked = !canReview || isApplied || isApplying;
 
   return (
-    <Card>
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className="rl-title text-lg">Proposed wiki changes</h2>
-          {isApplied ? (
-            <Badge tone="green">applied</Badge>
-          ) : isApplying ? (
-            <Badge tone="amber">applying…</Badge>
-          ) : (
-            <Badge tone="amber">awaiting your confirmation</Badge>
-          )}
-        </div>
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <Badge tone="green">+{counts.create} new</Badge>
-          {counts.update ? <Badge tone="amber">~{counts.update} update</Badge> : null}
-          {counts.events ? <Badge tone="slate">{counts.events} timeline</Badge> : null}
-          {counts.relations ? <Badge tone="slate">{counts.relations} links</Badge> : null}
-          {counts.dropped ? <Badge tone="red">{counts.dropped} dropped</Badge> : null}
-        </div>
-      </div>
+    <div className="space-y-4">
+      {/* What the set is, how big it is, and what the DM is looking at. */}
+      <RlPanel>
+        <div className="space-y-4 px-4 py-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <span className="rl-eyebrow">Session review</span>
+              <h2 className="rl-title mt-1 text-[22px]">Proposed wiki changes</h2>
+              <p className="rl-body mt-1 max-w-[75ch]">
+                {isApplied
+                  ? "These changes are in the wiki now: pages published, timeline entries approved."
+                  : "Nothing here is in the wiki yet. Open a page to read it as it will be written, edit what is wrong, drop what you do not want, then confirm the set."}
+                {plan.applied_at ? " Applied " + new Date(plan.applied_at).toLocaleString() + "." : ""}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {isApplied ? (
+                <RlTag tint="neutral">applied</RlTag>
+              ) : isApplying ? (
+                <RlTag tint="item">writing…</RlTag>
+              ) : (
+                <RlTag tint="npc">awaiting your confirmation</RlTag>
+              )}
+              {merged.length > 0 ? (
+                <RlButton variant="outline" size="sm" onClick={toggleAll}>
+                  {allExpanded ? "Collapse all" : "Expand all"}
+                </RlButton>
+              ) : null}
+            </div>
+          </div>
 
-      <p className="mb-3 text-xs text-[color:var(--rl-text-on-parchment-muted)]">
-        {isApplied
-          ? "These changes are in the wiki now (pages published, timeline entries approved)."
-          : "Nothing here is in the wiki yet: inspect each change, edit what is wrong, drop what you do not want, then confirm."}
-        {plan.applied_at ? " Applied " + fmtDate(plan.applied_at) + "." : ""}
-      </p>
+          <RlStatRow>
+            <RlStat
+              icon="plus"
+              tint="neutral"
+              value={counts.create}
+              label={noun(counts.create, "new page", "new pages")}
+            />
+            <RlStat
+              icon="spark"
+              tint="item"
+              value={counts.update}
+              label={noun(counts.update, "page updated", "pages updated")}
+            />
+            <RlStat
+              icon="clock"
+              tint="ink"
+              value={counts.events}
+              label={noun(counts.events, "timeline entry", "timeline entries")}
+            />
+            <RlStat
+              icon="arrow"
+              tint="place"
+              value={counts.relations}
+              label={noun(counts.relations, "link between pages", "links between pages")}
+            />
+          </RlStatRow>
 
-      {plan.error || error ? <Alert tone="error">{plan.error ?? error}</Alert> : null}
+          {plan.error || error ? <Alert tone="error">{plan.error ?? error}</Alert> : null}
+          {counts.dropped > 0 && !isApplied ? (
+            <p className="rl-card-meta">
+              {plural(counts.dropped, "change is", "changes are")} dropped and will not be
+              written.
+            </p>
+          ) : null}
+        </div>
+      </RlPanel>
 
       {merged.length === 0 ? (
-        <EmptyState>
-          No changes: this session adds nothing the wiki does not already have.
-        </EmptyState>
+        <RlPanel>
+          <div className="px-4 pb-4 pt-5">
+            <RlEmptyState icon="spark" tint="neutral" title="Nothing to write">
+              This session adds nothing the wiki does not already have.
+            </RlEmptyState>
+          </div>
+        </RlPanel>
       ) : null}
 
+      {/* One panel per proposed page, grouped by wiki category. */}
       {groups.map((group) => {
-        const isCollapsed = collapsed[group.kind] ?? false;
-        const label = PAGE_KIND_LABELS[group.kind] ?? group.kind;
-        const groupDropped = group.items.filter((c) => c.dropped).length;
+        const droppedCount = group.items.filter((change) => change.dropped).length;
+        const isOpen = groupOpen(group.kind);
         return (
-          <div key={group.kind} className="mt-4">
-            <button
-              type="button"
-              onClick={() => setCollapsed((prev) => ({ ...prev, [group.kind]: !isCollapsed }))}
-              aria-expanded={!isCollapsed}
-              className="mb-2 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-[color:var(--rl-bg-parchment-sunk)]"
-            >
-              <Chevron open={!isCollapsed} />
-              <h3 className="text-xs font-bold uppercase tracking-wider text-[color:var(--rl-text-on-parchment-muted)]">{label}</h3>
-              <Badge tone="slate">
-                {group.items.length - groupDropped}
-                {groupDropped ? ` · ${groupDropped} dropped` : ""}
-              </Badge>
-              <span className="ml-auto text-xs text-[color:var(--rl-text-on-parchment-muted)]">{isCollapsed ? "Show" : "Hide"}</span>
-            </button>
-
-            {isCollapsed ? null : (
-              <ul className="space-y-2">
-                {group.items.map((change) => {
-                  const diffs = change.before ? diffChange(change) : [];
-                  const expanded = open[change.id] ?? false;
-                  const isEditing = editing === change.id;
-                  return (
-                    <li
-                      key={change.id}
-                      className={
-                        "rounded-lg border px-3 py-2.5 " +
-                        (change.dropped
-                          ? "border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-card)] opacity-60"
-                          : "border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-parchment-sunk)]")
-                      }
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex min-w-0 flex-wrap items-center gap-2">
-                          <ActionChip action={change.action} />
-                          <span
-                            className={
-                              "text-sm font-semibold " +
-                              (change.dropped ? "text-[color:var(--rl-text-on-parchment-muted)] line-through" : "text-[color:var(--rl-text-on-parchment-primary)]")
-                            }
-                          >
-                            <LinkedText text={change.title} campaignId={campaignId} index={linkIndex} />
-                          </span>
-                          {change.before ? (
-                            <span className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
-                              {diffs.length} field{diffs.length === 1 ? "" : "s"} changed
-                            </span>
-                          ) : null}
-                          {change.timeline ? <Badge tone="blue">timeline</Badge> : null}
-                          {change.after.confidence !== null &&
-                          change.after.confidence !== undefined ? (
-                            <span className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
-                              confidence {Math.round(change.after.confidence * 100)}%
-                            </span>
-                          ) : null}
-                        </div>
-                        <div className="flex flex-wrap items-center gap-1">
-                          <Button
-                            variant="ghost"
-                            onClick={() => (expanded ? closePanel(change) : setOpen((prev) => ({ ...prev, [change.id]: true })))}
-                          >
-                            {expanded ? "Hide" : "Inspect"}
-                          </Button>
-                          {canReview && !isApplied && !isApplying ? (
-                            <>
-                              <Button
-                                variant="ghost"
-                                onClick={() => (isEditing ? setEditing(null) : startEditing(change))}
-                              >
-                                {isEditing ? "Done editing" : "Edit"}
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                onClick={() => patch(change, { dropped: !change.dropped })}
-                                title={change.dropped ? "Keep this change" : "Drop this change"}
-                              >
-                                {change.dropped ? "Restore" : "Drop"}
-                              </Button>
-                            </>
-                          ) : null}
-                        </div>
-                      </div>
-
-                      {expanded ? (
-                        <div className="mt-3 space-y-3 border-t border-[color:var(--rl-border-parchment)] pt-3">
-                          {/* Inspect and Edit render the SAME form; Inspect is
-                              simply read-only (and, for updates, annotates every
-                              field with the value the page holds today). */}
-                          <ChangeForm
-                            change={change}
-                            readOnly={!isEditing}
-                            drafts={isEditing ? drafts : NO_DRAFTS}
-                            onDraft={(path, value) =>
-                              setDrafts((prev) => ({ ...prev, [path]: value }))
-                            }
-                            rawDraft={rawDraft[change.id] ?? null}
-                            onRawDraft={(value) =>
-                              setRawDraft((prev) => ({ ...prev, [change.id]: value }))
-                            }
-                            rawError={rawError}
-                            onTitle={(title) => patch(change, { title })}
-                            onTimeline={(timeline) => patch(change, { timeline })}
-                            onVisibility={(visibility) =>
-                              patch(change, { after: { ...change.after, visibility } })
-                            }
-                          />
-
-                          <div className="flex flex-wrap gap-2">
-                            {isEditing ? (
-                              <Button onClick={() => saveEdit(change)}>Apply to the proposal</Button>
-                            ) : null}
-                            <Button
-                              variant="ghost"
-                              onClick={() => {
-                                setRawError(null);
-                                if (rawDraft[change.id] !== undefined) {
-                                  clearRaw(change.id);
-                                  return;
-                                }
-                                setRawDraft((prev) => ({
-                                  ...prev,
-                                  [change.id]: JSON.stringify(
-                                    change.after.content_json ?? {},
-                                    null,
-                                    2,
-                                  ),
-                                }));
-                              }}
-                            >
-                              {rawDraft[change.id] !== undefined
-                                ? "Back to fields"
-                                : isEditing
-                                  ? "Edit raw JSON"
-                                  : "View raw JSON"}
-                            </Button>
-                          </div>
-                        </div>
-                      ) : null}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
+          <section key={group.kind} className="space-y-3">
+            {/* The category head IS the fold: it says what the category holds
+                and opens or closes its panels (a heading that contains its own
+                toggle, so the outline and the control stay one thing). */}
+            <h3>
+              <button
+                type="button"
+                onClick={() =>
+                  setGroupOverrides((prev) => ({ ...prev, [group.kind]: !isOpen }))
+                }
+                aria-expanded={isOpen}
+                className="flex w-full flex-wrap items-center gap-2.5 rounded-[var(--rl-radius-sm)] px-2 py-2 text-left transition hover:bg-[color:var(--rl-bg-parchment-sunk)]"
+              >
+                <RlIcon
+                  name="chevron"
+                  size={14}
+                  className={
+                    "shrink-0 text-[color:var(--rl-text-on-parchment-muted)] transition-transform " +
+                    (isOpen ? "rotate-90" : "")
+                  }
+                />
+                <RlIconChip
+                  name={PAGE_KIND_ICON[group.kind] ?? "book"}
+                  tint={PAGE_KIND_TINT[group.kind] ?? "muted"}
+                  size={30}
+                  iconSize={16}
+                />
+                <span className="rl-title text-lg">
+                  {PAGE_KIND_LABELS[group.kind] ?? group.kind}
+                </span>
+                <span className="rl-card-meta">
+                  {plural(group.items.length - droppedCount, "page", "pages")} to write
+                  {droppedCount > 0 ? " · " + droppedCount + " dropped" : ""}
+                </span>
+                <span className="rl-card-meta ml-auto">{isOpen ? "Hide" : "Show"}</span>
+              </button>
+            </h3>
+            {!isOpen
+              ? null
+              : group.items.map((change) => (
+              <PlanChangePanel
+                key={change.id}
+                change={change}
+                campaignId={campaignId}
+                linkIndex={linkIndex}
+                pages={pages}
+                sessionNames={sessionNames}
+                canReview={canReview}
+                applied={isApplied || isApplying}
+                open={open[change.id] ?? false}
+                editing={editing === change.id}
+                draft={editing === change.id ? draft : null}
+                onToggle={() =>
+                  setOpen((prev) => ({ ...prev, [change.id]: !(prev[change.id] ?? false) }))
+                }
+                onStartEdit={() => startEditing(change)}
+                onCancelEdit={cancelEditing}
+                onDraftChange={setDraft}
+                onApplyDraft={() => applyDraft(change)}
+                onDrop={() => patch(change, { dropped: !change.dropped })}
+              />
+              ))}
+          </section>
         );
       })}
 
-      {plan.relations.length ? (
-        <div className="mt-4">
-          <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-[color:var(--rl-text-on-parchment-muted)]">
-            Links between pages
-          </h3>
-          <ul className="space-y-1">
-            {plan.relations.map((relation) => {
-              const dropped = droppedRelations[relation.id] ?? relation.dropped;
-              return (
-                <li
-                  key={relation.id}
-                  className="flex flex-wrap items-center justify-between gap-2 text-xs text-[color:var(--rl-text-on-parchment-primary)]"
-                >
-                  <span className={dropped ? "line-through opacity-60" : ""}>
-                    {relation.from_title} → {relation.to_title ?? relation.to_page_id}{" "}
-                    <span className="text-[color:var(--rl-text-on-parchment-muted)]">
-                      ({relation.relation_type.replace(/_/g, " ")})
-                    </span>
-                  </span>
-                  {canReview && !isApplied && !isApplying ? (
-                    <Button
-                      variant="ghost"
-                      onClick={() =>
-                        setDroppedRelations((prev) => ({ ...prev, [relation.id]: !dropped }))
-                      }
-                    >
-                      {dropped ? "Restore" : "Drop"}
-                    </Button>
-                  ) : null}
-                </li>
-              );
-            })}
-          </ul>
-        </div>
+      {(plan.relations ?? []).length > 0 ? (
+        <PlanRelationsPanel
+          relations={plan.relations}
+          isDropped={relationDropped}
+          resolve={resolve}
+          canReview={canReview}
+          applied={isApplied || isApplying}
+          onToggleDropped={(relation, dropped) =>
+            setDroppedRelations((prev) => ({ ...prev, [relation.id]: dropped }))
+          }
+        />
       ) : null}
 
-      {plan.skipped.length ? (
-        <div className="mt-4 rounded-lg border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-card)] px-3 py-2">
-          <h3 className="mb-1 text-xs font-bold uppercase tracking-wider text-[color:var(--rl-text-on-parchment-muted)]">
-            Already in the wiki — not proposed again
-          </h3>
-          <p className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
-            {plan.skipped.map((s) => s.title).join(", ")}. Their new facts stay on the session
-            summary above; edit those pages directly if needed.
+      {plan.skipped.length > 0 ? (
+        <RlPanel>
+          <RlPanelHead
+            eyebrow="Already in the wiki"
+            meta={plural(plan.skipped.length, "entity", "entities") + " — not proposed again"}
+          />
+          <p className="rl-body border-t border-[color:var(--rl-border-parchment)] px-4 py-3">
+            The campaign documents these already, so the session only adds to their pages
+            through the session references above. Edit them directly if needed.
           </p>
-        </div>
+          <ul>
+            {plan.skipped.map((skipped) => (
+              <li
+                key={skipped.title}
+                className="flex flex-wrap items-center gap-2 border-t border-[color:var(--rl-border-parchment)] px-4 py-2.5"
+              >
+                <RlIconChip
+                  name={PAGE_KIND_ICON[skipped.kind as WikiPageKind] ?? "book"}
+                  tint={PAGE_KIND_TINT[skipped.kind as WikiPageKind] ?? "muted"}
+                  size={26}
+                  iconSize={14}
+                />
+                <span className="text-sm font-semibold text-[color:var(--rl-text-on-parchment-primary)]">
+                  {skipped.title}
+                </span>
+                <span className="rl-card-meta">{skipped.reason}</span>
+                {skipped.matched_title && skipped.matched_title !== skipped.title ? (
+                  <span className="rl-card-meta">matched “{skipped.matched_title}”</span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </RlPanel>
       ) : null}
 
-      {canReview && !isApplied ? (
-        <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-[color:var(--rl-border-parchment)] pt-4">
-          {dirty ? (
-            <Button
-              variant="secondary"
-              disabled={busy !== null}
-              onClick={() => {
-                const payload = reviewPayload();
-                onSave(payload.changes, payload.relations);
-              }}
-            >
-              {busy === "save" ? "Saving…" : "Save review"}
-            </Button>
-          ) : null}
-          <Button
-            variant="danger"
-            disabled={busy !== null || isApplying}
-            title="Write the proposed pages and timeline entries into the wiki"
-            onClick={() => {
-              if (
-                !window.confirm(
-                  "Confirm these changes?\n\n" +
-                    counts.create +
-                    " new page(s), " +
-                    counts.update +
-                    " update(s) and " +
-                    counts.events +
-                    " timeline entr(ies) will be written to the wiki and become visible to the players.",
-                )
-              ) {
-                return;
-              }
-              const payload = reviewPayload();
-              onConfirm(payload.changes, payload.relations);
-            }}
-          >
-            {busy === "confirm" || isApplying
-              ? "Writing to the wiki…"
-              : "Confirm changes & update the wiki"}
-          </Button>
-        </div>
+      {canReview && !isApplied && !isApplying ? (
+        <RlPanel>
+          <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-4">
+            <div className="min-w-0">
+              <span className="rl-eyebrow">Confirm</span>
+              <p className="rl-body mt-1 max-w-[70ch]">
+                {written.length === 0
+                  ? "There is nothing left to write: every proposed change is dropped."
+                  : confirmSummary}
+              </p>
+              {skippedLinks > 0 ? (
+                <p className="rl-card-meta mt-1">
+                  {plural(skippedLinks, "link", "links")} will be skipped: no page to link to.
+                </p>
+              ) : null}
+              {dirty ? (
+                <p className="rl-card-meta mt-1">
+                  Unsaved edits are saved automatically when you confirm.
+                </p>
+              ) : null}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {dirty ? (
+                <RlButton
+                  variant="outline"
+                  disabled={busy !== null}
+                  onClick={() => {
+                    const payload = reviewPayload();
+                    onSave(payload.changes, payload.relations);
+                  }}
+                >
+                  {busy === "save" ? "Saving…" : "Save review"}
+                </RlButton>
+              ) : null}
+              <RlButton
+                variant="primary"
+                disabled={busy !== null}
+                onClick={() => {
+                  if (!window.confirm("Confirm these changes?\n\n" + confirmSummary)) {
+                    return;
+                  }
+                  const payload = reviewPayload();
+                  onConfirm(payload.changes, payload.relations);
+                }}
+              >
+                {busy === "confirm" ? "Writing to the wiki…" : "Confirm changes & update the wiki"}
+              </RlButton>
+            </div>
+          </div>
+        </RlPanel>
       ) : null}
-      {canReview && dirty && !isApplied ? (
-        <p className="mt-2 text-right text-xs rl-text-item">
-          Unsaved edits are saved automatically when you confirm.
-        </p>
-      ) : null}
-    </Card>
+    </div>
   );
 }

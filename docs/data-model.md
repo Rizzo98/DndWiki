@@ -330,9 +330,12 @@ session_summaries                    -- the review layer: merged LLM extraction 
   id            uuid PK
   session_id    uuid UNIQUE NOT NULL  -- one row per session (a new draft overwrites it)
   generation_job_id uuid NULL         -- the run that produced this summary
-  summary       text NOT NULL         -- session summary LINES, newline separated
-                                      -- (one beat per line: the DM selects and
-                                      -- corrects single lines)
+  summary       text NOT NULL         -- the session NARRATIVE as plain text:
+                                      -- the story the DM reads and highlights
+                                      -- portions of (blocks joined by blank lines)
+  summary_blocks jsonb DEFAULT '[]'   -- the same story in scenes:
+                                      -- [{location, text}] - the place each part
+                                      -- happens in (app/summary.py)
   language      text NULL             -- transcript language (draft page language)
   party_characters jsonb DEFAULT '[]' -- party CHARACTER names resolved at extraction
                                       -- time (player-vs-NPC tagging in the wiki phase)
@@ -345,7 +348,7 @@ session_summaries                    -- the review layer: merged LLM extraction 
   revision      int DEFAULT 1         -- 1 for the first draft, +1 per DM rewrite
   confirmed_at  timestamptz NULL      -- DM confirmation stamp
   confirmed_by  uuid NULL
-  edit_history  jsonb DEFAULT '[]'    -- [{targets: [summary line, ...],
+  edit_history  jsonb DEFAULT '[]'    -- [{targets: [highlighted passage, ...],
                                       --   instruction, requested_by, created_at}]
   confidence    numeric
   llm_provider  text

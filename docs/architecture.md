@@ -153,7 +153,7 @@ sequenceDiagram
     CS->>RB: publish content.summary.drafted (DRAFT summary, no page)
     RB->>DM: summary ready for review
     DM->>CS: POST summary/regenerate (selected lines + what to change)
-    CS->>CS: LLM rewrite of the whole extraction (summary, entities, events)
+    CS->>CS: LLM patch of the extraction (corrected summary + the items touched)
     CS->>RB: publish content.summary.drafted (revision n)
     DM->>CS: POST summary/confirm
     CS->>CS: propose the wiki changes (create/update + timeline), store them

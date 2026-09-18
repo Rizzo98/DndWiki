@@ -3,7 +3,7 @@
 Mirrors docs/data-model.md: 'generation_jobs' records one LLM run per session
 (provider/model/prompt_version, the phase it covered, the draft page ids
 created, and the overall confidence). 'session_summaries' persists the merged
-LLM extraction (summary lines + characters/locations/events/timeline) so the
+LLM extraction (the narrative + characters/locations/events/timeline) so the
 session page can show it without digging through wiki drafts.
 
 The session summary is the REVIEW LAYER of the pipeline: it is written as a
@@ -81,12 +81,14 @@ class SessionSummary(Base):
 
     One row per session (unique session_id). The row is the intermediate layer
     between the transcript and the wiki: 'summary' holds the reviewable
-    summary LINES (newline separated) the DM selects and corrects, the JSON
-    payloads mirror the merged shape from app/merger.py (characters/locations/
-    events/timeline_entries), and review_status tracks whether the DM already
-    confirmed it. A DM-driven rewrite bumps 'revision' and appends to
-    'edit_history'; a confirm stamps review_status/confirmed_at/confirmed_by
-    and freezes the row until a new generation overwrites it.
+    NARRATIVE as plain text and 'summary_blocks' the same story in scene
+    blocks ([{"location", "text"}], see app/summary.py) the DM highlights
+    portions of and corrects, the JSON payloads mirror the merged shape from
+    app/merger.py (characters/locations/events/timeline_entries), and
+    review_status tracks whether the DM already confirmed it. A DM-driven
+    rewrite bumps 'revision' and appends to 'edit_history'; a confirm stamps
+    review_status/confirmed_at/confirmed_by and freezes the row until a new
+    generation overwrites it.
     """
 
     __tablename__ = "session_summaries"
@@ -95,6 +97,12 @@ class SessionSummary(Base):
     session_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, unique=True, index=True)
     generation_job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     summary: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    # The same narrative in scene blocks: [{location, text}] (app/summary.py).
+    # Rows written before the blocks existed carry [] here and are rendered
+    # from 'summary' alone.
+    summary_blocks: Mapped[list | None] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=list, server_default="[]"
+    )
     # Transcript language the extraction was written in (draft page language).
     language: Mapped[str | None] = mapped_column(String(16))
     # Party CHARACTER names resolved at extraction time: the wiki phase tags

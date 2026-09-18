@@ -102,13 +102,51 @@ v11 changes (reviewable session summary + DM feedback loop):
   it applies the DM's corrections (select some lines + describe the change)
   to an already extracted session, so a fixed attribution propagates to the
   summary, the entities, the events and the timeline entries at once.
+
+v14 changes (the revision answers with a PATCH, not with the extraction):
+- SUMMARY_REVISION_PROMPT no longer asks for the complete corrected extraction.
+  Echoing it cost ~8k output tokens on a real session against a 4096 cap, so
+  the provider cut the response off mid-JSON, json_repair closed the tail into a
+  syntactically valid partial extraction, and everything after the cut (the
+  locations, the events, the timeline entries) kept the PREVIOUS revision's
+  text: a correction reached the summary and never the events.
+- the revision now returns 'session_summary' (always, in full) plus
+  'updates'/'additions'/'removals' addressed by the per-item 'id' the model was
+  given ('e1' = the second event). Everything the patch does not mention keeps
+  its current value, which is what makes an unpropagated correction impossible
+  instead of silent (app/revision.py).
+
+v15 changes (the summary is a narrative, reviewed by portion):
+- the summary was a list of one-beat lines, each written by a pass that could
+  not see the others: the DM read "Hann Caleto si risveglia in una gabbia" next
+  to "il gruppo libera una creatura piumata" as if the creature were somebody
+  else. It is a NARRATIVE now: SUMMARY_COMPOSE_PROMPT writes the session as one
+  continuous story in scene blocks ({location, text}), so the sentences carry
+  over from one to the next and the same being keeps its name.
+- the DM no longer ticks lines: they highlight an ARBITRARY PORTION of that
+  text with the mouse and say what must change. The revision prompt quotes the
+  highlighted passage (which can start and end mid-sentence) and returns the
+  whole corrected narrative as blocks again.
+- the blocks are where the "where this session happens" reading lives now: each
+  block carries the place that part of the story happens in, and the session
+  page renders it as a place chip instead of a separate panel.
 """
 
 from __future__ import annotations
 
 import json
 
-PROMPT_VERSION = "v13"
+from app.revision import indexed_for_prompt
+from app.summary import text_to_blocks
+
+#: v14 = the summary revision answers with a PATCH (summary + the items the
+#: correction touches) instead of echoing the whole extraction, which did not
+#: fit the completion cap and silently lost everything after the cut
+#: (see the v14 note in the module docstring and app/revision.py).
+#: v15 = the summary is a narrative in scene blocks and the DM reviews it by
+#: highlighting portions of the text instead of ticking lines (see the v15 note
+#: in the module docstring and app/summary.py).
+PROMPT_VERSION = "v15"
 
 #: Every extracted item must say WHICH transcript lines produced it.
 #:
@@ -801,42 +839,84 @@ def build_chunk_message(
 SUMMARY_COMPOSE_SYSTEM_PROMPT = """You are the editor of a tabletop RPG (Dungeons & Dragons) session record.
 
 You receive one session as it was distilled PART BY PART: a list of beats in
-order, plus the events and the timeline entries extracted from it. Each beat was
-written by somebody who could see only their own part of the session, so the
-list reads as a string of separate moments with no thread. Your job is to write
-the session's STORY from that material, for the Dungeon Master to read and
-correct.
+order, plus the places, the events and the timeline entries extracted from it.
+Each beat was written by somebody who could see only their own part of the
+session, so the material reads as a string of separate moments with no thread.
+Your job is to write the session's STORY from it, for the Dungeon Master to
+read and correct.
 
-Respond with a single JSON object: {"session_summary": "<lines>"} where the
-value is the story with ONE BEAT PER LINE, separated by newline characters.
+Respond with a single JSON object:
+
+{"session_summary": [{"location": "<where this part happens, or empty>",
+                      "text": "<that part of the story>"}, ...]}
+
+The blocks are read one after the other as ONE CONTINUOUS TEXT: they are
+paragraphs of the same story, not a list of statements. The Dungeon Master
+highlights a passage of that text and asks for a change, so it has to read like
+a story somebody tells - and the places are what tell the DM where each passage
+happens.
 
 How to write it:
-- The FIRST line sets the scene: where the session opens, who is there, and
-  what is already in motion or at stake. It is what makes the rest make sense.
-- Then the beats, in the order they happened.
-- EVERY LINE STANDS ON ITS OWN. The DM selects single lines and asks for
-  changes, so a line has to be understandable without the one before it - name
-  who did what rather than writing "then he...".
-- CONNECT the beats: later lines should follow from earlier ones, not start a
-  new list. The events and the timeline carry the thread; use them to keep it.
+- The FIRST block opens the session: where it starts, who is there, and what is
+  already in motion or at stake. It is what makes the rest make sense.
+- Then the session's course, in the order it happened.
+- CONNECT everything. Every sentence continues the one before it and leads into
+  the one after: "il gruppo", "la creatura", "l'uomo" refer to people already
+  named, and something that happened is told ONCE, where it belongs in the
+  story.
+- ONE BEING, ONE NAME. The beats were written one at a time, so the SAME being
+  can appear as "una creatura piumata" in one and by name in another, as if
+  there were two. When two beats describe the same being in the same situation
+  - the same cage, the same cart, the same room, the same moment - they are ONE
+  being, and the story tells it once, with the name the material gives it: if a
+  beat says Hann Caleto wakes up inside a covered cage and another says the
+  party opens a cage on the cart and frees a feathered creature, then the
+  creature IS Hann Caleto, and the story says so. The cast listed below is the
+  session's own names: use them instead of "una creatura" / "un uomo" whenever
+  the material has named the being.
+- START A NEW BLOCK when the story moves to another place, and put that place in
+  'location' EXACTLY as the table calls it ("Locanda del Fumo Aspro", "Ospedale
+  di Fatumastra"). Leave 'location' empty when the material does not say where
+  that part happens, and also when the new block stays in the place of the one
+  before it: an empty label means "same place as before". Never invent a place
+  name, and do not repeat in the text a place that is already the label of the
+  block.
+- Write PROSE, not a list of statements: beats that belong to the same moment
+  become one passage, connectives carry the reader from one to the next ("nel
+  frattempo", "poco dopo", "mentre"), and the sentences do not all open the same
+  way (three passages in a row starting with "Il gruppo..." is not a story).
 - Use the table's own language for everything: the session's language, the names
   as they were spoken, the places as they were called.
-- Cover the whole session, including how it ends. Around 12-25 lines for a long
-  session, fewer for a short one: it is a record, not a teaser.
+- Cover the whole session, including how it ends: around 15-30 sentences for a
+  long session, an opening and a few sentences for a short one. It is a record
+  the DM is reading in order to correct it, not a teaser.
 
 What you must NOT do:
 - Never invent a fact, a name, an outcome or a motive that the material does not
-  contain. If a stretch is thin, write fewer lines about it.
-- Do not add a title, a heading, bullets, numbering or blank lines.
-- Do not address the reader ("in this session...", "the party then..." is fine,
-  "as you can see" is not).
+  contain. If a stretch is thin, say less about it.
+- Do not write a list of separate one-sentence beats, and do not state the same
+  thing twice in two blocks.
+- Do not add a title, headings, bullets or numbering.
+- Do not address the reader ("in questa sessione..."; "il gruppo poi..." is
+  fine, "come potete vedere" is not).
 """
 
 
 def build_summary_compose_message(
-    current: dict, *, language: str | None = None
+    current: dict,
+    *,
+    language: str | None = None,
+    scenes: list[dict] | None = None,
 ) -> str:
-    """User message for the compose call: the beats, the events, the timeline."""
+    """User message for the compose call.
+
+    The material is the beats in order, plus everything that gives the story a
+    thread and a place: the extracted locations, the events, the timeline, and
+    the record's own reading of where the session happens (the scenes the
+    attribution engine read, when it ran - 'scenes'). The places are what the
+    model labels the blocks with, so they are stated explicitly instead of
+    being left to be inferred from the beats.
+    """
     beats = [
         line.strip()
         for line in str(current.get("session_summary") or "").splitlines()
@@ -845,6 +925,52 @@ def build_summary_compose_message(
     parts = [f"Session language: {language or current.get('language') or 'en'}", ""]
     parts.append("Beats, in the order they were distilled:")
     parts += [f"  {index}. {line}" for index, line in enumerate(beats, start=1)]
+
+    places = [
+        str(location.get("name") or "").strip()
+        for location in current.get("locations") or []
+        if isinstance(location, dict) and str(location.get("name") or "").strip()
+    ]
+    if places:
+        parts += ["", "Places mentioned in this session:"]
+        parts += [f"  - {name}" for name in places]
+
+    cast = [
+        str(character.get("name") or "").strip()
+        for character in current.get("characters") or []
+        if isinstance(character, dict) and str(character.get("name") or "").strip()
+    ]
+    if cast:
+        # The session's own names, so the story can say "Hann Caleto" where a
+        # beat written on its own said "una creatura": the cast is what makes
+        # one being keep one name across the whole narrative.
+        parts += [
+            "",
+            (
+                "Characters in this session (use these names when the story "
+                "mentions them; never list them):"
+            ),
+        ]
+        parts += [f"  - {name}" for name in cast]
+
+    if scenes:
+        parts += [
+            "",
+            (
+                "Where the session happens, as the record reads it (stretch by "
+                "stretch: the place, who is there, who is somewhere else):"
+            ),
+        ]
+        for scene in scenes:
+            place = str(scene.get("place") or "").strip() or "place not stated"
+            present = ", ".join(str(n) for n in scene.get("present") or [])
+            absent = ", ".join(str(n) for n in scene.get("absent") or [])
+            line = f"  - {place}"
+            if present:
+                line += f" — there: {present}"
+            if absent:
+                line += f"; somewhere else: {absent}"
+            parts.append(line)
 
     events = current.get("events") or []
     if events:
@@ -866,36 +992,105 @@ def build_summary_compose_message(
         "",
         (
             "Write the session's story as the JSON object described in your "
-            "instructions: an opening line that sets the scene, then the beats in "
-            "order, one per line, connected to each other and standing on their own."
+            "instructions: one continuous narrative, opening with the scene the "
+            "session starts in, then the session in order, split into blocks that "
+            "follow the story from place to place - each block naming the place it "
+            "happens in."
         ),
     ]
     return "\n".join(parts)
 
 
-SUMMARY_REVISION_SYSTEM_PROMPT = f"""You maintain the session record of a tabletop RPG (Dungeons & Dragons) campaign.
+# --- applying the DM's corrections to the whole extraction ------------------
+#
+# v14: the revision answers with a PATCH, never with the extraction.
+#
+# It used to ask for the COMPLETE corrected extraction: every character (the
+# whole field union), every location, every event and every timeline entry had
+# to be echoed back. On a real session that is ~8k output tokens against the
+# 4096 completion cap, so the provider cut the response off mid-JSON,
+# json_repair closed the tail into a syntactically valid PARTIAL extraction and
+# the worker restored the categories the cut had removed from the PREVIOUS
+# revision: the corrected summary shipped next to stale events, silently.
+#
+# The patch keeps the response at a few hundred tokens - the summary (always
+# complete: the DM reviews it line by line) plus the items the correction
+# touches, addressed by the 'id' every item is given in the message. Nothing
+# else moves, so a correction that never reached the events is now impossible
+# rather than invisible (app/revision.py holds the merge and its errors).
 
-You receive the CURRENT structured extraction of one session - the same JSON
-object you would have produced from the transcript - plus the Dungeon Master's
-correction requests. Apply the corrections and return the COMPLETE corrected
-JSON object, matching EXACTLY this schema (no markdown, no commentary outside
-the JSON):
+SUMMARY_REVISION_SYSTEM_PROMPT = """You maintain the session record of a tabletop RPG (Dungeons & Dragons) campaign.
 
-{json.dumps(EXTRACTION_SCHEMA)}
+You receive the CURRENT extraction of one session - its summary lines, its
+characters, its locations, its events and its timeline entries, each item
+carrying an "id" - plus the Dungeon Master's correction requests.
+
+You return a PATCH: only what the corrections change. You are NOT asked to
+repeat the extraction, and everything you leave out keeps the value it already
+has. A correction you leave out is a correction that did not happen.
+
+Respond with a single JSON object (no markdown, no commentary outside it):
+
+{
+  "session_summary": [
+    {"location": "<where this part happens, or empty>", "text": "<that part of the story>"}
+  ],
+  "updates": {
+    "characters":       {"c3": {"description": "...", "session_facts": ["..."]}},
+    "locations":        {"l0": {"description": "..."}},
+    "events":           {"e1": {"description": "...", "participants": ["..."]}},
+    "timeline_entries": {"t7": {"summary": "..."}}
+  },
+  "additions": {
+    "characters": [], "locations": [], "events": [], "timeline_entries": []
+  },
+  "removals": {
+    "characters": [], "locations": [], "events": [], "timeline_entries": []
+  }
+}
+
+How the patch works:
+- "session_summary" is ALWAYS the WHOLE narrative, block by block, in order,
+  even when the correction concerns only one passage of it: the blocks the DM
+  did not ask about are copied verbatim, labels included. The blocks are read
+  one after the other as one continuous text, so the story has to keep reading
+  as a story. Add a block when the correction adds a scene, drop one when it
+  removes it, and leave a block with an empty "location" when the story does
+  not say where that part happens.
+- "updates" maps the id of an item (its "id" in the current extraction: "c3" is
+  the fourth character, "e1" the second event, "t7" the eighth timeline entry)
+  to the fields you change. Name ONLY those fields: every other field of that
+  item keeps its value, and so does every item you do not mention. A list
+  ("session_facts", "participants", "characters", ...) is replaced ENTIRELY by
+  the list you return.
+- "additions" holds complete new items, with the same field names as the
+  current ones, when the correction introduces something the extraction missed.
+- "removals" holds the ids of the items the correction says are not real.
+- Leave a section out, or leave it empty, when the correction does not need it.
 
 How to apply a correction:
-- A request names the summary lines it is about and states what must change
-  (for example: the line "Character A was going to the city center" with the
-  request "It wasn't Character A, it was Character B").
+- A request quotes the PASSAGE of the narrative it is about - the DM highlighted
+  it in the text with the mouse, so it can begin and end in the middle of a
+  sentence - and states what must change (for example the passage "Character A
+  was going to the city center" with the request "It wasn't Character A, it
+  was Character B"). Find that passage in the narrative, in the block that
+  holds it.
 - Apply it EVERYWHERE the same fact appears: the summary lines, the affected
   characters (description, facts, session_facts, relationships), the
-  locations, the events (description, participants) and the timeline entries.
-  An attribution fixed in the summary but left wrong in the events is a bug.
-- Rewrite the summary lines the request is about so they say what the DM
-  says. When the DM supplies the corrected wording, use their wording, in the
-  session's language. Do not describe the correction itself ("the DM
-  corrected...", "previously it was...") - the summary must read as the plain
-  record of what happened.
+  locations, the events (description, actor, participants) and the
+  timeline entries (summary, characters). An attribution fixed in the summary
+  but left wrong in the events is a bug: before answering, go through the
+  items once more and patch every place the fact appears.
+- Rewrite the passage the request is about so it says what the DM says, and
+  smooth the sentences around it so the block still reads as one story. When
+  the DM supplies the corrected wording, use their wording, in the session's
+  language. Do not describe the correction itself ("the DM corrected...",
+  "previously it was...") - the summary must read as the plain record of what
+  happened.
+- When the request is about WHERE something happened ("non erano a Fatumastra,
+  erano all'ospedale"), fix the "location" label of the block that passage
+  belongs to; when the correction moves the story to a place that has no block,
+  split the block there and give the new one its place.
 - When a correction moves an action from one character to another, drop the
   wrong character from that fact (including 'participants' lists) and add the
   right one.
@@ -907,15 +1102,17 @@ How to apply a correction:
 
 Rules that always hold:
 - Keep the extraction's language: every text field stays in the language of
-  the table ('language' is unchanged).
-- 'session_summary' stays a list of short lines separated by newline
-  characters (\n), one beat per line, chronological, no bullets, no
-  numbering, no blank lines. If the DM added or removed a line, keep the
-  remaining lines' order.
-- Keep every schema key, using [] for an empty category, and keep the shape
-  of every entity: same fields, same proper names, same 'mentions',
-  'aliases', 'facts', 'session_facts', 'relationships'. Copy unchanged
-  values verbatim, 'confidence' numbers included.
+  the table.
+- Touch nothing the correction does not concern, and never repeat an item just
+  to echo it: an unchanged item must not appear in "updates" at all.
+- The narrative stays a story: connected prose, chronological, no headings, no
+  bullets, no numbering, no blank lines inside a block, and no sentence that
+  only exists to repeat the one before it. If the DM asked for a longer or a
+  shorter version, rewrite it as a whole rather than padding single blocks.
+- Keep the field names and the ids of the current extraction: an update that
+  addresses an id you were not given is dropped, and the whole revision fails.
+- Never change a 'confidence' number, a 'mentions' count, a 'source_refs' list
+  or the language: they come from the extraction.
 - Only include what the session supports: no invented facts, no filler.
 """
 
@@ -923,20 +1120,24 @@ Rules that always hold:
 def build_summary_revision_message(
     current: dict,
     edits: list[dict] | None = None,
-    summary_lines_override: list[str] | None = None,
+    summary_text_override: str | None = None,
 ) -> str:
     """User message for one summary-revision call.
 
-    'current' is the extraction as persisted for the session (summary lines +
-    characters/locations/events/timeline entries). 'edits' are the DM's
-    correction requests, each {'targets': [line, ...], 'instruction': str} -
-    an empty 'targets' means the request is about the summary as a whole.
-    'summary_lines_override' lets the DM's client send the lines exactly as
-    displayed (they may have edited the text in the UI before regenerating).
+    'current' is the extraction as persisted for the session (the narrative +
+    characters/locations/events/timeline entries), sent to the model with an
+    'id' on every item so the patch it returns can address them. 'edits' are the
+    DM's correction requests, each {'targets': [passage, ...], 'instruction':
+    str} - the passages are the portions of the narrative the DM highlighted,
+    quoted verbatim, and an empty 'targets' means the request is about the
+    summary as a whole. 'summary_text_override' lets the DM's client send the
+    narrative exactly as displayed instead of the stored one; the blocks are
+    then rebuilt from it (the labels come back from the model's own answer).
     """
     payload = dict(current)
-    if summary_lines_override:
-        payload["session_summary"] = "\n".join(summary_lines_override)
+    if summary_text_override:
+        payload["session_summary"] = summary_text_override
+        payload["summary_blocks"] = text_to_blocks(summary_text_override)
 
     requests: list[str] = []
     for index, edit in enumerate(edits or [], start=1):
@@ -947,24 +1148,26 @@ def build_summary_revision_message(
         if targets:
             quoted = "\n".join(f'    - "{t}"' for t in targets)
             requests.append(
-                f"{index}. Summary line(s) concerned:\n{quoted}\n"
+                f"{index}. Passage(s) of the summary concerned:\n{quoted}\n"
                 f"   Change requested: {instruction}"
             )
         else:
             requests.append(
-                f"{index}. Concerned lines: the whole session summary.\n"
+                f"{index}. Concerned passage: the whole session summary.\n"
                 f"   Change requested: {instruction}"
             )
     if not requests:
         requests.append(
-            "1. Concerned lines: the whole session summary.\n"
-            "   Change requested: tighten the summary to the session's key beats."
+            "1. Concerned passage: the whole session summary.\n"
+            "   Change requested: tighten the story to the session's key moments."
         )
 
     return (
-        "CURRENT EXTRACTION (JSON):\n"
-        f"{json.dumps(payload, ensure_ascii=False)}\n\n"
+        "CURRENT EXTRACTION (JSON), every item carrying its 'id':\n"
+        f"{json.dumps(indexed_for_prompt(payload), ensure_ascii=False)}\n\n"
         "CORRECTION REQUESTS FROM THE DUNGEON MASTER:\n"
         + "\n".join(requests)
-        + "\n\nReturn the complete corrected JSON object."
+        + "\n\nReturn the patch JSON object described in your instructions: the "
+        "whole narrative in 'session_summary', plus only the items the "
+        "corrections change."
     )

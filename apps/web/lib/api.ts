@@ -319,19 +319,30 @@ export interface PlanRelationEdit {
   dropped?: boolean;
 }
 
-/** One review request: the summary lines concerned + what must change. */
+/** One review request: the passages concerned + what must change. */
 export interface SummaryEdit {
-  /** Verbatim summary lines the request is about; empty = whole summary. */
+  /** Portions of the narrative the request is about, quoted verbatim (they
+   *  may begin and end mid-sentence); empty = the whole summary. */
   targets: string[];
   instruction: string;
+}
+
+/** One scene of the narrative: a paragraph and the place it happens in. */
+export interface SummaryBlock {
+  /** The place this part of the story happens in; empty = same as before. */
+  location: string;
+  /** The prose itself. Consecutive blocks read as one continuous story. */
+  text: string;
 }
 
 export interface SessionSummary {
   id: string;
   session_id: string;
   generation_job_id: string | null;
-  /** The reviewable summary: one beat per line (newline separated). */
+  /** The reviewable narrative as plain text (the blocks joined). */
   summary: string;
+  /** The same narrative in scenes: the place labels above the paragraphs. */
+  summary_blocks: SummaryBlock[] | null;
   language: string | null;
   characters: SummaryEntity[];
   locations: SummaryEntity[];
@@ -833,7 +844,7 @@ export const contentApi = {
   regenerateSummary: (
     token: string,
     sessionId: string,
-    body: { edits: SummaryEdit[]; summary_lines?: string[] | null },
+    body: { edits: SummaryEdit[]; summary_text?: string | null },
   ) =>
     request<SummaryReviewResponse>(
       token,

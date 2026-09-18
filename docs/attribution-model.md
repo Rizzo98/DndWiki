@@ -1297,10 +1297,13 @@ moment a character walks back in, he is a candidate again.
 
 The reading is **persisted** in `session_scenes` (one row per stretch, one
 revision), with the names exactly as read and the member ids they resolve to, and
-served by `GET /api/attribution/sessions/{id}/scenes`. The DM reads it in the
-*Where this session happens* panel, collapsed, next to the review. That panel is
-not decoration: the engine excludes members, and an exclusion nobody can see is
-an exclusion nobody can correct.
+served by `GET /api/attribution/sessions/{id}/scenes`. It is also the material
+the session summary is written from: each scene of the narrative carries the
+place that part of the story happens in (`app/summary.py`, prompt v15), so the
+places are part of what the DM reads and corrects rather than a table beside the
+story. The dedicated *Where this session happens* panel was retired with v15 —
+the reading is still served, and its cast/exclusion lists are no longer rendered
+on the session page.
 
 #### 12.6.1 The reading is context, not a question
 
@@ -1319,8 +1322,11 @@ So the reading keeps its three jobs, and all three are about **context**:
 
 1. it **excludes** a member the table put elsewhere, at -3 nats per moment, the
    same strength as a stated absence (§12.6 step 3);
-2. it is **shown** in the *Where this session happens* panel, so an exclusion
-   nobody can see does not become an exclusion nobody can correct;
+2. it is **shown** as the place label of every scene of the summary narrative
+   (v15), so where the session happens is part of the story the DM reviews and
+   corrects instead of a panel beside it. The per-stretch cast and exclusion
+   lists are only served by the API now: retiring the panel traded that surface
+   for a narrative the DM actually reads;
 3. it **travels with the artifact** (`stretches`, §14.1) and so reaches the
    extraction prompt - which is what fixes the "un personaggio" beats. A narration
    is filed under the DM, so a beat about somebody else had no name to use; in a

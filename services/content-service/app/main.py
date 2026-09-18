@@ -113,6 +113,11 @@ async def session_summary(session_id: str, db: AsyncSession = Depends(get_sessio
             "session_id": str(row.session_id),
             "generation_job_id": str(row.generation_job_id) if row.generation_job_id else None,
             "summary": row.summary,
+            # The same narrative in scene blocks ([{location, text}], see
+            # app/summary.py): the session page renders the place chips from
+            # these, and falls back to 'summary' alone when the row predates
+            # them (empty list).
+            "summary_blocks": row.summary_blocks or [],
             "language": row.language,
             "characters": row.characters or [],
             "locations": row.locations or [],

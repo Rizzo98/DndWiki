@@ -142,6 +142,8 @@ function orderedLocationAttributes(
     }
   }
   const rank = (key: string) => {
+    // The subtype is not part of the per-type order: rank it above every field.
+    if (key === "location_type") return -1;
     const i = order.indexOf(key);
     return i === -1 ? order.length : i;
   };

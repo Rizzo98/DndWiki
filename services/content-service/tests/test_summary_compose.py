@@ -1,10 +1,12 @@
 """The summary composition pass: the beats, the prompt, and the fallback.
 
 The extraction pass writes 1-3 beats per chunk and never sees the other chunks,
-so what the merger produces is a list of separate moments - "a patch of sentences
-with no train of thought", in the DM's words. One extra call sees the whole
-session and rewrites them into a story; these tests are about that call's
-contract and about never losing the beats when it fails.
+so what the merger produces is a list of separate moments with no train of
+thought - and a being can be "una creatura" in one beat and named in the next,
+as if they were two. One extra call sees the whole session and writes the STORY
+from it, in scene blocks the DM can highlight portions of (app/summary.py);
+these tests are about that call's contract, the material it is given, and never
+losing the beats when it fails.
 """
 
 import pytest
@@ -22,17 +24,19 @@ class FakeLLM:
         self.error = error
         self.calls = []
 
-    async def compose_summary(self, current, *, language=None):
-        self.calls.append({"current": current, "language": language})
+    async def compose_summary(self, current, *, language=None, scenes=None):
+        self.calls.append({"current": current, "language": language, "scenes": scenes})
         if self.error is not None:
             raise self.error
-        return list(self.composed or [])
+        return [dict(block) for block in self.composed or []]
 
 
-def merged(lines, *, events=None, timeline=None, language="it"):
+def merged(lines, *, events=None, timeline=None, locations=None, characters=None, language="it"):
     return {
         "language": language,
         "session_summary": "\n".join(lines),
+        "characters": characters or [],
+        "locations": locations or [],
         "events": events or [],
         "timeline_entries": timeline or [],
     }
@@ -43,19 +47,25 @@ def merged(lines, *, events=None, timeline=None, language="it"):
 
 @pytest.mark.asyncio
 async def test_a_story_of_several_beats_is_composed():
-    llm = FakeLLM(composed=["La sessione si apre nella locanda.", "Poi il gruppo esce."])
-    out = await _compose_summary(
-        llm, merged([f"beat {index}" for index in range(5)])
+    llm = FakeLLM(
+        composed=[
+            {"location": "Locanda del Fumo Aspro", "text": "La sessione si apre nella locanda."},
+            {"location": "", "text": "Poi il gruppo esce."},
+        ]
     )
-    assert out == ["La sessione si apre nella locanda.", "Poi il gruppo esce."]
+    out = await _compose_summary(llm, merged([f"beat {index}" for index in range(5)]))
+    assert out == [
+        {"location": "Locanda del Fumo Aspro", "text": "La sessione si apre nella locanda."},
+        {"location": "", "text": "Poi il gruppo esce."},
+    ]
     assert llm.calls[0]["language"] == "it"
 
 
 @pytest.mark.asyncio
-async def test_a_short_summary_is_left_alone():
-    """Two beats are already a story: the call would be a cost with nothing to
-    buy, and every extra LLM call is a chance to invent a fact."""
-    llm = FakeLLM(composed=["should not be used"])
+async def test_a_single_beat_is_left_alone():
+    """One beat IS the session: the call would be a cost with nothing to buy, and
+    every extra LLM call is a chance to invent a fact."""
+    llm = FakeLLM(composed=[{"location": "", "text": "should not be used"}])
     short = merged(["one", "two"][: MIN_SUMMARY_LINES_TO_COMPOSE - 1])
     assert await _compose_summary(llm, short) == []
     assert llm.calls == []
@@ -99,11 +109,59 @@ def test_the_message_survives_a_thin_extraction():
     assert "Events:" not in message
 
 
-def test_the_prompt_asks_for_an_opening_and_for_lines_that_stand_alone():
-    """The two properties the DM asked for: a train of thought, and lines that
-    can still be selected and corrected one at a time."""
+def test_the_message_carries_the_places_and_the_scene_reading():
+    """Where the session happens: the places the extraction found, and the
+    engine's own reading when it ran (which is what the block labels and the
+    'somewhere else' exclusions come from)."""
+    message = build_summary_compose_message(
+        merged(
+            ["a beat"],
+            locations=[{"name": "Locanda del Fumo Aspro"}, {"name": "Fatumastra"}],
+        ),
+        scenes=[
+            {
+                "place": "Locanda del Fumo Aspro",
+                "present": ["Hann Caleto"],
+                "absent": ["Galgith Baurd"],
+            }
+        ],
+    )
+    assert "Places mentioned in this session:" in message
+    assert "  - Locanda del Fumo Aspro" in message
+    assert "  - Fatumastra" in message
+    assert "Where the session happens" in message
+    assert "there: Hann Caleto" in message
+    assert "somewhere else: Galgith Baurd" in message
+
+
+def test_the_message_has_no_scene_section_without_the_engine():
+    message = build_summary_compose_message(merged(["a beat"]))
+    assert "Where the session happens" not in message
+
+
+def test_the_message_lists_the_cast_so_one_being_keeps_one_name():
+    """The beats are written one at a time, so the same being can be "una
+    creatura piumata" in one and named in the next. The cast is what the story
+    has to call them."""
+    message = build_summary_compose_message(
+        merged(["a beat"], characters=[{"name": "Hann Caleto"}, {"name": "Galgith Baurd"}])
+    )
+    assert "Characters in this session" in message
+    assert "never list them" in message
+    assert "  - Hann Caleto" in message
+    assert "  - Galgith Baurd" in message
+
+
+def test_the_prompt_asks_for_one_connected_story():
+    """The DM's complaint: the summary read as independent sentences, so the
+    same being was "una creatura" in one and named in the next. The prompt has
+    to ask for one continuous narrative, in blocks that follow the places."""
     prompt = SUMMARY_COMPOSE_SYSTEM_PROMPT
-    assert "FIRST line sets the scene" in prompt
-    assert "STANDS ON ITS OWN" in prompt
-    assert "CONNECT the beats" in prompt
+    assert "FIRST block opens the session" in prompt
+    assert "ONE CONTINUOUS TEXT" in prompt
+    assert "CONNECT everything" in prompt
+    assert "START A NEW BLOCK" in prompt
+    # the creature/Hann Caleto case, spelled out
+    assert "ONE BEING, ONE NAME" in prompt
+    assert "creature IS Hann Caleto" in prompt
     assert "Never invent" in prompt

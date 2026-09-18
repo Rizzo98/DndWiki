@@ -1,11 +1,18 @@
-// Relations card for the page detail: browse/search campaign pages (filtered
-// by kind), pick one and attach it with a relation type — no raw page ids.
+// "Links between pages" for the page detail: what this page is linked to, and
+// the DM's form to attach another one — browse/search campaign pages (filtered
+// by kind), pick one and give the relation a type. Never a raw page id.
+//
+// The list speaks the same language as the change-set review on the session
+// page (components/session/plan-relations-panel.tsx): a tinted type, the
+// direction, and the target page with its category sigil.
 
 "use client";
 
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { Alert, Badge, Button, Card, Field, Select, TextInput } from "@/components/ui";
+import { Alert, Badge, Button, Field, Select, TextInput } from "@/components/ui";
+import { RlIcon, RlPanel, RlPanelHead, RlTag, rlTintVars, type RlTint } from "@/components/ravenlore";
+import { PAGE_KIND_ICON, PAGE_KIND_TINT } from "@/lib/page-kinds";
 import { PAGE_KIND_LABELS, PAGE_KINDS, wikiApi, type PageRelation, type PageSummary, type WikiPageKind } from "@/lib/api";
 import { errMessage, useAsyncData } from "@/lib/use-async";
 
@@ -35,6 +42,16 @@ export function RelationsCard({
     (t) => wikiApi.relations(t, pageId),
     [pageId],
   );
+  // The campaign's pages, so every target renders with its category sigil.
+  const { data: allPages } = useAsyncData<PageSummary[]>(
+    (t) => wikiApi.pages(t, campaignId, { limit: 500 }),
+    [campaignId],
+  );
+  const kindById = useMemo(() => {
+    const map = new Map<string, WikiPageKind>();
+    for (const page of allPages ?? []) map.set(page.id, page.kind);
+    return map;
+  }, [allPages]);
 
   // --- page picker: debounced search + kind filter ----------------------
   const [q, setQ] = useState("");
@@ -120,19 +137,24 @@ export function RelationsCard({
   }
 
   return (
-    <Card>
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="rl-title text-lg">Relations</h2>
-        {relations && relations.length > 0 ? (
-          <span className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">{relations.length} relation{relations.length === 1 ? "" : "s"}</span>
-        ) : null}
-      </div>
-
-      {notice ? <Alert tone="success">{notice}</Alert> : null}
-      {error ? <Alert tone="error">{error}</Alert> : null}
+    <RlPanel>
+      <RlPanelHead
+        eyebrow="Links between pages"
+        meta={
+          relations && relations.length > 0
+            ? relations.length + (relations.length === 1 ? " link" : " links")
+            : "none yet"
+        }
+      />
+      {notice || error ? (
+        <div className="space-y-2 px-4 pt-1">
+          {notice ? <Alert tone="success">{notice}</Alert> : null}
+          {error ? <Alert tone="error">{error}</Alert> : null}
+        </div>
+      ) : null}
 
       {isDm ? (
-        <form onSubmit={addRelation} className="space-y-3 border-b border-[color:var(--rl-border-parchment)] pb-4">
+        <form onSubmit={addRelation} className="space-y-3 border-t border-[color:var(--rl-border-parchment)] px-4 py-4">
           <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_10rem]">
             <Field label="Search page">
               <TextInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by title…" />
@@ -223,31 +245,79 @@ export function RelationsCard({
       ) : null}
 
       {relations && relations.length === 0 ? (
-        <p className="mt-4 text-sm text-[color:var(--rl-text-on-parchment-muted)]">No relations yet.</p>
+        <p className="rl-body border-t border-[color:var(--rl-border-parchment)] px-4 py-4">
+          This page is not linked to anything yet.
+        </p>
       ) : (
-        <ul className="mt-4 space-y-2">
-          {relations?.map((r) => (
-            <li key={r.id} className="flex items-center justify-between gap-2 text-sm">
-              <span className="text-[color:var(--rl-text-on-parchment-primary)]">
-                <span className="text-[color:var(--rl-text-on-parchment-muted)]">{r.relation_type}</span> →{" "}
-                <Link href={`/campaigns/${campaignId}/pages/${r.related_page_id}`} className="rl-text-accent hover:underline">
-                  {r.related_title ?? r.related_page_id}
-                </Link>
-              </span>
-              {isDm ? (
-                <Button
-                  variant="ghost"
-                  className="rl-text-villain hover:bg-[color:color-mix(in_srgb,var(--rl-cat-villain)_14%,transparent)]"
-                  onClick={() => removeRelation(r.id)}
-                  disabled={busy}
-                >
-                  Remove
-                </Button>
-              ) : null}
-            </li>
-          ))}
-        </ul>
+        <RelationList
+          relations={relations ?? []}
+          campaignId={campaignId}
+          kindOf={(id) => kindById.get(id) ?? null}
+          canRemove={isDm}
+          busy={busy}
+          onRemove={removeRelation}
+        />
       )}
-    </Card>
+    </RlPanel>
   );
+}
+
+/** The relations of a page, one row each — also rendered by the harness. */
+export function RelationList({
+  relations,
+  campaignId,
+  kindOf,
+  canRemove,
+  busy,
+  onRemove,
+}: {
+  relations: PageRelation[];
+  campaignId: string;
+  /** Category of the page a relation points at (null when unknown). */
+  kindOf: (pageId: string) => WikiPageKind | null;
+  canRemove: boolean;
+  busy: boolean;
+  onRemove: (relationId: string) => void;
+}) {
+  return (
+    <ul>
+      {relations.map((relation) => {
+        const kind = kindOf(relation.related_page_id);
+        const tint: RlTint = kind ? PAGE_KIND_TINT[kind] ?? "muted" : "muted";
+        return (
+          <li
+            key={relation.id}
+            className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 border-t border-[color:var(--rl-border-parchment)] px-4 py-3"
+          >
+            <RlTag tint="accent">{relationLabel(relation.relation_type)}</RlTag>
+            <RlIcon name="arrow" size={14} className="text-[color:var(--rl-text-on-parchment-muted)]" />
+            <span className="rl-tint shrink-0" style={rlTintVars(tint)}>
+              <RlIcon name={kind ? PAGE_KIND_ICON[kind] ?? "book" : "search"} size={14} />
+            </span>
+            <Link
+              href={`/campaigns/${campaignId}/pages/${relation.related_page_id}`}
+              className="truncate text-sm font-semibold rl-text-accent hover:underline"
+            >
+              {relation.related_title ?? relation.related_page_id}
+            </Link>
+            {canRemove ? (
+              <Button
+                variant="ghost"
+                className="ml-auto"
+                onClick={() => onRemove(relation.id)}
+                disabled={busy}
+              >
+                Remove
+              </Button>
+            ) : null}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/** "possible_duplicate" -> "possible duplicate". */
+function relationLabel(type: string): string {
+  return type.replace(/_/g, " ");
 }

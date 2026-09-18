@@ -64,20 +64,24 @@ export function Field({ label, children, hint }: { label: string; children: Reac
   );
 }
 
-export function TextInput(props: InputHTMLAttributes<HTMLInputElement>) {
-  return <input className="rl-input-light" {...props} />;
+// NOTE: the primitives below COMPOSE the caller's className with their own.
+// A bare `{...props}` after a className would let a single utility ("w-48",
+// "font-mono") replace the whole chrome and leave a native control behind.
+
+export function TextInput({ className = "", ...props }: InputHTMLAttributes<HTMLInputElement>) {
+  return <input className={"rl-input-light " + className} {...props} />;
 }
 
-export function TextArea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <textarea className="rl-input-light" {...props} />;
+export function TextArea({ className = "", ...props }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return <textarea className={"rl-input-light " + className} {...props} />;
 }
 
-export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
-  return <select className="rl-input-light" {...props} />;
+export function Select({ className = "", ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
+  return <select className={"rl-input-light " + className} {...props} />;
 }
 
-export function FileInput(props: InputHTMLAttributes<HTMLInputElement>) {
-  return <input type="file" className="rl-file" {...props} />;
+export function FileInput({ className = "", ...props }: InputHTMLAttributes<HTMLInputElement>) {
+  return <input type="file" className={"rl-file " + className} {...props} />;
 }
 
 // ------------------------------------------------------------------- card

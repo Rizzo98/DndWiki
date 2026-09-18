@@ -17,9 +17,11 @@ handling:
 
 - extract_chunk: one call per transcript chunk (EXTRACTION_SCHEMA).
 - revise_summary: ONE call that applies the DM's review feedback to an
-  already extracted session (same schema), so a corrected attribution reaches
-  the summary lines, the entities, the events and the timeline entries at
-  once. The corrected object replaces the persisted draft.
+  already extracted session. Since prompt v14 it answers with a PATCH - the
+  complete summary plus the items the correction touches, addressed by the id
+  every item is given - instead of echoing the whole extraction back; the
+  echo did not fit the completion cap and its tail (locations, events,
+  timeline entries) was silently lost (app/revision.py, 'Truncation' below).
 
 JSON handling is lenient in two stages:
 
@@ -34,6 +36,20 @@ JSON handling is lenient in two stages:
    model is asked once more (LLM_JSON_RETRIES times) with its own bad
    output and the parse error appended, asking for corrected JSON only.
 
+Truncation is NOT a repairable mistake. A response the provider cut off at
+'max_tokens' parses perfectly - it is simply missing everything after the cut -
+so repairing it turns "the model ran out of room" into a partial extraction
+that looks like a complete one (that is how a DM's correction reached the
+summary and never the events). A cut-off response is detected from the
+provider's 'finish_reason' and goes through the corrective retry instead (the
+model is asked for a shorter answer), and the job fails if the cap is really
+too small: a loud failure, never a truncated draft.
+
+An optional 'validate' check runs inside the same retry loop, so an answer
+whose SHAPE is wrong (the revision patch of a model that answered with the
+whole extraction, an update addressing an item the session does not have) is
+re-asked with the concrete problem attached rather than accepted or dropped.
+
 If both stages fail the call raises ExtractionError, which the worker treats
 as a job failure (the session lands on 'failed' and the message retries are
 no-ops — see workers/generate.py).
@@ -45,6 +61,7 @@ import asyncio
 import json
 import logging
 import os
+from collections.abc import Callable
 from typing import Any
 
 from json_repair import loads as repair_loads
@@ -58,7 +75,8 @@ from app.prompts import (
     build_summary_compose_message,
     build_summary_revision_message,
 )
-from app.services.summaries import summary_lines
+from app.revision import SummaryRevisionError, apply_summary_revision
+from app.summary import normalize_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -93,9 +111,58 @@ CORRECT_JSON_MESSAGE = (
     "(no markdown, no commentary outside the JSON)."
 )
 
+#: Follow-up message when the provider cut the answer off at the completion
+#: cap: the fix is a SHORTER answer, not corrected syntax.
+TRUNCATED_JSON_MESSAGE = (
+    "Your previous response was cut off before the JSON was complete.\n"
+    "Error: {error}\n"
+    "Respond again with a SHORTER but COMPLETE JSON object: only the fields the "
+    "request actually needs (no markdown, no commentary outside the JSON)."
+)
+
+#: finish_reason values meaning "the completion hit max_tokens".
+TRUNCATED_FINISH_REASONS = frozenset({"length", "max_tokens"})
+
 
 class ExtractionError(Exception):
     """The LLM returned something that is not valid extraction JSON."""
+
+
+class TruncatedResponse(ExtractionError):
+    """The provider cut the completion off at max_tokens: the JSON that came
+    back parses, but everything after the cut is missing."""
+
+
+def _narrative_check(payload: Any) -> None:
+    """The compose answer must carry the story, as blocks or as plain prose.
+
+    An empty narrative - or the beats quoted back as a list of separate
+    statements - is refused here: the worker keeps the beats and the DM sees
+    *something*, which beats storing a "story" that is not one.
+    """
+    summary = payload.get("session_summary") if isinstance(payload, dict) else None
+    if not normalize_blocks(summary):
+        raise ExtractionError("the composition returned no story for the session")
+
+
+def _revision_patch_check(current: dict[str, Any]) -> Callable[[Any], None]:
+    """The check a summary-revision answer must pass before it is accepted.
+
+    app/revision.py owns the rules, so the check is simply "can this patch be
+    merged into this extraction?": a patch that cannot is refused inside the
+    retry loop (the model is told which id or field was wrong) instead of being
+    applied halfway or dropped on the floor.
+    """
+
+    def check(patch: Any) -> None:
+        try:
+            apply_summary_revision(current, patch)
+        except SummaryRevisionError as exc:
+            raise ExtractionError(
+                f"the revision patch does not fit the session's extraction: {exc}"
+            ) from exc
+
+    return check
 
 
 class LLMClient:
@@ -141,50 +208,80 @@ class LLMClient:
             chunk_index,
         )
     async def compose_summary(
-        self, current: dict[str, Any], *, language: str | None = None
-    ) -> list[str]:
-        """Rewrite the merged beats into the session's story (raises ExtractionError).
+        self,
+        current: dict[str, Any],
+        *,
+        language: str | None = None,
+        scenes: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, str]]:
+        """Write the session's STORY from the merged beats (raises ExtractionError).
 
         The beats were written one chunk at a time, each without sight of the
-        others; this is the only call that sees the whole session, and it is what
-        turns a list of moments into something with a thread (see
-        SUMMARY_COMPOSE_SYSTEM_PROMPT).
+        others, so they read as separate moments and a being can be "una
+        creatura" in one and named in the next. This is the only call that sees
+        the whole session: it returns the narrative as scene blocks
+        ([{location, text}], app/summary.py), which is what the DM reads and
+        highlights portions of. 'scenes' is the record's own reading of where
+        the session happens (place, who is there, who is elsewhere), when the
+        attribution engine ran: it is what the block labels are grounded in.
         """
         payload = await self._complete_json(
             SUMMARY_COMPOSE_SYSTEM_PROMPT,
-            build_summary_compose_message(current, language=language),
+            build_summary_compose_message(current, language=language, scenes=scenes),
             "the session summary composition",
+            validate=_narrative_check,
+            extraction=False,
         )
-        return summary_lines(payload.get("session_summary"))
+        return normalize_blocks(payload.get("session_summary"))
 
     async def revise_summary(
         self,
         current: dict[str, Any],
         edits: list[dict[str, Any]] | None = None,
-        summary_lines_override: list[str] | None = None,
+        summary_text_override: str | None = None,
     ) -> dict[str, Any]:
         """Apply the DM's review feedback to an extracted session.
 
-        'current' is the persisted extraction (summary lines + entities +
+        'current' is the persisted extraction (the narrative + entities +
         events + timeline entries), 'edits' the correction requests
-        ({'targets': [line, ...], 'instruction': str}). Returns the corrected
-        extraction with the same shape; raises ExtractionError on garbage.
+        ({'targets': [passage, ...], 'instruction': str}) where the passages are
+        the portions of the narrative the DM highlighted. Returns the PATCH
+        app/revision.py merges into 'current' - the whole narrative in blocks
+        plus the items the correction touches, never the whole extraction - and
+        refuses, through the corrective retry, an answer that does not fit: an
+        item id the session does not have, a revision without a narrative, or
+        the old full-extraction echo. Raises ExtractionError when the model
+        cannot do better.
         """
         return await self._complete_json(
             SUMMARY_REVISION_SYSTEM_PROMPT,
             build_summary_revision_message(
-                current, edits, summary_lines_override=summary_lines_override
+                current, edits, summary_text_override=summary_text_override
             ),
             "the session summary revision",
+            validate=_revision_patch_check(current),
+            extraction=False,
         )
 
     async def _complete_json(
-        self, system: str, user: str, context: str | int
+        self,
+        system: str,
+        user: str,
+        context: str | int,
+        validate: Callable[[dict[str, Any]], Any] | None = None,
+        *,
+        extraction: bool = True,
     ) -> dict[str, Any]:
         """One JSON-mode completion with local repair + corrective retries.
 
         'context' labels the call in error messages: an int is a chunk index
-        ('chunk 1'), a string is used as-is.
+        ('chunk 1'), a string is used as-is. 'validate' is an optional check of
+        the parsed object that raises ExtractionError when the answer does not
+        fit what the caller asked for; it runs INSIDE the retry loop, so the
+        model is told what was wrong instead of the caller having to guess.
+        'extraction' says whether the answer must have the extraction's shape
+        (default) or is parsed raw and left to 'validate' - the summary
+        revision answers with a patch, not with an extraction.
         """
         import litellm  # lazy: heavy dependency, only needed at runtime
 
@@ -203,9 +300,14 @@ class LLMClient:
                 response_format={"type": "json_object"},
                 messages=messages,
             )
-            content = response.choices[0].message.content
+            choice = response.choices[0]
+            content = choice.message.content
             try:
-                return self._parse(content, context)
+                self._assert_not_truncated(choice, context)
+                data = self._parse(content, context, extraction=extraction)
+                if validate is not None:
+                    validate(data)
+                return data
             except ExtractionError as exc:
                 if attempt >= self._settings.llm_json_retries:
                     raise
@@ -219,9 +321,35 @@ class LLMClient:
                 messages = [
                     *messages,
                     {"role": "assistant", "content": content or ""},
-                    {"role": "user", "content": CORRECT_JSON_MESSAGE.format(error=str(exc))},
+                    {"role": "user", "content": self._corrective_message(exc)},
                 ]
         raise ExtractionError(f"unreachable: no attempt made for {self._where(context)}")
+
+    def _assert_not_truncated(self, choice: Any, context: str | int) -> None:
+        """Refuse an answer the provider cut off at the completion cap.
+
+        A truncated completion is not malformed JSON that json_repair can fix:
+        what is there parses, and everything after the cut (the locations, the
+        events, the timeline entries of an echoed extraction) is simply gone.
+        Repairing it produced a partial extraction that looked complete and
+        carried the PREVIOUS revision's text, so the cut is detected from the
+        provider's 'finish_reason', re-asked as a shorter answer, and the job
+        fails when the cap is really too small for the request.
+        """
+        reason = str(getattr(choice, "finish_reason", "") or "").lower()
+        if reason in TRUNCATED_FINISH_REASONS:
+            raise TruncatedResponse(
+                f"the model ran out of output tokens (finish_reason={reason}, cap "
+                f"{self._settings.llm_max_tokens}) for {self._where(context)}: the "
+                "JSON was cut off and must not be repaired into a partial answer"
+            )
+
+    @staticmethod
+    def _corrective_message(exc: ExtractionError) -> str:
+        """What to tell the model about the answer that was refused."""
+        if isinstance(exc, TruncatedResponse):
+            return TRUNCATED_JSON_MESSAGE.format(error=str(exc))
+        return CORRECT_JSON_MESSAGE.format(error=str(exc))
 
     @staticmethod
     def _where(context: str | int) -> str:
@@ -248,13 +376,27 @@ class LLMClient:
             )
         return repaired
 
-    def _parse(self, content: str | None, context: str | int) -> dict[str, Any]:
+    def _parse(
+        self, content: str | None, context: str | int, *, extraction: bool = True
+    ) -> dict[str, Any]:
+        """Validate + normalize one JSON answer.
+
+        'extraction' tells which CONTRACT the answer has to satisfy: with it,
+        the object must look like an extraction and is coerced into the
+        schema's shape (missing categories become []). The summary revision is
+        not an extraction - it is a patch over one - so it is parsed raw and
+        left to its own validator: the category defaults below would INVENT
+        the four category keys in every patch and make it look like the
+        full-extraction echo the protocol refuses.
+        """
         where = self._where(context)
         if not content:
             raise ExtractionError(f"empty LLM response for {where}")
         data = self._load_json(content, context)
         if not isinstance(data, dict):
             raise ExtractionError(f"LLM returned non-object JSON for {where}")
+        if not extraction:
+            return data
         # Recognizable-extraction guard: the object must carry at least one
         # schema key. A dict that is unrelated JSON is not an extraction and
         # goes through the corrective retry. Missing CATEGORY keys, however,

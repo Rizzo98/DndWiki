@@ -15,6 +15,12 @@ The summary is the pipeline's intermediate layer:
 - `confirm_summary` stamps the DM's approval; only from there does the worker
   materialize pages/events (`summary_to_merged` rebuilds the merger-shaped
   dict the draft builders consume).
+
+The narrative itself lives in two columns that always agree: 'summary' (plain
+text, what the review works on) and 'summary_blocks' (the same story split by
+place, what the session page renders the location chips from — app/summary.py).
+Both are written through `summary_from`, so the text can never drift from the
+blocks.
 """
 
 from __future__ import annotations
@@ -27,10 +33,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import REVIEW_CONFIRMED, REVIEW_DRAFT, SessionSummary
+from app.summary import blocks_to_text, summary_from
 
 
 def summary_lines(text: str) -> list[str]:
-    """The reviewable lines of a summary (newline separated, blank-free)."""
+    """The beats of a DRAFT extraction (newline separated, blank-free).
+
+    Not the reviewable summary any more: the DM reviews the narrative
+    (app/summary.py), these are the per-chunk beats the compose call turns
+    into it - and the fallback story when that call fails.
+    """
     return [line.strip() for line in (text or "").splitlines() if line.strip()]
 
 
@@ -41,9 +53,17 @@ def summary_to_merged(row: SessionSummary) -> dict[str, Any]:
     dict shape merge_extractions() produces, so the confirmed summary can be
     materialized without re-reading the transcript.
     """
+    blocks = row.summary_blocks or []
+    if blocks:
+        text = blocks_to_text(blocks)
+    else:
+        # A row written before the blocks existed: rebuild them from the text so
+        # a revision (and the page) always works on the same shape.
+        blocks, text = summary_from(row.summary or "")
     return {
         "language": row.language or "",
-        "session_summary": row.summary or "",
+        "session_summary": text,
+        "summary_blocks": blocks,
         "characters": row.characters or [],
         "locations": row.locations or [],
         "events": row.events or [],
@@ -76,7 +96,9 @@ async def save_summary(
         row = SessionSummary(session_id=session_id)
         db.add(row)
     row.generation_job_id = generation_job_id
-    row.summary = (merged.get("session_summary") or "").strip()
+    blocks, text = summary_from(merged.get("summary_blocks") or merged.get("session_summary"))
+    row.summary = text
+    row.summary_blocks = blocks
     row.language = (merged.get("language") or "").strip() or None
     row.party_characters = list(party_characters or [])
     row.characters = merged.get("characters") or []
@@ -121,7 +143,9 @@ async def apply_revision(
     if row is None:
         raise ValueError(f"session {session_id} has no summary to revise")
     row.generation_job_id = generation_job_id
-    row.summary = (merged.get("session_summary") or "").strip()
+    blocks, text = summary_from(merged.get("summary_blocks") or merged.get("session_summary"))
+    row.summary = text
+    row.summary_blocks = blocks
     if merged.get("language"):
         row.language = str(merged["language"]).strip() or row.language
     if merged.get("characters") is not None:

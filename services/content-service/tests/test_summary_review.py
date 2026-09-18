@@ -118,13 +118,13 @@ async def test_regenerate_summary_queues_the_feedback(client, session_factory):
 
 async def test_regenerate_summary_passes_the_displayed_lines(client, session_factory):
     await _seed_summary(session_factory)
-    body = dict(SUMMARY_BODY, summary_lines=["hand edited line"])
+    body = dict(SUMMARY_BODY, summary_text="hand edited narrative")
     resp = await client.post(
         "/api/content/sessions/" + SESSION_ID + "/summary/regenerate", json=body
     )
     assert resp.status_code == 200
     events = client._publisher.events  # type: ignore[attr-defined]
-    assert events[0].payload["summary_lines"] == ["hand edited line"]
+    assert events[0].payload["summary_text"] == "hand edited narrative"
 
 
 async def test_regenerate_summary_requires_at_least_one_edit(client, session_factory):

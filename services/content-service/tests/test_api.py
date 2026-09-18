@@ -38,7 +38,7 @@ async def test_llm_config(client):
     body = resp.json()
     assert body["provider"] == "deepseek"
     assert body["model"] == "deepseek/deepseek-chat"
-    assert body["prompt_version"] == "v13"
+    assert body["prompt_version"] == "v15"
 
 
 async def test_job_status_unknown_session(client):

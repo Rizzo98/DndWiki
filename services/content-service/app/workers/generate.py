@@ -8,8 +8,13 @@ dnd_common.events.TOPOLOGY:
   DRAFT session summary. NO page, NO event and NO timeline entry is created
   here: the summary is the first review layer.
 - summary.regenerate -> PHASE 1b (process_summary_regeneration): apply the
-  DM's review feedback (selected summary lines + what must change) to the
-  persisted extraction with one LLM call and persist the rewritten draft.
+  DM's review feedback (highlighted passages of the narrative + what must
+  change) to the persisted extraction. The model answers with a PATCH - the
+  complete narrative
+  plus the items the correction touches, addressed by the id each item was
+  given - and the worker merges it in (app/revision.py), so a correction is
+  never half-applied and never silently dropped: an answer that does not fit
+  the extraction fails the job instead.
 - summary.confirmed -> PHASE 2 (process_plan_generation): the DM accepted the
   summary, so it is turned into a PROPOSED change set (pages to create, pages
   to update, timeline entries, cross-references) and stored for review.
@@ -34,9 +39,10 @@ Pipeline (per session):
 4. Split into overlapping token-bounded chunks; extract structured JSON from
    each chunk via LiteLLM (bounded concurrency).
 5. Merge across chunks (dedupe by name, longest description, summed mentions,
-   summary lines concatenated in chunk order) and persist the result in
-   'session_summaries' as a draft (revision 1). The DM reviews it line by
-   line; each rewrite bumps the revision.
+   beats concatenated in chunk order), write the session's STORY from them
+   (SUMMARY_COMPOSE_PROMPT -> the narrative in scene blocks) and persist the
+   result in 'session_summaries' as a draft (revision 1). The DM reads it and
+   highlights the passages to correct; each rewrite bumps the revision.
 6. PHASE 2 expands the confirmed summary into the change set (cross-session
    dedupe: an entity the campaign already documents is skipped, not
    re-proposed) and records the generation_jobs row.
@@ -86,13 +92,13 @@ from app.merger import (
     exclude_character_names,
     is_narrator_name,
     merge_extractions,
-    merge_summary_lines,
-    normalize_entity_name,
 )
 from app.models import PHASE_APPLY, PHASE_SUMMARY, PHASE_WIKI, PLAN_APPLIED
 from app.planner import build_change_set
+from app.revision import apply_summary_revision, describe_revision
 from app.services.summaries import summary_lines
 from app.storage import ObjectStorage
+from app.summary import blocks_to_text, describe_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -533,14 +539,15 @@ async def process_job(
                 merged, artifact, player_names=_artifact_player_names(artifact)
             )
             logger.info("session %s: attribution gate %s", session_id, gate_report)
-        composed = await _compose_summary(llm, merged)
+        composed = await _compose_summary(llm, merged, scenes=_scene_reading(artifact))
         if composed:
-            merged["session_summary"] = "\n".join(composed)
+            merged["summary_blocks"] = composed
+            merged["session_summary"] = blocks_to_text(composed)
         logger.info(
-            "session %s: extraction language=%r (%d entities, %d summary lines)",
+            "session %s: extraction language=%r (%d entities); summary %s",
             session_id, merged.get("language"),
             len(merged.get("characters", [])) + len(merged.get("locations", [])),
-            len(merged.get("session_summary", "").splitlines()),
+            describe_blocks(merged.get("summary_blocks") or merged.get("session_summary")),
         )
         summary = await job_services.save_summary(
             db,
@@ -617,12 +624,17 @@ async def process_summary_regeneration(
         if row is None:
             raise ValueError(f"session {session_id} has no summary to rewrite")
         current = job_services.summary_to_merged(row)
-        revised = await llm.revise_summary(
+        patch = await llm.revise_summary(
             current,
             edits,
-            summary_lines_override=payload.get("summary_lines") or None,
+            summary_text_override=payload.get("summary_text") or None,
         )
-        revised = _apply_revision_guards(current, revised)
+        # The model returns a PATCH and this is where it is merged: the summary
+        # it rewrote plus the items the correction touches. Everything else
+        # keeps the value the DM was looking at, and a patch that does not fit
+        # the extraction raises here (the job fails, nothing is persisted
+        # half-applied) instead of being shrugged off.
+        revised = apply_summary_revision(current, patch)
         requested_by = payload.get("requested_by")
         history = [
             {
@@ -667,8 +679,9 @@ async def process_summary_regeneration(
             )
         )
         logger.info(
-            "session %s -> summary revision %s (%d correction request(s))",
+            "session %s -> summary revision %s (%d correction request(s)); %s",
             session_id, updated.revision, len(history),
+            describe_revision(current, revised),
         )
     except Exception as exc:
         logger.exception("summary regeneration failed for session %s", session_id)
@@ -676,74 +689,60 @@ async def process_summary_regeneration(
         raise
 
 
-#: Below this many merged beats the list is already a story: a three-beat session
-#: does not need an editor, and the call would be a cost with nothing to buy.
-MIN_SUMMARY_LINES_TO_COMPOSE = 4
+#: Below this many merged beats there is no story to write: one beat IS the
+#: session, and the call would be a cost with nothing to buy.
+MIN_SUMMARY_LINES_TO_COMPOSE = 2
 
 
-async def _compose_summary(llm: Any, merged: dict[str, Any]) -> list[str]:
+def _scene_reading(artifact: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """The record's "where this session happens", for the compose call.
+
+    Only what a writer can use: the place of each stretch and who the reading
+    puts there or elsewhere. It is the same reading the session page shows as
+    the place labels of the narrative, so the story and the labels come from one
+    source instead of two guesses.
+    """
+    if not artifact:
+        return []
+    scenes: list[dict[str, Any]] = []
+    for stretch in artifact.get("stretches") or []:
+        if not isinstance(stretch, dict):
+            continue
+        place = str(stretch.get("place") or "").strip()
+        present = [str(n) for n in stretch.get("present") or []]
+        absent = [str(n) for n in stretch.get("absent") or []]
+        if not place and not present and not absent:
+            continue
+        scenes.append({"place": place, "present": present, "absent": absent})
+    return scenes
+
+
+async def _compose_summary(
+    llm: Any, merged: dict[str, Any], scenes: list[dict[str, Any]] | None = None
+) -> list[dict[str, str]]:
     """Turn the merged per-chunk beats into the session's story.
 
     The extraction pass writes 1-3 beats per chunk and NEVER sees the other
     chunks, so what the merger produces is a list of separate moments with no
-    thread - "a patch of sentences", in the DM's own words. This is the only call
-    that sees the whole session, and the one that can give it an opening, an
-    order and a thread.
+    thread - written by writers who could not know that the creature in one
+    beat is the character named in another. This is the only call that sees the
+    whole session: it answers with the narrative in scene blocks
+    (app/summary.py), which is what the DM reads and highlights portions of.
 
-    Never fatal: on any failure the beats stand as they are, which is exactly
-    what the DM saw before this existed.
+    Never fatal: on any failure the beats stand as they are, and the DM reviews
+    them as one flat story (app/summary.py turns them into blocks on read).
     """
     beats = summary_lines(str(merged.get("session_summary") or ""))
     if len(beats) < MIN_SUMMARY_LINES_TO_COMPOSE:
         return []
     try:
-        composed = await llm.compose_summary(merged, language=merged.get("language"))
+        composed = await llm.compose_summary(
+            merged, language=merged.get("language"), scenes=scenes or None
+        )
     except Exception:
         logger.exception("could not compose the session summary; keeping the beats")
         return []
     return composed or []
-
-
-def _apply_revision_guards(current: dict[str, Any], revised: dict[str, Any]) -> dict[str, Any]:
-    """Keep a DM-driven rewrite inside the extracted session's bounds.
-
-    The revision prompt asks the model to touch nothing it was not asked
-    about, but two things are enforced deterministically anyway: the summary
-    stays a list of clean lines and the per-entity/per-event confidence of the
-    previous extraction is carried over (the model has no way to recompute
-    it, and a rewrite must not silently reset every confidence badge).
-    """
-    revised = dict(revised)
-    revised["session_summary"] = merge_summary_lines(
-        [revised.get("session_summary") or ""]
-    )
-    if not revised["session_summary"]:
-        revised["session_summary"] = current.get("session_summary") or ""
-    # A model that drops a whole category must not delete the session's
-    # entities: an entirely empty list where the extraction had items is
-    # treated as an omission (a request that removes SOME items still lands).
-    for kind in ("characters", "locations", "events", "timeline_entries"):
-        if not revised.get(kind) and current.get(kind):
-            revised[kind] = current[kind]
-
-    def _confidence_map(items: list[dict], key: str) -> dict[str, Any]:
-        return {
-            normalize_entity_name(str(item.get(key) or "")): item.get("confidence")
-            for item in items
-            if isinstance(item, dict) and item.get(key)
-        }
-
-    for kind, key in (("characters", "name"), ("locations", "name"), ("events", "title")):
-        previous = _confidence_map(current.get(kind) or [], key)
-        fallback = current.get("confidence")
-        for item in revised.get(kind) or []:
-            if not isinstance(item, dict) or not item.get(key):
-                continue
-            item["confidence"] = previous.get(
-                normalize_entity_name(str(item[key])), fallback
-            )
-    return revised
-
 
 
 async def process_plan_generation(

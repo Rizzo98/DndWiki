@@ -258,10 +258,17 @@ parks on `summary_ready` until the DM confirms it.
 ## summary.regenerate
 
 Published by content-service when the DM sends review feedback from the
-session page: the summary lines they selected plus what must change. The
-worker applies it to the WHOLE persisted extraction (summary lines, entities,
-events, timeline entries) and publishes `content.summary.drafted` with the new
-revision.
+session page: the passages of the narrative they highlighted plus what must
+change. The worker makes one LLM call that answers with a PATCH over the
+persisted extraction — the whole corrected narrative (scene blocks carrying the
+place each part happens in, `app/summary.py`) plus the items the correction
+touches (`updates`/`additions`/`removals`, addressed by the id each item
+carries) — so a fixed attribution reaches the story, the entities, the events
+and the timeline entries at once while everything else keeps the value the DM
+reviewed. It then publishes `content.summary.drafted` with the new revision. An
+answer that does not fit the extraction (the id of an item the session does not
+have, no narrative, the whole-extraction echo) fails the job instead of being
+applied halfway.
 
 ```json
 {
@@ -281,14 +288,16 @@ revision.
         "instruction": "It wasn't Character A, it was Character B"
       }
     ],
-    "summary_lines": ["Character A was going to the city center."]
+    "summary_text": "… the whole narrative, exactly as the DM reads it …"
   }
 }
 ```
 
-> `targets` lists the summary lines the request is about (empty = the whole
-> summary); `summary_lines` carries the lines exactly as displayed by the
-> client, so hand-edited text is honored.
+> `targets` lists the passages of the narrative the request is about — quoted
+> verbatim from the text the DM highlighted with the mouse, so a passage can
+> begin and end mid-sentence (empty = the whole summary); `summary_text`
+> carries the narrative exactly as displayed by the client, so hand-edited text
+> is honored.
 
 ## summary.confirmed
 

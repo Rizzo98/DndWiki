@@ -27,7 +27,7 @@ by-product: nothing is written to the wiki before the DM has confirmed it.
 4. Split into overlapping chunks (~`CHUNK_TOKENS` tokens, `CHUNK_OVERLAP`
    overlap, never splitting a segment).
 5. For each chunk, call the LLM (via **LiteLLM**) with a strict JSON schema
-   (`app/prompts.py`, `PROMPT_VERSION=v13`): transcript language, session
+   (`app/prompts.py`, `PROMPT_VERSION=v15`): transcript language, session
    summary, characters (name, aliases, description, durable facts,
    session-specific facts, `is_party`, mentions), locations (+ `place_type`,
    `part_of` geospatial hints and the v8 type-specific detail fields:
@@ -43,7 +43,12 @@ by-product: nothing is written to the wiki before the DM has confirmed it.
    personaggio". Calls run in parallel
    (`LLM_CHUNK_CONCURRENCY`). Malformed LLM output is repaired locally
    (`json-repair`: missing/trailing commas, fences, ...) and, if that fails,
-   re-asked once per `LLM_JSON_RETRIES` with the parse error appended.
+   re-asked once per `LLM_JSON_RETRIES` with the parse error appended. An
+   answer the provider CUT OFF at `LLM_MAX_TOKENS` is **never** repaired: the
+   cut is read from the provider's `finish_reason`, the model is asked for a
+   shorter answer, and the job fails if the cap is really too small. Repairing
+   a truncated answer is what silently dropped a DM's correction from every
+   event and timeline entry (see Phase 1b).
    The merged beats are then **composed into the session's story** by one more
    call that sees the whole session (`SUMMARY_COMPOSE_SYSTEM_PROMPT`): an opening
    line that sets the scene, then the beats connected to each other. Without it
@@ -54,40 +59,75 @@ by-product: nothing is written to the wiki before the DM has confirmed it.
    kept separate from `session_facts`), majority-vote language, drop
    whole-generic names ("città", "the city"), per-entity confidence =
    fraction of chunks that mentioned it, overall confidence = mean. The
-   chunks' summary lines are concatenated in order and de-duplicated
-   (overlapping chunks repeat beats) — that is the text the DM reviews, so it
-   is stored **one line per beat**.
-7. Persist the draft in `session_summaries` (`review_status='draft'`,
-   `revision=1`, plus the language and the party character names the wiki
-   phase will need), record the `generation_jobs` row (`phase='summary'`),
-   move the session to `summary_ready` and publish
-   **`content.summary.drafted`**. **No page, no event and no timeline entry is
-   created here.**
+   chunks' beats are concatenated in order and de-duplicated (overlapping
+   chunks repeat beats): that list is the raw material, **not** the text the
+   DM reads.
+7. **Write the story** (`SUMMARY_COMPOSE_SYSTEM_PROMPT`, since v15): one more
+   call sees the whole session at once — the beats in order, the places, the
+   events, the timeline and, when the attribution engine ran, its reading of
+   where the session happens and who is there. It answers with the session's
+   NARRATIVE in **scene blocks** (`[{"location", "text"}]`, `app/summary.py`):
+   connected prose, one block per place the story moves to. Without it the DM
+   read a list of independent sentences — "Hann Caleto si risveglia in una
+   gabbia" next to "il gruppo libera una creatura piumata" as if the creature
+   were somebody else. A failed composition keeps the beats (they are still
+   readable, and the worker logs it).
+8. Persist the draft in `session_summaries` (`review_status='draft'`,
+   `revision=1`, the narrative in `summary` **and** `summary_blocks`, plus the
+   language and the party character names the wiki phase will need), record the
+   `generation_jobs` row (`phase='summary'`), move the session to
+   `summary_ready` and publish **`content.summary.drafted`**. **No page, no
+   event and no timeline entry is created here.**
 
 ### Phase 1b — summary rewrite with the DM's feedback (`summary.regenerate`)
 
-The DM opens the session page, ticks the summary lines that are wrong (or
-none, for the whole summary) and describes the change ("It wasn't Character A,
-it was Character B"). `POST /api/content/sessions/{id}/summary/regenerate`
-queues that feedback on the same `content.generate` queue:
+The DM opens the session page, highlights a **portion of the narrative** with
+the mouse — any passage, mid-sentence included, or none for the whole summary —
+and describes the change ("It wasn't Character A, it was Character B").
+`POST /api/content/sessions/{id}/summary/regenerate` queues that feedback on
+the same `content.generate` queue:
 
-8. The worker moves the session back to `summarizing`, loads the persisted
-   extraction and makes **one LLM call** with `SUMMARY_REVISION_PROMPT` — the
-   model receives the whole extraction plus the correction requests and
-   returns the corrected object, so a fixed attribution propagates to the
-   summary lines, the entities, the events **and** the timeline entries at
-   once.
-9. The rewrite is persisted as the next revision (`revision + 1`, the
-   feedback appended to `edit_history`, `review_status` back to `draft`),
-   the per-entity confidences of the previous extraction are re-attached
-   (the model cannot recompute them, a rewrite must not reset every badge),
-   the session returns to `summary_ready` and `content.summary.drafted` is
-   published with the new revision. The DM can iterate as many times as they
-   want.
+9. The worker moves the session back to `summarizing`, loads the persisted
+   extraction and makes **one LLM call** with `SUMMARY_REVISION_PROMPT`. The
+   model receives the whole extraction — every item carrying an `id` — plus
+   the correction requests, and answers with a **PATCH** (`app/revision.py`):
+
+   ```json
+   {"session_summary": [{"location": "Locanda del Fumo Aspro", "text": "..."}],
+    "updates":   {"events": {"e1": {"description": "...", "participants": ["..."]}}},
+    "additions": {"characters": []},
+    "removals":  {"timeline_entries": []}}
+   ```
+
+   The narrative always comes back in full (the DM reads it as one text and
+   highlights the passage to correct) and
+   the items the correction touches are named by their id (`e1` = the second
+   event), so a fixed attribution still propagates to the summary lines, the
+   entities, the events **and** the timeline entries at once — while everything
+   the patch leaves out keeps the value the DM was looking at. A patch that
+   does not fit (an id the session does not have, no summary, the old
+   whole-extraction answer) is re-asked inside the retry loop and then fails
+   the job: never a half-applied revision.
+
+   > **Why a patch and not the corrected extraction (v14).** Asking for the
+   > complete corrected extraction meant ~23 kB / ~8k output tokens on a real
+   > session against a 4096 cap. The provider cut the answer off mid-JSON,
+   > `json-repair` closed the tail into a syntactically valid PARTIAL
+   > extraction, the four categories the cut had removed came back empty and
+   > the old worker guard restored them **from the previous revision**: the DM
+   > read the corrected summary next to the stale events and timeline entries,
+   > on every regeneration. The patch is ~1k tokens for the same correction, it
+   > fits any session length, and it cannot lose anything silently.
+10. The rewrite is persisted as the next revision (`revision + 1`, the
+    feedback appended to `edit_history`, `review_status` back to `draft`; the
+    worker logs what the patch actually changed, the place labels included), the
+    session returns to `summary_ready` and `content.summary.drafted` is
+    published with the new revision. The DM can iterate as many times as they
+    want.
 
 ### Phase 2 — confirmed summary → PROPOSED changes (`summary.confirmed`)
 
-10. `POST /api/content/sessions/{id}/summary/confirm` stamps the summary
+11. `POST /api/content/sessions/{id}/summary/confirm` stamps the summary
     (`review_status='confirmed'`, `confirmed_at/by`) and publishes
     `summary.confirmed`; the worker moves the session to `generating_wiki`
     and turns the confirmed summary into a **change set**
@@ -101,14 +141,14 @@ queues that feedback on the same `content.generate` queue:
     documents (exact title/alias match) is reported as *skipped*, never
     proposed again; fuzzy look-alikes get a change plus a
     `possible_duplicate` link.
-11. The run is recorded (`phase='wiki'`, no draft ids), the session parks on
+12. The run is recorded (`phase='wiki'`, no draft ids), the session parks on
     `wiki_plan_ready` and `content.plan.ready` is published. The DM now
     inspects/edits/drops single changes (`PUT /api/content/sessions/{id}/plan`)
     — title, any content field, the event's timeline entry, its visibility.
 
 ### Phase 3 — confirmed changes → wiki (`plan.confirmed`)
 
-12. `POST /api/content/sessions/{id}/plan/confirm` publishes
+13. `POST /api/content/sessions/{id}/plan/confirm` publishes
     `plan.confirmed`; the worker moves the session to `applying_wiki` and
     applies the confirmed set through **wiki-service**
     (`POST /internal/wiki/changes/apply`): the new pages are created
@@ -117,7 +157,7 @@ queues that feedback on the same `content.generate` queue:
     are created. The apply endpoint is idempotent: a create the campaign
     already documents (or one this session already wrote) is skipped and
     reported, so a retried message cannot duplicate a page.
-13. The run is recorded (`phase='apply'`, the written page ids, mean
+14. The run is recorded (`phase='apply'`, the written page ids, mean
     confidence), the session moves to `content_ready` and
     `content.generated` is published with `created`/`updated`/`skipped`
     per change.
@@ -143,7 +183,7 @@ state-machine 409, so a failed job is never re-run blindly or DLQ-spammed.
 | `LLM_MAX_TOKENS` | 4096 | per-call completion cap |
 | `LLM_CHUNK_CONCURRENCY` | 4 | parallel per-chunk LLM calls |
 | `LLM_JSON_RETRIES` | 1 | corrective retries per call on malformed JSON (0 = off) |
-| `PROMPT_VERSION` | `v13` | version of `app/prompts.py`, recorded per job |
+| `PROMPT_VERSION` | `v15` | version of `app/prompts.py`, recorded per job |
 | `CHUNK_TOKENS` | 4000 | target chunk size (char/4 estimate) |
 | `CHUNK_OVERLAP` | 0.1 | fraction of chunk re-seen by the next one |
 | `MAX_CHUNKS_PER_SESSION` | 16 | safety cap; beyond this the job fails |

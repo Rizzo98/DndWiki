@@ -206,11 +206,19 @@ them contained clips of different voices), so *“who is this voice?”* had no 
 answer, and a wrong answer was worse than no question — one click wrote a strong
 prior onto every moment of a cluster that was not one person.
 
-**The panel is not a question either.** *Where this session happens* (§3.4) shows
-the stretches, their places, their casts and their exclusions — all visible, all
-arguable — and it stays. What does not stay is asking the DM to *confirm the
-cast*, one character at a time: the reading's cast list is context, and §4.2 above
-is why.
+**The reading is not a question either.** The stretches, their places, their
+casts and their exclusions are context — all visible, none of them asked about.
+What does not stay is asking the DM to *confirm the cast*, one character at a
+time: the reading's cast list is context, and §4.2 above is why.
+
+> **The panel was retired (prompt v15).** *Where this session happens* used to
+> be its own collapsed panel next to the review. The places now travel INTO the
+> summary (§5): each scene of the narrative carries the place it happens in, so
+> the DM reads the story and where it happens as one thing instead of reading a
+> story and a table about places. `GET /api/attribution/sessions/{id}/scenes`
+> still serves the reading (place, moments, present, absent) for anything that
+> wants it; the per-stretch cast and exclusion lists are no longer rendered on
+> the session page.
 
 ### 4.4 After an answer
 
@@ -259,15 +267,27 @@ No guilt, no repetition, and — importantly — **no fabricated label**.
 
 ## 5. Attribution in the summary
 
-The summary card keeps its line-by-line review but gains a provenance chip per
-line, which is the visible surface of the uncertainty model:
+The summary is a NARRATIVE, not a list of lines (prompt v15): the DM reviews it
+by highlighting an arbitrary passage of the prose and describing the change, and
+each scene of it carries the place that part of the story happens in — the
+reading of §4.3, folded into the story instead of sitting in a panel beside it:
 
 ```
-|  [Aramil]   cast Fireball on the three goblins, killing two.        |
-|  [Thorin?]  charged the captain and was knocked prone.              |
-|  [someone]  forced the eastern door.                                |
-|  [the party] retreated to the courtyard and made camp.              |
+  ( Locanda del Fumo Aspro )
+  La sessione si apre fra i tavoli della locanda, dove Dalia Drif e Shiran
+  Konno si conoscono mentre l'oste Antonikus, detto Tuono, serve i clienti.
+  Improvvise urla da fuori attirano tutti: un uomo grida che "stanno
+  arrivando", e quattro guardie cittadine cercano di fermarlo.
+
+  ( Ospedale di Fatumastra )
+  All'ospedale l'uomo continua a parlare di elfi e di indaco, mentre il
+  gruppo si divide fra chi lo segue e chi torna verso le urla dietro la
+  locanda.
 ```
+
+The DM highlights "una piccola creatura piumata" and writes *"that creature is
+Hann Caleto"*: the whole narrative comes back corrected, and so do the entity,
+the event and the timeline entry that carried the same wrong fact.
 
 | Chip | Meaning | Action on click |
 |---|---|---|
@@ -279,9 +299,77 @@ line, which is the visible surface of the uncertainty model:
 This replaces “fix the transcript” with “tell me who this was”, which is the
 same gesture the review flow uses — one picker component, reused.
 
-The DM’s existing feedback loop (select lines, describe the change, regenerate)
-is unchanged and remains the right tool for *content* corrections (“it was the
-captain, not the goblin”) rather than identity corrections.
+A provenance chip per sentence (the surface the uncertainty model wants) has no
+place in a paragraph: the narrative is prose, and a chip on every sentence would
+turn the story back into the list of independent statements it stopped being.
+
+---
+
+## 5.1 The proposed change set: one panel per page
+
+Confirming the summary produces a set of PAGES to create or update (plus the
+timeline entries they back and the links between them). A change set of a real
+session is fifteen to twenty pages, so the review is a list of **panels**, not
+rows inside one box: every page carries its own head (category sigil, title,
+`+ new page` / `~ update`, timeline and confidence) and its own body.
+
+```
++--------------------------------------------------------------------------+
+|  SESSION REVIEW                                 [ awaiting you ]  [v][^] |
+|  Proposed wiki changes                                                   |
+|  Nothing here is in the wiki yet. Open a page to read it as it will be    |
+|  written, edit what is wrong, drop what you do not want, then confirm.    |
+|  [ 19 new pages ][ 0 pages updated ][ 1 timeline entry ][ 2 links ]      |
++--------------------------------------------------------------------------+
+|  (user) CHARACTER                                       [ Inspect ][Edit]|
+|  + NEW PAGE                                                              |
+|  Hann Caleto                                   6 facts · 67% confidence  |
++--------------------------------------------------------------------------+
+|  ... 18 more panels, grouped by category ...                             |
++--------------------------------------------------------------------------+
+|  LINKS BETWEEN PAGES                          1 of 2 will be written     |
+|  (user) Sir Lucius  [owns] -> (search) carro di Sir Lucius  [no page]    |
++--------------------------------------------------------------------------+
+|  CONFIRM                                                                 |
+|  16 new pages, 1 timeline entry and 1 link will be written to the wiki    |
+|  and become visible to the players.       [ Confirm changes & update ]    |
++--------------------------------------------------------------------------+
+```
+
+- **Inspect is the page itself.** The body renders the proposal through the
+  same `PageContent` the wiki page uses, so the DM reads the page as it will
+  read — including the per-kind layout (Physical look, Location details, the
+  event's badges) — instead of a grid of disabled boxes that only resembles a
+  form. Portraits are omitted: an image is not part of the proposal.
+- **An update shows the diff.** `before` and `after` are flattened and
+  compared per field, and the panel exposes "N fields change — what the page
+  says today, and what it would say" as a disclosure: the preview already shows
+  the new state, the diff is what tells the DM that the session is *changing*
+  an existing page rather than creating one.
+- **Edit offers fields, not a JSON blob.** The narrative fields get a real
+  prose editor with the `#` page-link autocomplete, name/fact lists get one
+  editable row per item (add, remove, retype a single fact), and the attribute
+  schema of the category gets a labelled grid. Structured keys stay structured:
+  the editor writes `attributes.population`, never a flattened string.
+- **The editor mirrors the API schema.** "Add a field" only offers what
+  `wiki-service` accepts for that kind (and, for a location, for its
+  `location_type`); a draft that already carries a foreign field says so, with
+  a Remove button, because confirming such a set fails at apply time. Clearing a
+  box removes the field rather than writing an empty string.
+- **Links say what will land.** A relation connects two page titles; the
+  wiki-service resolves both against the pages the set just created plus the
+  pages the campaign had, and silently skips a link it cannot resolve. Each row
+  therefore marks its ends (`new`, no page) and the panel counts "1 of 2 will
+  be written" — the confirm summary repeats only what lands.
+- **Categories fold, and they start the way the review is going.** The
+  `Characters` / `Locations` / `Events` heads are toggles (a heading that
+  contains its own control) and they count what each category contributes.
+  While the set still awaits the DM they are open — reading the pages is the
+  job at hand; once the set is confirmed (`applying` / `applied`, or a
+  `confirmed_at`) they start folded, so the session page becomes a record of
+  what was written and opens a category on demand. A DM's own toggle always
+  wins over that default, and "Expand all" / "Collapse all" acts on both
+  levels at once.
 
 ---
 
@@ -410,12 +498,17 @@ Reused from `apps/web/components/ui.tsx`: `Card`, `Badge` (needs one new tone
 `TranscriptViewer`, `AudioPlayer` and the page’s existing `seek()` callback and
 `objectUrl()` helper.
 
+Fixed on the way: the form primitives in `components/ui.tsx` spread their props
+`after` their own `className`, so any caller that passed one utility
+(`w-48`, `font-mono`) silently dropped the whole `.rl-input-light` chrome and
+left a native control behind. They now compose the caller's class with their own.
+
 New components:
 
 | Component | Notes |
 |---|---|
 | `Modal` | none exists today; `window.confirm` is the only dialog. Needed for the review overlay, keyboard-trapped and labelled |
-| `SessionScenesCard` | **Where this session happens**: the stretches of the session as read from the transcript — place, moments, who is there, who is somewhere else, the event that started it — open by default, with no placeholder when a session has no reading. It exists because the engine EXCLUDES the members a stretch places elsewhere: an exclusion nobody can see is an exclusion nobody can correct, and the DM is the only one who knows whether the reading of their own table is right. It renders nothing at all when the session has no reading (an older session, or the engine off) |
+| ~~`SessionScenesCard`~~ | **retired in v15** — its reading is now the place label of each scene of the summary narrative (§5), so the session page reads as one story instead of a story plus a panel about places. It was: **Where this session happens**: the stretches of the session as read from the transcript — place, moments, who is there, who is somewhere else, the event that started it — open by default, with no placeholder when a session has no reading. It exists because the engine EXCLUDES the members a stretch places elsewhere: an exclusion nobody can see is an exclusion nobody can correct, and the DM is the only one who knows whether the reading of their own table is right. It renders nothing at all when the session has no reading (an older session, or the engine off) |
 | `CoverageBar` | stakes-weighted coverage of §11.1, plus the DM’s own progress
   through the questions (answered / max). It never claims a percentage it cannot
   support and never predicts a number of questions left: it shows the two facts
@@ -429,6 +522,11 @@ New components:
 | `AttributionPicker` | the roster picker, reused by the flow, the summary chips and the voices panel |
 | `ProvenanceChip` | the chip in §5 |
 | `VoicesPanel` | §6, with `Split` / `Merge` actions |
+| `SessionPlanCard` (reworked, §5.1) | the review of the proposed change set: an overview panel with the counts, one `PlanChangePanel` per page grouped by category, the links panel, the "already in the wiki" panel and the confirm panel. It owns the unsaved edits, the one open editor and the draft that `Apply to the proposal` writes |
+| `PlanChangePanel` | one proposed page: head (sigil, action, tags, confidence, Inspect/Edit/Drop), body = the page rendered by `PageContent` (Inspect), the field editor (Edit), the timeline entry and the update diff |
+| `PlanRelationsPanel` | the proposed cross-references, with each end resolved (`new` / no page) and the count of links that will be written |
+| `PageDraftForm` | the kind-aware editor of a page's `content_json`: prose fields with the `#` autocomplete, one row per list item, and the attribute grid of the category |
+| `lib/page-fields.ts` | labels, the before/after flattening and diff, and the field specs + attribute rules mirrored from `wiki-service/app/page_attributes.py` |
 | `UnattributedList` | §11.3 of the model doc |
 
 The speaker UI currently lives inline in the 820-line

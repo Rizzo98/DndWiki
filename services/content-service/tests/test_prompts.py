@@ -12,14 +12,21 @@ from app.prompts import (
 )
 
 
-def test_prompt_version_is_v13():
+def test_prompt_version_is_v15():
     # v12 adds source_refs to every extracted item and an explicit actor to
     # every event, which is what lets the attribution gate VERIFY a fact
     # instead of trusting it (docs/attribution-model.md S14.3).
     # v13 reads the '[Stretches]' note: in a stretch where the record puts
     # exactly one party member present, a beat about a party member is about THAT
     # member, and an unnamed actor ("un personaggio") is never acceptable.
-    assert PROMPT_VERSION == "v13"
+    # v14 makes the summary revision answer with a PATCH (the complete summary
+    # plus the items the correction touches) instead of echoing the whole
+    # extraction back: the echo did not fit the completion cap, so its tail -
+    # the events among it - was silently replaced by the previous revision's.
+    # v15 turns the summary into a NARRATIVE in scene blocks and the review into
+    # highlighting portions of it: independent one-beat lines read as if the
+    # creature of one line were not the character named in the next.
+    assert PROMPT_VERSION == "v15"
 
 
 def test_the_stretches_note_is_explained_to_the_model():
@@ -255,9 +262,38 @@ def test_revision_prompt_applies_corrections_everywhere():
     assert "session_summary" in SUMMARY_REVISION_SYSTEM_PROMPT
     # the corrected wording comes from the DM and must not be narrated
     assert "Do not describe the correction itself" in SUMMARY_REVISION_SYSTEM_PROMPT
-    # unchanged values (and confidence numbers) are copied verbatim
+    # confidence numbers belong to the extraction and are never rewritten
     assert "confidence" in SUMMARY_REVISION_SYSTEM_PROMPT
     assert "EXTRACTION_SCHEMA" not in SUMMARY_REVISION_SYSTEM_PROMPT
+
+
+def test_the_revision_prompt_reviews_portions_of_a_narrative():
+    """v15: the DM highlights an arbitrary passage of the prose, so the prompt
+    speaks of passages (never of lines) and always returns the whole story."""
+    assert "PASSAGE of the narrative" in SUMMARY_REVISION_SYSTEM_PROMPT
+    assert "with the mouse" in SUMMARY_REVISION_SYSTEM_PROMPT
+    assert "WHOLE narrative, block by block" in SUMMARY_REVISION_SYSTEM_PROMPT
+    assert '"location"' in SUMMARY_REVISION_SYSTEM_PROMPT
+    # a wrong place is a correction too, and it lands on the block's label
+    assert 'fix the "location" label' in SUMMARY_REVISION_SYSTEM_PROMPT
+    assert "one beat per line" not in SUMMARY_REVISION_SYSTEM_PROMPT.lower()
+
+
+def test_revision_prompt_asks_for_a_patch_not_for_the_extraction():
+    """v14: echoing the whole extraction did not fit the completion cap, and
+    its truncated tail was silently restored from the previous revision. The
+    prompt therefore asks for the summary plus ONLY the items that change."""
+    assert "PATCH" in SUMMARY_REVISION_SYSTEM_PROMPT
+    for section in ("updates", "additions", "removals"):
+        assert '"' + section + '"' in SUMMARY_REVISION_SYSTEM_PROMPT
+    for kind in ("characters", "locations", "events", "timeline_entries"):
+        assert kind in SUMMARY_REVISION_SYSTEM_PROMPT
+    # the ids are the addressing scheme, and an unknown one is fatal
+    assert '"c3"' in SUMMARY_REVISION_SYSTEM_PROMPT
+    assert '"e1"' in SUMMARY_REVISION_SYSTEM_PROMPT
+    assert "ids of the current extraction" in SUMMARY_REVISION_SYSTEM_PROMPT
+    # NOT asked to repeat what it does not change
+    assert "must not appear in" in SUMMARY_REVISION_SYSTEM_PROMPT
 
 
 def test_build_summary_revision_message_lists_targets_and_instruction():
@@ -277,24 +313,37 @@ def test_build_summary_revision_message_lists_targets_and_instruction():
     assert "CURRENT EXTRACTION (JSON)" in message
     assert "Character A was going to the city center." in message
     assert "It wasn't Character A, it was Character B" in message
-    assert "Summary line(s) concerned" in message
+    assert "Passage(s) of the summary concerned" in message
+    # the message tells the model how its answer is addressed
+    assert "every item carrying its 'id'" in message
 
 
-def test_build_summary_revision_message_accepts_dm_edited_lines():
-    # the client may send the lines exactly as displayed by the DM
-    current = {"session_summary": "old line", "characters": [], "locations": [],
-               "events": [], "timeline_entries": []}
+def test_build_summary_revision_message_accepts_dm_edited_text():
+    # the client may send the narrative exactly as displayed by the DM
+    current = {
+        "session_summary": "old narrative",
+        "summary_blocks": [{"location": "Locanda", "text": "old narrative"}],
+        "characters": [],
+        "locations": [],
+        "events": [],
+        "timeline_entries": [],
+    }
     message = build_summary_revision_message(
         current,
         [{"targets": [], "instruction": "shorten it"}],
-        summary_lines_override=["hand edited line one", "hand edited line two"],
+        summary_text_override="hand edited line one",
     )
     assert "hand edited line one" in message
-    assert "old line" not in message
+    assert "old narrative" not in message
+    # the blocks are rebuilt from the text the client sent, so the payload the
+    # model sees never disagrees with itself
+    assert "Locanda" not in message
     # no targets -> the request is about the whole summary
     assert "the whole session summary" in message
 
 
 def test_build_summary_revision_message_survives_empty_edits():
     message = build_summary_revision_message({"session_summary": "x"})
-    assert "Return the complete corrected JSON object." in message
+    # the ask is the PATCH: the whole narrative plus only what changes
+    assert "Return the patch JSON object described in your instructions" in message
+    assert "whole narrative in 'session_summary'" in message

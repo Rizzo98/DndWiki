@@ -71,7 +71,7 @@ def plan_confirmation_event(**overrides) -> Event:
     return Event(type="plan.confirmed", payload=payload)
 
 
-def regeneration_event(*, edits=None, summary_lines=None) -> Event:
+def regeneration_event(*, edits=None, summary_text=None) -> Event:
     """The event the API publishes when the DM asks for a rewrite."""
     return Event(
         type="summary.regenerate",
@@ -86,7 +86,7 @@ def regeneration_event(*, edits=None, summary_lines=None) -> Event:
                     "instruction": "It wasn't Aragorn, it was Boromir.",
                 }
             ],
-            "summary_lines": summary_lines,
+            "summary_text": summary_text,
             "requested_by": USER_ID,
         },
     )
@@ -201,14 +201,19 @@ async def test_the_merged_beats_are_composed_into_the_session_story(session_fact
     whole session and rewrites them into a story - and that is what is saved."""
     beats = "\n".join(f"beat {index}" for index in range(5))
     llm = FakeLLM([make_extraction(session_summary=beats)])
-    llm.composed = ["La sessione si apre nella locanda.", "Il gruppo esce nella strada."]
+    llm.composed = [
+        {"location": "Locanda del Fumo Aspro", "text": "La sessione si apre nella locanda."},
+        {"location": "", "text": "Il gruppo esce nella strada."},
+    ]
 
     await _run_phase1(session_factory, settings, llm=llm)
 
     assert llm.compose_calls, "the beats are worth composing"
     async with session_factory() as db:
         row = await job_services.latest_summary_for_session(db, UUID(SESSION_ID))
-    assert row.summary == "La sessione si apre nella locanda.\nIl gruppo esce nella strada."
+    # the narrative is stored as text AND as the blocks the page labels
+    assert row.summary == "La sessione si apre nella locanda.\n\nIl gruppo esce nella strada."
+    assert row.summary_blocks == llm.composed
 
 
 async def test_a_failed_composition_keeps_the_beats_the_dm_already_knew(session_factory, settings):
@@ -225,10 +230,10 @@ async def test_a_failed_composition_keeps_the_beats_the_dm_already_knew(session_
     assert "beat 4" in row.summary
 
 
-async def test_a_short_summary_is_never_sent_to_the_composer(session_factory, settings):
-    """Two beats are already a story, and every extra call is a chance to invent
-    something."""
-    llm = FakeLLM([make_extraction(session_summary="one beat\ntwo beats")])
+async def test_a_single_beat_is_never_sent_to_the_composer(session_factory, settings):
+    """One beat IS the session: the call would be a cost with nothing to buy, and
+    every extra call is a chance to invent something."""
+    llm = FakeLLM([make_extraction(session_summary="the only beat")])
 
     await _run_phase1(session_factory, settings, llm=llm)
 
@@ -362,7 +367,7 @@ async def test_process_job_happy_path(session_factory, settings):
         jobs = (await db.execute(select(GenerationJob))).scalars().all()
     apply_job = next(j for j in jobs if j.phase == "apply")
     assert apply_job.status == "done"
-    assert apply_job.prompt_version == "v13"
+    assert apply_job.prompt_version == "v15"
     assert float(apply_job.confidence) == 1.0
     assert _draft_ids_from(apply_job) == {
         PAGE_UUIDS["Aragorn"], PAGE_UUIDS["Moria"], PAGE_UUIDS["Entering Moria"],
@@ -909,11 +914,26 @@ async def test_process_job_excludes_dm_speaker(session_factory, settings):
 
 async def test_process_summary_regeneration_applies_feedback(session_factory, settings):
     """The DM's correction is applied to the persisted extraction and parked
-    back on summary_ready as a new revision."""
-    revised = make_extraction()
-    revised["session_summary"] = "Boromir was going to the city center."
-    revised["characters"][0]["name"] = "Boromir"
-    llm = FakeLLM(revised=revised)
+    back on summary_ready as a new revision.
+
+    The correction is a PATCH over the reviewable extraction, and it has to
+    reach the events and the timeline - not only the summary lines, which is
+    the bug this protocol exists for.
+    """
+    patch = {
+        "session_summary": "Boromir was going to the city center.",
+        "updates": {
+            "characters": {"c0": {"name": "Boromir"}},
+            "events": {
+                "e0": {
+                    "description": "Boromir passes the gate.",
+                    "participants": ["Boromir"],
+                }
+            },
+            "timeline_entries": {"t0": {"summary": "Boromir opens the gate."}},
+        },
+    }
+    llm = FakeLLM(revised=patch)
     session_client = FakeSessionClient()
     publisher = FakePublisher()
 
@@ -942,6 +962,15 @@ async def test_process_summary_regeneration_applies_feedback(session_factory, se
     assert summary.revision == 2
     assert summary.review_status == "draft"
     assert summary.characters[0]["name"] == "Boromir"
+    # ... and the same correction reached the events and the timeline entries
+    assert summary.events[0]["description"] == "Boromir passes the gate."
+    assert summary.events[0]["participants"] == ["Boromir"]
+    assert summary.timeline_entries[0]["summary"] == "Boromir opens the gate."
+    # nothing the patch did not mention moved (the merger's own fields included)
+    assert summary.locations[0]["name"] == "Moria"
+    assert summary.characters[0]["description"] == "A ranger of the north."
+    assert summary.characters[0]["mentions"] == 3
+    assert summary.events[0]["title"] == "Entering Moria"
     # the feedback is kept for auditability
     assert summary.edit_history[0]["instruction"] == "It wasn't Aragorn, it was Boromir."
     assert summary.edit_history[0]["targets"] == ["The party reaches the gates of Moria."]
@@ -955,15 +984,17 @@ async def test_process_summary_regeneration_applies_feedback(session_factory, se
 
 
 async def test_process_summary_regeneration_keeps_confidences(session_factory, settings):
-    """A rewrite must not reset the confidence badges: the model cannot
-    recompute them, the worker carries the previous values over."""
+    """A rewrite must not reset the confidence badges: the patch names only the
+    fields the correction changes, so every confidence the extraction carries
+    (which the model cannot recompute) survives the revision."""
     session_client = FakeSessionClient()
     await _run_phase1(session_factory, settings, session_client=session_client)
 
-    # the model echoes the entities back without any confidence field
-    revised = make_extraction()
-    revised["session_summary"] = "Rewritten."
-    llm = FakeLLM(revised=revised)
+    patch = {
+        "session_summary": "Rewritten.",
+        "updates": {"events": {"e0": {"description": "The party passes the door."}}},
+    }
+    llm = FakeLLM(revised=patch)
     async with session_factory() as db:
         await process_summary_regeneration(
             regeneration_event(), settings, session_client, llm, FakePublisher(), db
@@ -974,23 +1005,24 @@ async def test_process_summary_regeneration_keeps_confidences(session_factory, s
     assert summary.confidence == 1.0
     assert summary.characters[0]["confidence"] == 1.0
     assert summary.events[0]["confidence"] == 1.0
+    assert summary.events[0]["description"] == "The party passes the door."
 
 
-async def test_process_summary_regeneration_accepts_client_lines(session_factory, settings):
-    """The client sends the lines as displayed, so hand edits are honored."""
+async def test_process_summary_regeneration_accepts_client_text(session_factory, settings):
+    """The client sends the narrative as displayed, so hand edits are honored."""
     session_client = FakeSessionClient()
     await _run_phase1(session_factory, settings, session_client=session_client)
     llm = FakeLLM()
     async with session_factory() as db:
         await process_summary_regeneration(
-            regeneration_event(summary_lines=["hand edited line"]),
+            regeneration_event(summary_text="hand edited narrative"),
             settings,
             session_client,
             llm,
             FakePublisher(),
             db,
         )
-    assert llm.revise_calls[0]["summary_lines"] == ["hand edited line"]
+    assert llm.revise_calls[0]["summary_text"] == "hand edited narrative"
 
 
 async def test_process_summary_regeneration_skips_when_not_reviewable(session_factory, settings):

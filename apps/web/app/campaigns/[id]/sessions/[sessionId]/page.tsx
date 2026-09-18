@@ -10,7 +10,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import { Alert, Badge, Button, Card, Collapsible, EmptyState, Field, FileInput, Select, SessionStatusBadge, TextInput, fmtDate, fmtDuration, fmtPercent } from "@/components/ui";
 import { AudioPlayer } from "@/components/session/audio-player";
 import { SessionReviewCard } from "@/components/session/review";
-import { SessionScenesCard } from "@/components/session/scenes";
+
 import { SessionPlanCard } from "@/components/session/session-plan";
 import { SessionSummaryCard } from "@/components/session/session-summary";
 import { LOW_SPEAKER_CONFIDENCE, TranscriptViewer, speakerConfidenceByLabel } from "@/components/session/transcript";
@@ -315,7 +315,7 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
     return () => window.clearInterval(t);
   }, [reviewBusy, settleTarget, session?.status, reload, reloadSummary, reloadPlan, reloadSpeakers]);
 
-  async function regenerateSummary(edits: SummaryEdit[], lines: string[]) {
+  async function regenerateSummary(edits: SummaryEdit[], text: string) {
     if (!token) return;
     setReviewBusy("regenerate");
     setFormError(null);
@@ -323,7 +323,9 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
     try {
       const res = await contentApi.regenerateSummary(token, params.sessionId, {
         edits,
-        summary_lines: lines,
+        // The narrative exactly as the DM is reading it: the passages they
+        // highlighted are quoted from this text.
+        summary_text: text,
       });
       setNotice(
         "Rewriting the summary (revision " +
@@ -667,17 +669,12 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
         }}
       />
 
-      {/* The reading behind the presence evidence: which stretch of the session
-          each moment belongs to, and who the transcript puts there. It has to be
-          visible because the engine EXCLUDES the ones it places elsewhere, and an
-          exclusion nobody can see is one nobody can correct. */}
-      <SessionScenesCard
-        token={token}
-        sessionId={params.sessionId}
-        sessionStatus={session.status}
-        onSeek={seek}
-      />
-
+      {/*
+        The reading of "where this session happens" is not a panel any more: it
+        is the place label on each scene of the narrative below, so the DM reads
+        the story and the places it happens in as one thing instead of two
+        (docs/attribution-ux.md S3.4).
+      */}
       <SessionSummaryCard
         summary={summary}
         campaignId={params.id}
@@ -696,6 +693,8 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
           plan={plan}
           campaignId={params.id}
           linkIndex={linkIndex}
+          pages={pages ?? []}
+          sessionNames={{ [params.sessionId]: session.title ?? "this session" }}
           sessionStatus={session.status}
           canReview={canReviewSummary}
           busy={planBusy}

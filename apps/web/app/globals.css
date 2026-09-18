@@ -350,6 +350,22 @@ select option {
     border-top: 1px solid var(--rl-border-parchment);
   }
 
+  /* A passage of the session summary the DM added to a change: the accent
+     itself, so what is about to be rewritten is unmistakable. */
+  .rl-mark {
+    border-radius: 3px;
+    background-color: var(--rl-accent-500);
+    color: var(--rl-text-on-dark-primary);
+    padding: 0 1px;
+  }
+  /* While a passage is only being chosen, the highlight IS the browser's own
+     selection (the + has not been pressed yet): same colour, so the passage
+     does not change appearance when it is added. */
+  .rl-narrative ::selection {
+    background-color: var(--rl-accent-500);
+    color: var(--rl-text-on-dark-primary);
+  }
+
   /* ----------------------------------------------------------- app chrome */
   /* The top bar is dark chrome: warm-black, hairline bottom edge, accent for
      the active destination (see the nav-item pattern in the skill). */

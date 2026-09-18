@@ -3,12 +3,16 @@
 The session summary is the intermediate layer between the transcript and the
 wiki. These two DM-only endpoints drive its review:
 
-- POST /api/content/sessions/{id}/summary/regenerate — the DM selected one or
-  more summary lines and described what must change ("it wasn't Character A,
-  it was Character B"). The request is queued on the content.generate queue;
-  the worker applies it to the whole extraction (summary lines, entities,
-  events, timeline entries) and parks the session back on 'summary_ready'
-  with a new revision.
+- POST /api/content/sessions/{id}/summary/regenerate — the DM highlighted one
+  or more portions of the summary and described what must change ("it wasn't
+  Character A, it was Character B"). The request is queued on the
+  content.generate queue;
+  the worker answers it with one LLM call that returns a PATCH over the
+  persisted extraction (the complete corrected summary plus the items the
+  correction touches, addressed by id) and merges it, so the change reaches
+  the summary lines, the entities, the events and the timeline entries while
+  everything else keeps the value the DM reviewed; the session then parks back
+  on 'summary_ready' with a new revision.
 - POST /api/content/sessions/{id}/summary/confirm — the DM accepts the
   summary. The worker then turns it into the PROPOSED change set the DM
   reviews on the session page ('generating_wiki' -> 'wiki_plan_ready'); the
@@ -50,8 +54,8 @@ router = APIRouter(prefix="/api/content", tags=["summary-review"])
 #: retrying it.
 REVIEWABLE_STATUSES = frozenset({"summary_ready", "failed"})
 
-#: Most summary lines one review request may touch (a sanity cap on the
-#: request body, the DM selects a handful of lines in practice).
+#: Most passages of the summary one review request may touch (a sanity cap on
+#: the request body, the DM highlights a handful of passages in practice).
 MAX_TARGETS_PER_EDIT = 50
 
 # Process-level singletons (tests monkeypatch these to inject fakes).
@@ -80,14 +84,15 @@ def get_publisher(request: Request) -> EventPublisher:
 
 
 class SummaryEdit(BaseModel):
-    """One review request: the lines concerned + what must change."""
+    """One review request: the portions concerned + what must change."""
 
     targets: list[str] = Field(
         default_factory=list,
         max_length=MAX_TARGETS_PER_EDIT,
         description=(
-            "Summary lines the request is about, verbatim. Empty = the request "
-            "concerns the summary as a whole."
+            "Portions of the summary the request is about, quoted verbatim from "
+            "the narrative (they may begin and end mid-sentence). Empty = the "
+            "request concerns the summary as a whole."
         ),
     )
     instruction: str = Field(
@@ -102,11 +107,11 @@ class SummaryRegenerateRequest(BaseModel):
     edits: list[SummaryEdit] = Field(
         min_length=1, max_length=20, description="One entry per correction."
     )
-    summary_lines: list[str] | None = Field(
+    summary_text: str | None = Field(
         default=None,
         description=(
-            "The summary lines exactly as the DM sees them. Optional: it lets "
-            "the client send back hand-edited lines."
+            "The narrative exactly as the DM sees it. Optional: it lets the "
+            "client send back hand-edited text."
         ),
     )
 
@@ -185,7 +190,7 @@ async def regenerate_summary(
                 "summary_id": str(row.id),
                 "revision": row.revision,
                 "edits": edits,
-                "summary_lines": body.summary_lines,
+                "summary_text": body.summary_text,
                 "requested_by": str(user.get("sub") or "") or None,
             },
         )

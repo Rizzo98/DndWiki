@@ -328,9 +328,10 @@ class FakeWikiClient:
 class FakeLLM:
     """Returns one canned extraction per chunk; records the views.
 
-    'revised' is what revise_summary() returns (defaults to the extraction it
-    was given, i.e. an identity rewrite); 'revise_error' /
-    'revise_extractions' drive the failure and multi-call paths.
+    'revised' is the PATCH revise_summary() returns (defaults to the narrative it
+    was given, i.e. a revision that changes nothing); 'revise_error' drives the
+    failure path. 'composed' is the story compose_summary() returns (scene
+    blocks), None meaning "the model could not write it".
     """
 
     def __init__(
@@ -345,9 +346,10 @@ class FakeLLM:
         self.revised = revised
         self.revise_calls: list[dict] = []
         self.revise_error: Exception | None = None
-        #: What compose_summary() returns; None means "the model could not do it",
-        #: which is the case the worker has to survive by keeping the beats.
-        self.composed: list[str] | None = None
+        #: What compose_summary() returns (scene blocks); None means "the model
+        #: could not do it", which is the case the worker has to survive by
+        #: keeping the beats.
+        self.composed: list[dict] | None = None
         self.compose_calls: list[dict] = []
         self.compose_error: Exception | None = None
 
@@ -364,28 +366,42 @@ class FakeLLM:
             raise self.error
         return [self.extractions[min(i, len(self.extractions) - 1)] for i in range(len(chunk_views))]
 
-    async def compose_summary(self, current: dict, *, language: str | None = None) -> list[str]:
-        self.compose_calls.append({"current": current, "language": language})
+    async def compose_summary(
+        self,
+        current: dict,
+        *,
+        language: str | None = None,
+        scenes: list[dict] | None = None,
+    ) -> list[dict]:
+        self.compose_calls.append(
+            {"current": current, "language": language, "scenes": scenes}
+        )
         if self.compose_error is not None:
             raise self.compose_error
-        return list(self.composed or [])
+        return [dict(block) for block in self.composed or []]
 
     async def revise_summary(
         self,
         current: dict,
         edits: list[dict] | None = None,
-        summary_lines_override: list[str] | None = None,
+        summary_text_override: str | None = None,
     ) -> dict:
         self.revise_calls.append(
             {
                 "current": current,
                 "edits": edits,
-                "summary_lines": summary_lines_override,
+                "summary_text": summary_text_override,
             }
         )
         if self.revise_error is not None:
             raise self.revise_error
-        return dict(self.revised if self.revised is not None else current)
+        if self.revised is not None:
+            return self.revised
+        return {
+            "session_summary": current.get("summary_blocks")
+            or current.get("session_summary")
+            or ""
+        }
 
 
 class FakePublisher:

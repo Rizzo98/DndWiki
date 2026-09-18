@@ -42,7 +42,13 @@ class ServiceSettings(Settings):
     # '[Stretches]' note in front of a chunk means: in a stretch where the record
     # puts exactly one party member present, a beat about a party member is about
     # THAT member, and an unnamed actor ("un personaggio") is never acceptable.
-    prompt_version: str = "v13"
+    # v14 makes the summary revision answer with a PATCH (the summary + the
+    # items the correction touches) instead of echoing the whole extraction:
+    # the echo did not fit the completion cap and its tail - events, timeline
+    # entries - was silently replaced by the previous revision's (app/revision.py).
+    # v15 writes the summary as one NARRATIVE in scene blocks and is reviewed by
+    # highlighted portion instead of ticking lines (app/summary.py).
+    prompt_version: str = "v15"
     # Parallel per-chunk LLM calls per session job.
     llm_chunk_concurrency: int = 4
     # Corrective retries per chunk when the LLM returns malformed JSON

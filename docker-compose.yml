@@ -414,7 +414,7 @@ services:
       LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.2}
       LLM_CHUNK_CONCURRENCY: ${LLM_CHUNK_CONCURRENCY:-4}
       LLM_JSON_RETRIES: ${LLM_JSON_RETRIES:-1}
-      PROMPT_VERSION: ${PROMPT_VERSION:-v12}
+      PROMPT_VERSION: ${PROMPT_VERSION:-v15}
       # With the engine on, generation reads the attributed transcript and the
       # attribution gate filters what may reach a character page.
       ATTRIBUTION_ENABLED: ${ATTRIBUTION_ENABLED:-false}
