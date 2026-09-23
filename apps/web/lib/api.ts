@@ -335,6 +335,16 @@ export interface SummaryBlock {
   text: string;
 }
 
+/** One beat of the session quoted twice: the pipeline read one moment from two
+ *  parts of the recording and wrote it as two. A FLAG for the DM, not a
+ *  question - nothing has to be answered, and an empty list renders nothing. */
+export interface SummaryConflict {
+  /** How alike the two beats are (0..1). Shown so the DM can gauge the call. */
+  score: number;
+  first: { text: string; from: string; to: string };
+  second: { text: string; from: string; to: string };
+}
+
 export interface SessionSummary {
   id: string;
   session_id: string;
@@ -343,6 +353,8 @@ export interface SessionSummary {
   summary: string;
   /** The same narrative in scenes: the place labels above the paragraphs. */
   summary_blocks: SummaryBlock[] | null;
+  /** Beats that look like one moment the session read twice (usually []). */
+  conflicts: SummaryConflict[] | null;
   language: string | null;
   characters: SummaryEntity[];
   locations: SummaryEntity[];

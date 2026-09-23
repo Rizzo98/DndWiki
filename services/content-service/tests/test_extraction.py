@@ -15,17 +15,57 @@ import types
 import pytest
 from conftest import make_extraction
 
+from app.chunking import OwnedPart
 from app.core.config import ServiceSettings
 from app.extraction import (
     CORRECT_JSON_MESSAGE,
     ExtractionError,
     LLMClient,
     TruncatedResponse,
+    drop_unresolvable_refs,
+    reference_key,
 )
 
 
 def _client() -> LLMClient:
     return LLMClient(ServiceSettings())
+
+
+# --------------------------------------------------------------------------
+# citations: what the model copies is not what the line offers
+# --------------------------------------------------------------------------
+#
+# Measured on a real chunk of a diarized session: the model answered
+# "source_refs": ["[00:18:40]", "[00:19:41]", ...] - the reference exactly as the
+# line shows it - while the marker the view offers is the bare "00:18:40". Every
+# correct citation was therefore dropped as invented (25 to 46 per call), and the
+# extraction lost the traceability the field exists for.
+
+
+def test_a_bracketed_citation_is_the_citation_not_a_fabrication():
+    assert reference_key("[00:18:40]") == "00:18:40"
+    assert reference_key("  [u_00412] ") == "u_00412"
+    assert reference_key("") == ""
+    assert reference_key(None) == ""
+
+
+def test_references_are_kept_and_canonicalised():
+    payload = {
+        "characters": [
+            {"name": "Aragorn", "source_refs": ["[00:18:40]", "00:19:41"]},
+            {"name": "Boromir", "source_refs": ["u_09999", "[00:19:41]"]},
+        ]
+    }
+    dropped = drop_unresolvable_refs(payload, {"00:18:40", "00:19:41"})
+    assert dropped == 1, "only the invented one goes"
+    assert payload["characters"][0]["source_refs"] == ["00:18:40", "00:19:41"]
+    assert payload["characters"][1]["source_refs"] == ["00:19:41"]
+
+
+def test_an_item_that_loses_every_reference_keeps_an_empty_list():
+    payload = {"events": [{"title": "A", "source_refs": ["u_00001", "u_00002"]}]}
+    assert drop_unresolvable_refs(payload, {"00:18:40"}) == 2
+    assert payload["events"][0]["source_refs"] == []
 
 
 # ------------------------------------------------------------- _parse: repair
@@ -180,6 +220,51 @@ async def test_extract_chunk_passes_out_of_world_to_prompt(fake_litellm):
     assert "never characters" in user_message
 
 
+async def test_extract_chunk_passes_the_owned_boundary_to_prompt(fake_litellm):
+    fake = fake_litellm([json.dumps(make_extraction())])
+    client = _client()
+    await client.extract_chunk("view", 3, 5, owned=OwnedPart("u_00436", "u_00595", 136))
+    user_message = fake.calls[0]["messages"][1]["content"]
+    assert "starts at u_00436" in user_message
+    assert "do NOT write a session_summary beat" in user_message
+
+
+async def test_extract_many_gives_every_chunk_its_own_boundary(fake_litellm):
+    """One marker per chunk, and no boundary sentence for the first one.
+
+    Matched by view text rather than by call order: the chunks run concurrently,
+    so the order the requests arrive in is not something to assert on.
+    """
+    fake = fake_litellm([json.dumps(make_extraction())] * 3)
+    client = _client()
+    await client.extract_many(
+        ["view-a", "view-b", "view-c"],
+        concurrency=3,
+        owned=[
+            OwnedPart("u_00001", "u_00164", 164),
+            OwnedPart("u_00165", "u_00299", 135),
+            OwnedPart("u_00300", "u_00435", 136),
+        ],
+    )
+    contents = [call["messages"][1]["content"] for call in fake.calls]
+    by_view = {
+        view: next(content for content in contents if view in content)
+        for view in ("view-a", "view-b", "view-c")
+    }
+    assert "starts at" not in by_view["view-a"]
+    assert "starts at u_00165" in by_view["view-b"]
+    assert "starts at u_00300" in by_view["view-c"]
+
+
+async def test_extract_many_survives_a_short_boundary_list(fake_litellm):
+    """The legacy path has no refs to name a boundary with, so its chunks get
+    none - which is the behaviour that path already had."""
+    fake = fake_litellm([json.dumps(make_extraction())] * 2)
+    client = _client()
+    await client.extract_many(["view-a", "view-b"], concurrency=2)
+    assert all("starts at" not in call["messages"][1]["content"] for call in fake.calls)
+
+
 async def test_extract_chunk_repairs_malformed_json(fake_litellm):
     good = json.dumps(make_extraction())
     bad = good.replace('", "characters"', '" "characters"', 1)
@@ -287,6 +372,35 @@ async def test_revise_summary_honors_client_text(fake_litellm):
     assert "hand edited narrative" in fake.calls[0]["messages"][1]["content"]
     # the narrative the model is shown is the DM's, not the stored one
     assert "The party reaches the gates of Moria." not in fake.calls[0]["messages"][1]["content"]
+
+
+async def test_revise_summary_keeps_the_place_labels_of_the_displayed_text(fake_litellm):
+    """The client sends the narrative as the plain text the page displays, so
+    the blocks are rebuilt from it - and the place labels, which are block
+    metadata that text cannot carry, are re-attached from the stored blocks.
+
+    The revision prompt tells the model to copy the blocks it does not touch
+    "verbatim, labels included", so a payload whose labels have already been
+    blanked is a payload it cannot keep: a correction to one sentence used to
+    come back with every place of the session wiped.
+    """
+    fake = fake_litellm([json.dumps({"session_summary": "rewritten"})])
+    client = _client()
+    blocks = [
+        {"location": "Locanda del Fumo Aspro", "text": "Il gruppo si ritrova."},
+        {"location": "Strada fuori dalla locanda", "text": "Fuori si sentono urla."},
+    ]
+    current = {
+        **make_extraction(),
+        "session_summary": "\n\n".join(block["text"] for block in blocks),
+        "summary_blocks": blocks,
+    }
+    # exactly what the session page sends back: the prose, joined by blank lines
+    displayed = "\n\n".join(block["text"] for block in blocks)
+    await client.revise_summary(current, [], summary_text_override=displayed)
+    user = fake.calls[0]["messages"][1]["content"]
+    assert '"location": "Locanda del Fumo Aspro"' in user
+    assert '"location": "Strada fuori dalla locanda"' in user
 
 
 async def test_revise_summary_repairs_and_retries(fake_litellm):

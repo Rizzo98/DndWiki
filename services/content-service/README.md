@@ -27,7 +27,7 @@ by-product: nothing is written to the wiki before the DM has confirmed it.
 4. Split into overlapping chunks (~`CHUNK_TOKENS` tokens, `CHUNK_OVERLAP`
    overlap, never splitting a segment).
 5. For each chunk, call the LLM (via **LiteLLM**) with a strict JSON schema
-   (`app/prompts.py`, `PROMPT_VERSION=v15`): transcript language, session
+   (`app/prompts.py`, `PROMPT_VERSION=v26`): transcript language, session
    summary, characters (name, aliases, description, durable facts,
    session-specific facts, `is_party`, mentions), locations (+ `place_type`,
    `part_of` geospatial hints and the v8 type-specific detail fields:
@@ -180,10 +180,10 @@ state-machine 409, so a failed job is never re-run blindly or DLQ-spammed.
 | `LLM_PROVIDER` | `deepseek` | provider name recorded on jobs/summaries |
 | `LLM_MODEL` | `deepseek/deepseek-chat` | any LiteLLM `provider/model` id |
 | `LLM_TEMPERATURE` | 0.2 | low for extraction |
-| `LLM_MAX_TOKENS` | 4096 | per-call completion cap |
+| `LLM_MAX_TOKENS` | 8192 | per-call completion cap (a real chunk answers with ~2,000 tokens, but the same chunk can exceed 4,096 on another sample; a cut-off answer is never repaired, so the session failed) |
 | `LLM_CHUNK_CONCURRENCY` | 4 | parallel per-chunk LLM calls |
 | `LLM_JSON_RETRIES` | 1 | corrective retries per call on malformed JSON (0 = off) |
-| `PROMPT_VERSION` | `v15` | version of `app/prompts.py`, recorded per job |
+| `PROMPT_VERSION` | `v26` | version of `app/prompts.py`, recorded per job |
 | `CHUNK_TOKENS` | 4000 | target chunk size (char/4 estimate) |
 | `CHUNK_OVERLAP` | 0.1 | fraction of chunk re-seen by the next one |
 | `MAX_CHUNKS_PER_SESSION` | 16 | safety cap; beyond this the job fails |

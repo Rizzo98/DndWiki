@@ -99,6 +99,11 @@ async def save_summary(
     blocks, text = summary_from(merged.get("summary_blocks") or merged.get("session_summary"))
     row.summary = text
     row.summary_blocks = blocks
+    # The beats that looked like one moment recorded twice (app/conflicts.py),
+    # as the worker found them. Stored here because the BEATS are not persisted:
+    # they are scaffolding for the compose call, and the flag is all that has to
+    # survive it to reach the DM.
+    row.conflicts = merged.get("conflicts") or []
     row.language = (merged.get("language") or "").strip() or None
     row.party_characters = list(party_characters or [])
     row.characters = merged.get("characters") or []
@@ -164,6 +169,12 @@ async def apply_revision(
     row.prompt_version = prompt_version
     row.review_status = REVIEW_DRAFT
     row.revision = int(row.revision or 1) + 1
+    # The flags describe the BEATS that produced the draft, and a revision does
+    # not recompute the beats: the DM has now read the passage and said what to
+    # write instead. Keeping the flag would leave the pipeline contradicting the
+    # text it sits next to - "we wrote this twice" beside the corrected sentence -
+    # so it is cleared. A flag lives as long as the draft it was raised about.
+    row.conflicts = []
     if edits:
         row.edit_history = [*(row.edit_history or []), *edits]
     await db.commit()

@@ -13,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 import app.models  # noqa: F401 — register tables on Base.metadata
 from app.clients.session_service import ConflictTransition
 from app.core.config import ServiceSettings
+from app.speakers import SpeakerReading
 
 SESSION_ID = "11111111-1111-1111-1111-111111111111"
 CAMPAIGN_ID = "22222222-2222-2222-2222-222222222222"
@@ -188,15 +189,30 @@ class FakeUserClient:
 
 
 class FakeCampaignClient:
-    """Returns the campaign DM user id; records the campaign it was asked for."""
+    """Returns the campaign DM user id and the roster; records what was asked for."""
 
-    def __init__(self, dm_user_id: str | None = None):
+    def __init__(
+        self,
+        dm_user_id: str | None = None,
+        members: list[dict] | None = None,
+        members_error: Exception | None = None,
+    ):
         self.dm_user_id = dm_user_id
         self.calls: list[str] = []
+        #: What list_members() answers with (campaign-service's member rows), and
+        #: the error that drives the "campaign unreachable" path.
+        self.members = members if members is not None else []
+        self.members_error = members_error
 
     async def campaign_dm(self, campaign_id) -> str | None:
         self.calls.append(str(campaign_id))
         return self.dm_user_id
+
+    async def list_members(self, campaign_id) -> list[dict]:
+        self.calls.append(str(campaign_id))
+        if self.members_error is not None:
+            raise self.members_error
+        return list(self.members)
 
 
 class FakeWikiClient:
@@ -352,6 +368,13 @@ class FakeLLM:
         self.composed: list[dict] | None = None
         self.compose_calls: list[dict] = []
         self.compose_error: Exception | None = None
+        #: What read_speakers() returns (app.speakers.SpeakerReading). The default
+        #: is an EMPTY reading, i.e. "the recording established nothing": every
+        #: test that does not care about the cast keeps the views it always had.
+        #: 'cast_lines' records what the reading was shown.
+        self.reading: SpeakerReading | None = SpeakerReading()
+        self.reading_error: Exception | None = None
+        self.cast_lines: list[str] = []
 
     async def extract_many(
         self,
@@ -359,12 +382,30 @@ class FakeLLM:
         *,
         concurrency: int,
         out_of_world: list[str] | None = None,
+        owned: list | None = None,
     ) -> list[dict]:
         self.views = list(chunk_views)
         self.out_of_world = out_of_world
+        #: The slice of the session each chunk narrates (chunking.OwnedPart):
+        #: where it starts and how many beats it owes. Recorded so a test can
+        #: assert both reach the model instead of trusting they were threaded
+        #: through.
+        self.owned = list(owned or [])
         if self.error is not None:
             raise self.error
         return [self.extractions[min(i, len(self.extractions) - 1)] for i in range(len(chunk_views))]
+
+    async def read_speakers(self, lines: list[str]):
+        """The session-wide cast reading (app/speakers.py).
+
+        'reading' is what the model answers with; None means "could not read it",
+        which is the case the worker has to survive by summarising exactly as it
+        did before the reading existed.
+        """
+        self.cast_lines = list(lines)
+        if self.reading_error is not None:
+            raise self.reading_error
+        return self.reading
 
     async def compose_summary(
         self,

@@ -37,7 +37,13 @@ Pipeline (per session):
    player display names (user-service), and build a compact '[HH:MM:SS]
    NAME: text' view.
 4. Split into overlapping token-bounded chunks; extract structured JSON from
-   each chunk via LiteLLM (bounded concurrency).
+   each chunk via LiteLLM (bounded concurrency). The overlap is there so an
+   entity near a boundary is seen twice, so the BEATS are partitioned instead
+   (chunking.owned_ranges): every chunk is told which line it narrates from, and
+   a moment that begins before it is the previous chunk's to tell. Two chunks
+   narrating one moment in their own words is how a single NPC became two people
+   in the summary - the merger de-duplicates on identical text and cannot see
+   that the two lines are the same moment.
 5. Merge across chunks (dedupe by name, longest description, summed mentions,
    beats concatenated in chunk order), write the session's STORY from them
    (SUMMARY_COMPOSE_PROMPT -> the narrative in scene blocks) and persist the
@@ -59,6 +65,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -71,7 +78,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import services as job_services
 from app.attribution import apply_gate
-from app.chunking import chunk_artifact, chunk_transcript, stretch_note
+from app.chunking import (
+    OwnedPart,
+    build_view_lines,
+    build_view_lines_from_artifact,
+    chunk_ranges,
+    owned_parts,
+    stretch_note,
+)
 from app.clients.campaign_service import CampaignServiceClient
 from app.clients.session_service import (
     STATUS_APPLYING_WIKI,
@@ -86,21 +100,29 @@ from app.clients.session_service import (
 )
 from app.clients.user_service import UserServiceClient
 from app.clients.wiki_service import WikiServiceClient, WikiServiceError
+from app.conflicts import conflicts_payload, find_conflicts
 from app.core.config import ServiceSettings, get_settings
 from app.extraction import LLMClient
 from app.merger import (
     exclude_character_names,
     is_narrator_name,
     merge_extractions,
+    rename_characters,
 )
 from app.models import PHASE_APPLY, PHASE_SUMMARY, PHASE_WIKI, PLAN_APPLIED
 from app.planner import build_change_set
 from app.revision import apply_summary_revision, describe_revision
+from app.roster import CampaignRoster, roster_from_members
+from app.roster import describe as describe_roster
 from app.services.summaries import summary_lines
+from app.speakers import describe as describe_reading
 from app.storage import ObjectStorage
 from app.summary import blocks_to_text, describe_blocks
 
 logger = logging.getLogger(__name__)
+
+#: Sentence split used only to decide whether a tightening pass is worth a call.
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
 #: Session statuses a transcript distillation may start from: a freshly
 #: identified session, or one whose distillation failed and whose message is
@@ -310,8 +332,20 @@ async def _build_chunk_views(
     storage: ObjectStorage,
     user_client: UserServiceClient,
     campaign_client: CampaignServiceClient | None,
-) -> tuple[list[str], list[str], list[str]]:
-    """Named transcript view ready for the LLM: (views, party, dm_names).
+    llm: LLMClient | None = None,
+) -> tuple[list[str], list[str], list[str], list[OwnedPart], CampaignRoster]:
+    """Named transcript view ready for the LLM.
+
+    Returns (views, party, dm_names, owned, roster). The roster comes back as well
+    as going into the view because it is used TWICE: it tells the extraction who
+    the player characters are, and it tells the merger later which drafted names
+    are people rather than characters (process_job).
+
+    'owned' is one OwnedPart per chunk (chunking.owned_parts): the slice of the
+    session that chunk narrates - where it starts AND how big it is. The chunks
+    overlap so that entities near a boundary are seen twice, which is the wrong
+    thing for the story, so the beats are partitioned and every chunk is told
+    where its part begins and how many beats it owes.
 
     Two sources, one output. With ATTRIBUTION_ENABLED the view comes from the
     ATTRIBUTED transcript (transcripts/{id}/attributed.json), which carries a
@@ -326,7 +360,10 @@ async def _build_chunk_views(
             f"transcripts/{session_id}/attributed.json",
         )
     if artifact:
-        return await _artifact_views(artifact, settings, storage)
+        # An attributed artifact already carries its roster (per-utterance speaker
+        # and role), so there is nothing for the campaign lookup to add.
+        views, party, names, owned = await _artifact_views(artifact, settings, storage)
+        return views, party, names, owned, CampaignRoster()
 
     transcript = await storage.read_json(
         settings.minio_transcripts_bucket, f"transcripts/{session_id}/transcript.json"
@@ -348,36 +385,108 @@ async def _build_chunk_views(
         for name in party_character_names(speaker_map)
         if name not in dm_names and not is_narrator_name(name)
     ]
-    chunks = chunk_transcript(
-        transcript.get("segments", []),
-        speaker_names,
-        max_tokens=settings.chunk_tokens,
-        overlap=settings.chunk_overlap,
+    lines = build_view_lines(transcript.get("segments", []), speaker_names)
+    ranges = chunk_ranges(
+        lines, max_tokens=settings.chunk_tokens, overlap=settings.chunk_overlap
     )
-    if not chunks:
+    if not ranges:
         raise ValueError(f"session {session_id} transcript has no segments to generate from")
-    if len(chunks) > settings.max_chunks_per_session:
+    if len(ranges) > settings.max_chunks_per_session:
         raise ValueError(
-            f"session {session_id} yields {len(chunks)} chunks "
+            f"session {session_id} yields {len(ranges)} chunks "
             f"(cap {settings.max_chunks_per_session}); refusing to generate"
         )
+    # THE READING THAT MAKES A DIARIZED SESSION SUMMARISABLE. Nothing above this
+    # line knows who any voice is: the speaker map is empty whenever this branch is
+    # taken without one (no speakers.identified yet), so 'party' is empty, no
+    # speaker is out-of-world, and every chunk decides for itself who is who. On a
+    # real session that produced one NPC under three names and a summary with the
+    # deputy sheriff called "Shiran" - the wrong name applied to everything that
+    # voice said, in every beat.
+    #
+    # The reading is one call over the whole session, it is allowed to be silent,
+    # and it is rendered as a NOTE rather than by rewriting the lines: what it
+    # establishes is what the extraction may rely on, not a claim of attribution.
+    # It never fails the job - a session with no reading is the session this
+    # pipeline summarised before the reading existed.
+    cast = ""
+    if llm is not None and settings.cast_reading_enabled and not speaker_names:
+        try:
+            reading = await llm.read_speakers(lines)
+        except Exception:
+            logger.exception(
+                "session %s: could not read the cast; summarising without it", session_id
+            )
+            reading = None
+        if reading is not None and not reading.empty:
+            logger.info("session %s: cast reading %s", session_id, describe_reading(reading))
+            cast = reading.note()
+            # ONLY the narrators are taken from the reading. The character names it
+            # also produces are NOT handed to the extraction, and that is measured:
+            # a name is applied to every beat that voice speaks in, so one wrong
+            # assignment rewrites the whole session (see SpeakerReading.note).
+            # 'party' is left exactly as it was - a name invented here would tag
+            # that character's wiki pages as player characters for good.
+            dm_names = sorted({*dm_names, *reading.narrators})
+    # THE CAMPAIGN'S OWN ROSTER, which the attributed path gets for free and a
+    # diarized session does not have at all. Without it the extraction cannot tell
+    # a player character from an NPC, and the draft it produced named the PEOPLE at
+    # the table - "Giulia si avvicina alle guardie", "Tommy si copre" - and drafted
+    # character pages for both. Best-effort: an unreachable campaign leaves the
+    # session summarised exactly as it was before this existed.
+    roster = CampaignRoster()
+    if campaign_client is not None and campaign_id and not speaker_names:
+        roster = await _campaign_roster(campaign_client, campaign_id)
+        if not roster.empty:
+            logger.info("session %s: campaign roster %s", session_id, describe_roster(roster))
+    if not party and roster.players:
+        party = roster.character_names
+    if roster.dm_names:
+        dm_names = sorted({*dm_names, *roster.dm_names})
     party_note = (
-        "Party (player characters): " + ", ".join(sorted(party)) + "\n\n"
+        "Party (player characters): " + ", ".join(sorted(set(party))) + "\n\n"
         if party
         else ""
     )
-    return [party_note + "\n".join(chunk) for chunk in chunks], party, dm_names
+    table = roster.note() if settings.roster_note_enabled else ""
+    return (
+        [party_note + table + cast + "\n".join(lines[start:end]) for start, end in ranges],
+        party,
+        dm_names,
+        owned_parts(lines, ranges),
+        roster,
+    )
+
+
+async def _campaign_roster(
+    campaign_client: CampaignServiceClient, campaign_id: str
+) -> CampaignRoster:
+    """The campaign's member -> character map, or an empty roster (never raises)."""
+    try:
+        members = await campaign_client.list_members(campaign_id)
+    except Exception as exc:  # noqa: BLE001 - a roster is never required
+        logger.warning(
+            "could not read the campaign roster for %s (%s); the session will be "
+            "summarised without it",
+            campaign_id,
+            exc,
+        )
+        return CampaignRoster()
+    return roster_from_members(members)
 
 
 async def _artifact_views(
     artifact: dict[str, Any], settings: ServiceSettings, storage: ObjectStorage
-) -> tuple[list[str], list[str], list[str]]:
+) -> tuple[list[str], list[str], list[str], list[str]]:
     """The view built from the attributed transcript (the redesign's input).
 
     The roster in the artifact already resolved player/character/DM roles, so
     the party line and the out-of-world names come from it rather than from a
     label map: an utterance only carries a name when the engine is confident
     about it, and everything else is rendered '(unattributed)'.
+
+    Returns (views, party, dm_names, owned) - see _build_chunk_views for what the
+    last of those is for.
     """
     roster = artifact.get("roster") or []
     party = [
@@ -391,14 +500,15 @@ async def _artifact_views(
         if entry.get("role") == "dm"
     ]
     dm_names = [name for name in dm_names if name and not is_narrator_name(name)]
-    chunks = chunk_artifact(
-        artifact, max_tokens=settings.chunk_tokens, overlap=settings.chunk_overlap
+    lines = build_view_lines_from_artifact(artifact)
+    ranges = chunk_ranges(
+        lines, max_tokens=settings.chunk_tokens, overlap=settings.chunk_overlap
     )
-    if not chunks:
+    if not ranges:
         raise ValueError("session has no attributed utterances to generate from")
-    if len(chunks) > settings.max_chunks_per_session:
+    if len(ranges) > settings.max_chunks_per_session:
         raise ValueError(
-            f"session yields {len(chunks)} chunks "
+            f"session yields {len(ranges)} chunks "
             f"(cap {settings.max_chunks_per_session}); refusing to generate"
         )
     party_note = (
@@ -410,10 +520,13 @@ async def _artifact_views(
     # is a reading of where this part of the session happens, and the extraction
     # has to see it next to the lines it licenses a name for (see
     # chunking.stretch_note).
-    return [
-        party_note + stretch_note(artifact, chunk) + "\n".join(chunk)
-        for chunk in chunks
-    ], party, dm_names
+    views = [
+        party_note
+        + stretch_note(artifact, lines[start:end])
+        + "\n".join(lines[start:end])
+        for start, end in ranges
+    ]
+    return views, party, dm_names, owned_parts(lines, ranges)
 
 
 async def _load_attribution(
@@ -519,18 +632,41 @@ async def process_job(
     )
 
     try:
-        views, party, dm_names = await _build_chunk_views(
-            event, session_id, campaign_id, settings, storage, user_client, campaign_client
+        views, party, dm_names, owned, roster = await _build_chunk_views(
+            event,
+            session_id,
+            campaign_id,
+            settings,
+            storage,
+            user_client,
+            campaign_client,
+            llm,
         )
         artifact = await _load_attribution(session_id, settings, storage)
         extractions = await llm.extract_many(
             views,
             concurrency=settings.llm_chunk_concurrency,
             out_of_world=dm_names or None,
+            owned=owned,
         )
-        merged = merge_extractions(extractions)
+        # The session's own lines go with the merge: when two chunks spell one
+        # being's name differently, the spelling the recording uses more often is
+        # the one that survives (merger._unify_entities).
+        merged = merge_extractions(
+            extractions, owned=owned, corpus="\n".join(views)
+        )
         if dm_names:
             merged = exclude_character_names(merged, dm_names)
+        if not roster.empty:
+            # The roster's other half, applied to what the extraction produced: the
+            # PEOPLE at the table are not characters, and where a draft used a
+            # player's name as a stand-in for the character they play, the
+            # character acted ("Giulia si avvicina alle guardie" -> Dalia). Both
+            # were measured defects, and neither is fixable in a prompt: the
+            # recording never says which name is a person and which is a
+            # character, and the campaign does.
+            merged = exclude_character_names(merged, roster.player_names)
+            merged = rename_characters(merged, roster.rename_map())
         if artifact is not None:
             # The gate: uncertainty decides what may reach a page. Enforced in
             # code, because a prompt is a request and this is the safety
@@ -539,7 +675,23 @@ async def process_job(
                 merged, artifact, player_names=_artifact_player_names(artifact)
             )
             logger.info("session %s: attribution gate %s", session_id, gate_report)
-        composed = await _compose_summary(llm, merged, scenes=_scene_reading(artifact))
+        # The beats that look like one moment the session read twice, found HERE
+        # because this is the last place they exist with the span each came from,
+        # and because the compose call is about to blend them into prose no
+        # reader can audit. Reported, not fixed: measured twice, the compose
+        # prompt cannot be talked out of writing them as two (app/conflicts.py).
+        conflicts = find_conflicts(merged.get("summary_beats") or [])
+        merged["conflicts"] = conflicts_payload(conflicts)
+        if conflicts:
+            logger.info(
+                "session %s: %d beat pair(s) look like one moment read twice: %s",
+                session_id,
+                len(conflicts),
+                ", ".join(f"{c.score:.2f}" for c in conflicts),
+            )
+        composed = await _compose_summary(
+            llm, merged, scenes=_scene_reading(artifact), settings=settings
+        )
         if composed:
             merged["summary_blocks"] = composed
             merged["session_summary"] = blocks_to_text(composed)
@@ -718,7 +870,11 @@ def _scene_reading(artifact: dict[str, Any] | None) -> list[dict[str, Any]]:
 
 
 async def _compose_summary(
-    llm: Any, merged: dict[str, Any], scenes: list[dict[str, Any]] | None = None
+    llm: Any,
+    merged: dict[str, Any],
+    scenes: list[dict[str, Any]] | None = None,
+    *,
+    settings: ServiceSettings | None = None,
 ) -> list[dict[str, str]]:
     """Turn the merged per-chunk beats into the session's story.
 
@@ -742,7 +898,41 @@ async def _compose_summary(
     except Exception:
         logger.exception("could not compose the session summary; keeping the beats")
         return []
-    return composed or []
+    if not composed:
+        return []
+    composed = await _tighten_summary(llm, composed, settings=settings)
+    return composed
+
+
+async def _tighten_summary(
+    llm: Any,
+    blocks: list[dict[str, str]],
+    *,
+    settings: ServiceSettings | None = None,
+) -> list[dict[str, str]]:
+    """Write the finished record shorter, losing nothing but the connective tissue.
+
+    The composer both selects and writes, and it keeps what it has decided to keep:
+    measured twice, a sentence budget alone shortened the draft and lost benchmark
+    facts (100% coverage down to 82%). This second call sees ONLY the finished
+    text, and asks for the same record at a target length - so what goes is the
+    tissue between the facts rather than the facts.
+
+    Never fatal, and never an improvement by default: on any failure the composed
+    record stands.
+    """
+    target = getattr(settings, "summary_sentences_target", 0) if settings else 0
+    if not target:
+        return blocks
+    sentences = sum(len(_SENTENCE_SPLIT.split(block.get("text") or "")) for block in blocks)
+    if sentences <= target:
+        return blocks
+    try:
+        tightened = await llm.tighten_summary(blocks, target_sentences=target)
+    except Exception:
+        logger.exception("could not tighten the session summary; keeping it as composed")
+        return blocks
+    return tightened or blocks
 
 
 async def process_plan_generation(

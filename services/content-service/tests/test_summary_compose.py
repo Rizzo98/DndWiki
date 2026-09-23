@@ -96,8 +96,8 @@ def test_the_message_carries_the_beats_the_events_and_the_timeline():
             timeline=[{"label": "the guards arrive", "timestamp": "00:12:30"}],
         )
     )
-    assert "1. the party enters the tavern" in message
-    assert "2. a fight breaks out" in message
+    assert "  - the party enters the tavern" in message
+    assert "  - a fight breaks out" in message
     assert "The tavern brawl: a fight with the guards" in message
     assert "00:12:30 the guards arrive" in message
     assert "it" in message
@@ -105,7 +105,7 @@ def test_the_message_carries_the_beats_the_events_and_the_timeline():
 
 def test_the_message_survives_a_thin_extraction():
     message = build_summary_compose_message(merged(["one beat"]))
-    assert "1. one beat" in message
+    assert "  - one beat" in message
     assert "Events:" not in message
 
 
@@ -165,3 +165,70 @@ def test_the_prompt_asks_for_one_connected_story():
     assert "ONE BEING, ONE NAME" in prompt
     assert "creature IS Hann Caleto" in prompt
     assert "Never invent" in prompt
+
+# --- the span each beat came from (v18) --------------------------------------
+
+
+def test_beats_are_rendered_with_the_span_they_came_from():
+    """The span is the only thing here the merger could not supply by comparing
+    text, and it is what lets this call tell one moment recorded twice - the
+    chunks overlap, so a scene on a boundary is described from both sides - from
+    two moments that merely look alike."""
+    current = merged(["a girl brings lunch to her uncle"])
+    current["summary_beats"] = [
+        {"text": "a girl brings lunch to her uncle", "from": "u_00300", "to": "u_00435"},
+        {"text": "a dwarf brings lunch to her uncle", "from": "u_00436", "to": "u_00595"},
+    ]
+    message = build_summary_compose_message(current)
+    assert "  - [u_00300-u_00435] a girl brings lunch to her uncle" in message
+    assert "  - [u_00436-u_00595] a dwarf brings lunch to her uncle" in message
+    assert "the part of the session it came from" in message
+    # the list must not read as an output format: a numbered list got echoed
+    # into the narrative, numbers and all, the first time this shipped
+    assert "1. [u_00300" not in message
+    assert "NOTES for you to write from" in message
+
+
+def test_a_summary_without_provenance_falls_back_to_the_plain_lines():
+    """A summary reloaded from the database has no beats-with-spans. The call
+    then works as it did before v18 rather than being handed a wrong span."""
+    message = build_summary_compose_message(merged(["one beat", "two beats"]))
+    assert "  - one beat" in message
+    assert "  - two beats" in message
+    # no span was invented for beats that have none
+    assert "[u_" not in message
+
+
+def test_a_beat_with_no_span_is_rendered_without_brackets():
+    current = merged(["a beat"])
+    current["summary_beats"] = [{"text": "a beat", "from": "", "to": ""}]
+    assert "  - a beat" in build_summary_compose_message(current)
+
+
+def test_the_scene_reading_is_flagged_as_another_language():
+    """Its place names come from the attribution engine, whose prompt is in
+    English, and the labels must be written in the table's language."""
+    message = build_summary_compose_message(
+        merged(["a beat"]), scenes=[{"place": "the hospital in the city", "present": []}]
+    )
+    assert "the hospital in the city" in message  # still given: it says WHERE
+    assert "NOT in the session's language" in message
+    assert "NOT what to call those places" in message
+
+
+def test_the_prompt_builds_the_merge_rule_on_the_spans():
+    assert "EVERY BEAT CARRIES THE SPAN" in SUMMARY_COMPOSE_SYSTEM_PROMPT
+    assert "they are ONE moment seen twice" in SUMMARY_COMPOSE_SYSTEM_PROMPT
+    # the spans are a cut of the transcript, not a structure for the prose: the
+    # first version of this rule said "never write them as one scene", and the
+    # composer answered with one block per span and no story at all
+    assert "The spans are a mechanical cut of the transcript" in SUMMARY_COMPOSE_SYSTEM_PROMPT
+    assert "never mentioned in it" in SUMMARY_COMPOSE_SYSTEM_PROMPT
+    assert "no sentence" in SUMMARY_COMPOSE_SYSTEM_PROMPT
+
+
+def test_the_prompt_forbids_copying_the_record_language_into_a_label():
+    assert "A 'location' LABEL IS WRITTEN IN THAT SAME LANGUAGE" in (
+        SUMMARY_COMPOSE_SYSTEM_PROMPT
+    )
+    assert "never copy its words into a label" in SUMMARY_COMPOSE_SYSTEM_PROMPT

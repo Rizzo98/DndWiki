@@ -367,7 +367,7 @@ async def test_process_job_happy_path(session_factory, settings):
         jobs = (await db.execute(select(GenerationJob))).scalars().all()
     apply_job = next(j for j in jobs if j.phase == "apply")
     assert apply_job.status == "done"
-    assert apply_job.prompt_version == "v15"
+    assert apply_job.prompt_version == "v26"
     assert float(apply_job.confidence) == 1.0
     assert _draft_ids_from(apply_job) == {
         PAGE_UUIDS["Aragorn"], PAGE_UUIDS["Moria"], PAGE_UUIDS["Entering Moria"],
@@ -477,7 +477,7 @@ async def test_the_stretch_note_reaches_the_lines_it_licenses(settings):
             "solo_character": "Aramil",
         }
     ]
-    views, _, _ = await _artifact_views(artifact, settings, storage)
+    views, _, _, _ = await _artifact_views(artifact, settings, storage)
     (view,) = views
     assert "[Stretches]" in view
     assert "NAME that member" in view
@@ -851,6 +851,26 @@ async def test_process_job_multi_chunk(session_factory, settings):
     llm = FakeLLM()
     await _run_phase1(session_factory, settings, llm=llm)
     assert len(llm.views) > 1
+
+
+async def test_every_chunk_is_told_which_part_of_the_session_it_narrates(
+    session_factory, settings
+):
+    """The beats are partitioned, so the boundary has to reach the model.
+
+    The chunks overlap for the entities' sake. Left at that, two chunks narrate
+    the overlap twice in their own words and the merger cannot tell the two lines
+    are one moment - which is how a single NPC was introduced as "una ragazza" and
+    as "una nana" in the same sentence. One marker per chunk, and none for the
+    first chunk, which owns the session from its first line.
+    """
+    settings.chunk_tokens = 30  # tiny budget -> multiple chunks
+    llm = FakeLLM()
+    await _run_phase1(session_factory, settings, llm=llm)
+    assert len(llm.owned) == len(llm.views)
+    assert all(part.start and part.end for part in llm.owned)
+    # and every chunk is told how much work its part is, not just where it starts
+    assert all(part.lines > 0 for part in llm.owned)
 
 
 async def test_process_job_excludes_dm_speaker(session_factory, settings):

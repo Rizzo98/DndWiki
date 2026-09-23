@@ -118,6 +118,11 @@ async def session_summary(session_id: str, db: AsyncSession = Depends(get_sessio
             # these, and falls back to 'summary' alone when the row predates
             # them (empty list).
             "summary_blocks": row.summary_blocks or [],
+            # Beats that look like one moment the session read twice, with the
+            # part of the session each came from (app/conflicts.py). A FLAG the
+            # session page shows next to the draft, never a question: empty is
+            # the normal case and renders nothing.
+            "conflicts": row.conflicts or [],
             "language": row.language,
             "characters": row.characters or [],
             "locations": row.locations or [],

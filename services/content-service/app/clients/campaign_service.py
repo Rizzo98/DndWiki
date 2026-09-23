@@ -1,14 +1,20 @@
-"""campaign-service client: DM authorization for the summary review API.
+"""campaign-service client: the campaign's roster and DM authorization.
 
 content-service never reads dnd_campaigns tables directly; the endpoints that
 write to the wiki ask campaign-service GET /internal/membership with a service
 token before doing anything (same pattern as wiki-service).
+
+It also reads the campaign's ROSTER (member -> character), the same internal
+endpoint refiner-service uses. That is what lets a session with no speaker
+identification still know who the player characters are and which names at the
+table are people rather than characters (app/roster.py). Best-effort by design.
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 import httpx
@@ -65,6 +71,22 @@ class CampaignServiceClient:
             raise ValueError("not a member of this campaign")
         if role != "dm":
             raise PermissionError("dm role required")
+
+    async def list_members(self, campaign_id: UUID | str) -> list[dict[str, Any]]:
+        """The campaign roster (dm + players) with names and descriptions.
+
+        Mirrors refiner-service's client: same endpoint, same service token. The
+        caller decides what to do with a failure - a roster is an improvement to a
+        summary, never a precondition for one.
+        """
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                f"{self._base_url}/internal/campaigns/{campaign_id}/members",
+                headers={"Authorization": f"Bearer {self._token()}"},
+            )
+        resp.raise_for_status()
+        payload = resp.json()
+        return payload if isinstance(payload, list) else []
 
     async def campaign_dm(self, campaign_id: UUID) -> UUID | None:
         """The campaign's DM user id, or None when unknown.

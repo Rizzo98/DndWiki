@@ -158,3 +158,71 @@ async def test_summary_to_merged_rebuilds_the_extraction(session_factory):
 def test_summary_lines_splits_and_trims():
     assert summary_services.summary_lines("a\n  b  \n\nc") == ["a", "b", "c"]
     assert summary_services.summary_lines("") == []
+
+# --------------------------------------------------------------------------
+# the conflict flag on the row (v18)
+# --------------------------------------------------------------------------
+
+
+def _a_conflict() -> dict:
+    return {
+        "score": 0.45,
+        "first": {"text": "Il gruppo entra nella stanza", "from": "u_00436", "to": "u_00595"},
+        "second": {"text": "Entrati nella stanza, il gruppo", "from": "u_00596", "to": "u_00649"},
+    }
+
+
+async def test_save_persists_the_conflict_flag(session_factory):
+    """The beats are not persisted - they are scaffolding for the compose call -
+    so this flag is all that survives them to reach the DM."""
+    async with session_factory() as db:
+        row = await summary_services.save_summary(
+            db,
+            SESSION_ID,
+            generation_job_id=JOB_ID,
+            merged=_merged(conflicts=[_a_conflict()]),
+            llm_provider="deepseek",
+            llm_model="deepseek/deepseek-chat",
+            prompt_version="v18",
+        )
+        assert row.conflicts == [_a_conflict()]
+
+
+async def test_a_summary_with_no_conflicts_stores_an_empty_list(session_factory):
+    async with session_factory() as db:
+        row = await summary_services.save_summary(
+            db,
+            SESSION_ID,
+            generation_job_id=JOB_ID,
+            merged=_merged(),
+            llm_provider="deepseek",
+            llm_model="deepseek/deepseek-chat",
+            prompt_version="v18",
+        )
+        assert row.conflicts == []
+
+
+async def test_a_revision_clears_the_flag(session_factory):
+    """The flag describes the BEATS, and a revision does not recompute them: the
+    DM has read the passage and said what to write instead. Keeping it would
+    leave the page contradicting the text it sits next to."""
+    async with session_factory() as db:
+        await summary_services.save_summary(
+            db,
+            SESSION_ID,
+            generation_job_id=JOB_ID,
+            merged=_merged(conflicts=[_a_conflict()]),
+            llm_provider="deepseek",
+            llm_model="deepseek/deepseek-chat",
+            prompt_version="v18",
+        )
+        row = await summary_services.apply_revision(
+            db,
+            SESSION_ID,
+            generation_job_id=JOB_ID,
+            merged=_merged(session_summary="The party stands before the gate."),
+            llm_provider="deepseek",
+            llm_model="deepseek/deepseek-chat",
+            prompt_version="v18",
+        )
+        assert row.conflicts == []

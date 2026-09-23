@@ -28,9 +28,14 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { Badge, Button, Card, EmptyState, TextArea, fmtPercent } from "@/components/ui";
-import { RlIcon, RlTag } from "@/components/ravenlore";
+import { RlIcon, RlIconChip, RlTag } from "@/components/ravenlore";
 import { LinkedText, normalizeName, type LinkIndex } from "@/components/linked-text";
-import type { SessionSummary, SummaryBlock, SummaryEdit } from "@/lib/api";
+import type {
+  SessionSummary,
+  SummaryBlock,
+  SummaryConflict,
+  SummaryEdit,
+} from "@/lib/api";
 
 /** A change queued for the next rewrite: the API payload + a stable list key. */
 type PendingEdit = SummaryEdit & { key: string };
@@ -223,6 +228,76 @@ function segments(
   }
   if (cursor < text.length) out.push({ text: text.slice(cursor), marked: false });
   return out.length ? out : [{ text, marked: false }];
+}
+
+/**
+ * The pipeline's own flag on the draft: beats that look like ONE moment the
+ * session read twice.
+ *
+ * The transcript is cut into overlapping pieces to be read, so a scene falling
+ * on a cut is read from both sides and described twice in different words. The
+ * merger cannot see that the two lines are one moment, and the compose call -
+ * which sees both - writes them as two people. Measured twice: a rule in its
+ * prompt does not stop it, and neither does telling it which part of the
+ * session each beat came from.
+ *
+ * So the pipeline reports instead of hiding - and reports instead of ASKING.
+ * Asking was measured too (evals/probe_conflicts.py): the precise detector is
+ * blind to exactly this case, while the detector that finds more is wrong two
+ * times in three, and nine unusable questions to surface one real conflict is
+ * how the retired presence questions crowded out the ones that would have
+ * landed. A flag costs a glance; a question costs an answer, and there is
+ * nothing here the DM has to answer.
+ *
+ * Empty - the usual case - renders nothing at all.
+ */
+function ConflictFlag({ conflicts }: { conflicts: SummaryConflict[] }) {
+  if (!conflicts.length) return null;
+  return (
+    <div className="mb-4 rounded-[var(--rl-radius-md)] border border-[color:var(--rl-border-parchment)] bg-[color:var(--rl-bg-card)] p-3 shadow-[var(--rl-shadow-card)]">
+      <div className="flex items-start gap-2.5">
+        <RlIconChip name="flag" tint="accent" size={30} iconSize={15} />
+        <div className="min-w-0">
+          <div className="text-[11px] font-bold uppercase tracking-[0.08em] rl-text-accent">
+            Pipeline flag
+          </div>
+          <p className="text-xs leading-relaxed text-[color:var(--rl-text-on-parchment-muted)]">
+            Read from two different parts of the recording, these lines look like one
+            moment. If it is one, correct it with the review tools below — if they are
+            two, nothing to do.
+          </p>
+        </div>
+        <span className="ml-auto shrink-0">
+          <Badge tone="slate">{conflicts.length}</Badge>
+        </span>
+      </div>
+
+      <ul className="mt-2.5 space-y-2">
+        {conflicts.map((conflict, index) => (
+          <li key={index} className="space-y-1">
+            {[conflict.first, conflict.second].map((beat, half) => (
+              <div key={half} className="flex items-start gap-2">
+                <span
+                  className="mt-0.5 shrink-0 font-mono text-[11px] tabular-nums text-[color:var(--rl-text-on-parchment-muted)]"
+                  title={
+                    "The part of the transcript this line was written from: " +
+                    beat.from +
+                    " – " +
+                    beat.to
+                  }
+                >
+                  {beat.from}–{beat.to}
+                </span>
+                <span className="text-xs leading-relaxed text-[color:var(--rl-text-on-parchment-primary)]">
+                  {beat.text}
+                </span>
+              </div>
+            ))}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 export function SessionSummaryCard({
@@ -543,6 +618,10 @@ export function SessionSummaryCard({
           generated once you confirm.
         </p>
       ) : null}
+
+      {/* The pipeline's own flag, before the story rather than after it: it is
+          something to know WHILE reading, and it renders nothing when empty. */}
+      <ConflictFlag conflicts={(summary?.conflicts ?? []).filter(Boolean)} />
 
       {/* The narrative: one story, in the scenes it happens in. */}
       <div

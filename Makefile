@@ -1,4 +1,4 @@
-.PHONY: help up down build logs ps gpu-up transcription-up deepgram-up openai-up monitor-up stop clean
+.PHONY: help up down build logs ps gpu-up transcription-up deepgram-up openai-up monitor-up stop clean eval eval-list
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -41,3 +41,13 @@ monitor-up: ## Start monitoring profile (Prometheus, Grafana, Loki, Tempo)
 
 clean: ## Stop everything and wipe volumes (destroys local data)
 	docker compose down -v --remove-orphans
+
+# --- LLM summariser evals (services/content-service/evals) -------------------
+# Grade the summariser against captured session fixtures. The fixtures are dev
+# data, they are removable at any time, and an empty set is not an error.
+# See services/content-service/evals/README.md.
+eval-list: ## List captured session fixtures
+	docker compose run --rm --no-deps -v "$$PWD/services/content-service/evals:/app/service/evals" content-service python -m evals --list
+
+eval: ## Grade the summariser (F=<fixture|--baseline>, default: all installed)
+	docker compose run --rm --no-deps -v "$$PWD/services/content-service/evals:/app/service/evals" content-service python -m evals $(F)

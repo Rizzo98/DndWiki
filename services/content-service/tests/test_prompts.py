@@ -2,6 +2,7 @@
 
 import json
 
+from app.chunking import OwnedPart, beat_budget
 from app.prompts import (
     EXTRACTION_SCHEMA,
     PROMPT_VERSION,
@@ -10,9 +11,10 @@ from app.prompts import (
     build_chunk_message,
     build_summary_revision_message,
 )
+from app.summary import blocks_to_text
 
 
-def test_prompt_version_is_v15():
+def test_prompt_version_is_current():
     # v12 adds source_refs to every extracted item and an explicit actor to
     # every event, which is what lets the attribution gate VERIFY a fact
     # instead of trusting it (docs/attribution-model.md S14.3).
@@ -26,7 +28,12 @@ def test_prompt_version_is_v15():
     # v15 turns the summary into a NARRATIVE in scene blocks and the review into
     # highlighting portions of it: independent one-beat lines read as if the
     # creature of one line were not the character named in the next.
-    assert PROMPT_VERSION == "v15"
+    # v16 partitions the BEATS across the overlapping chunks: the overlap is for
+    # entities, and applying it to the story made two chunks narrate one moment
+    # in different words, which is how one NPC became two people in the summary.
+    # v17 makes the beat budget proportional to the part a chunk owns: the flat
+    # "1-3 lines" made a chunk whose part ended with a scene leave the scene out.
+    assert PROMPT_VERSION == "v26"
 
 
 def test_the_stretches_note_is_explained_to_the_model():
@@ -58,10 +65,22 @@ def test_the_prompt_explains_the_three_line_forms():
     assert "SPEAKER_00" in SYSTEM_PROMPT  # ... and never write one as a name
 
 
+def test_the_beat_rule_tells_the_model_to_stay_inside_its_part():
+    assert "YOUR PART of this chunk" in SYSTEM_PROMPT
+    assert "BEGINS before your part starts" in SYSTEM_PROMPT
+    # and the schema says the same thing, so a model reading only the JSON
+    # contract cannot miss it
+    assert "YOUR PART of the chunk" in EXTRACTION_SCHEMA["properties"]["session_summary"][
+        "description"
+    ]
+
+
 def test_summary_is_a_list_of_lines():
     # v11: the summary is the reviewable layer - one beat per line, so the DM
-    # can select and correct single lines on the session page
-    assert "one beat per line" in SYSTEM_PROMPT
+    # can select and correct single lines on the session page. v17 restated the
+    # count as "one SHORT line per beat" (the number of beats now comes from the
+    # part a chunk owns) without giving up the one-line-per-beat contract.
+    assert "one SHORT line per beat" in SYSTEM_PROMPT
     description = EXTRACTION_SCHEMA["properties"]["session_summary"]["description"]
     assert "lines" in description
 
@@ -213,6 +232,52 @@ def test_build_chunk_message_lists_out_of_world_speakers():
     assert "Out-of-world" not in build_chunk_message("view", 0, 1)
 
 
+def test_build_chunk_message_says_where_the_chunk_owns_the_session():
+    """The overlap is context for the entities and off-limits for the beats.
+
+    Without this the partition does not exist: both chunks narrate the whole
+    overlap, and two writers who cannot see each other's work describe one moment
+    in different words - which is how "una ragazza" and "una nana" became two
+    people in one sentence.
+    """
+    message = build_chunk_message(
+        "[u_00436 00:36:58] Hann: hi", 3, 5, owned=OwnedPart("u_00436", "u_00595", 136)
+    )
+    assert "starts at u_00436" in message
+    assert "CONTEXT" in message
+    assert "do NOT write a session_summary beat" in message
+
+
+def test_the_ownership_note_is_read_before_the_lines_it_is_about():
+    message = build_chunk_message(
+        "[u_00436 00:36:58] Hann: hi", 3, 5, owned=OwnedPart("u_00436", "u_00595", 136)
+    )
+    assert message.index("starts at u_00436") < message.index("[u_00436 00:36:58]")
+
+
+def test_the_first_chunk_needs_no_boundary_sentence():
+    """It owns the session from its first line: there is nothing to exclude.
+
+    An empty marker is how the prompt knows that. It still gets a beat budget,
+    because "nothing above me is off-limits" says nothing about how much it owes.
+    """
+    message = build_chunk_message("view", 0, 3, owned=OwnedPart("u_00001", "u_00164", 164))
+    assert "Your part of this session starts at" not in message
+    assert "chunk 1 of 3" in message
+    assert "Write the beats of your part" in message
+
+
+def test_the_message_says_how_many_beats_the_part_owes():
+    """The flat "1-3 lines" is what lost the last scene of a chunk's part: a chunk
+    owning thirteen minutes was asked for the same three lines as one owning five.
+    """
+    message = build_chunk_message("view", 2, 5, owned=OwnedPart("u_00300", "u_00435", 136))
+    low, high = beat_budget(136)
+    assert "covers 136 transcript lines" in message
+    assert f"{low} to {high} lines" in message
+    assert "ONE BEAT IS ONE MOMENT" in message
+
+
 def test_system_prompt_is_cross_session():
     # the wiki must read like a standalone, cross-session entry: no chunk /
     # session / fragment references, no filler, no dangling references
@@ -335,11 +400,45 @@ def test_build_summary_revision_message_accepts_dm_edited_text():
     )
     assert "hand edited line one" in message
     assert "old narrative" not in message
-    # the blocks are rebuilt from the text the client sent, so the payload the
-    # model sees never disagrees with itself
-    assert "Locanda" not in message
+    # The blocks are rebuilt from the text the client sent, so the payload the
+    # model sees never disagrees with itself - but the PLACE LABELS are block
+    # metadata that the displayed prose cannot carry, so they are re-attached
+    # from the stored blocks (app/summary.py). Handing the model blocks whose
+    # labels have already been blanked is not a disagreement it can see: it is
+    # told to copy them "verbatim, labels included", and it dutifully copies
+    # nothing, which is how one correction used to re-label a whole session.
+    assert '"location": "Locanda"' in message
     # no targets -> the request is about the whole summary
     assert "the whole session summary" in message
+
+
+def test_the_displayed_text_sent_back_never_costs_the_session_its_places():
+    """The client always sends the narrative as displayed, so this path runs on
+    every rewrite. The regression it pins is a real session: three scene blocks
+    labelled with their places, a correction about who a character was, and the
+    revision coming back with all three labels blank."""
+    stored = [
+        {"location": "Locanda del Fumo Aspro", "text": "Il gruppo si ritrova in locanda."},
+        {"location": "Strada fuori dalla locanda", "text": "Fuori si sentono urla."},
+        {"location": "Vicino al carro coperto", "text": "Dietro la locanda c'e' un carro."},
+    ]
+    current = {
+        "session_summary": "\n\n".join(block["text"] for block in stored),
+        "summary_blocks": stored,
+        "characters": [],
+        "locations": [],
+        "events": [],
+        "timeline_entries": [],
+    }
+    # exactly what the page sends back: the prose, joined by blank lines
+    displayed = blocks_to_text(current["summary_blocks"])
+    message = build_summary_revision_message(
+        current,
+        [{"targets": ["uno dei protagonisti"], "instruction": "E' Galgith."}],
+        summary_text_override=displayed,
+    )
+    for block in stored:
+        assert f'"location": "{block["location"]}"' in message
 
 
 def test_build_summary_revision_message_survives_empty_edits():

@@ -43,6 +43,7 @@ from difflib import SequenceMatcher
 from typing import Any
 
 from app.attribution import is_raw_label
+from app.chunking import OwnedPart
 
 #: Status of the payloads built here. They are PROPOSALS, not pages: the
 #: planner turns them into the change set the DM reviews, and only the
@@ -61,6 +62,15 @@ _DURABLE_RELATION_TYPES = ("member_of", "allied_with", "led_by", "owner")
 #: Minimum SequenceMatcher ratio for two names to be considered the same
 #: real-world entity by fuzz alone (token containment is checked separately).
 NEAR_MATCH_RATIO = 0.84
+
+#: The same question for two CHARACTERS of ONE session, where the names being
+#: compared are spellings of one voice rather than two pages of a wiki. A
+#: recording that hears "Jackie" once as "Jace" (ratio 0.80) is the case this
+#: exists for; the ratio is looser than the cross-session one because a
+#: mis-hearing is a one-edit distortion, and it demands the two names OPEN alike
+#: so "Sceriffo" and "vicesceriffo" (also 0.80, two different officers) stay two
+#: people. Calibrated on the pairs two real sessions produced - see _same_entity.
+CHARACTER_NEAR_MATCH_RATIO = 0.78
 
 
 # --------------------------------------------------------------------------
@@ -134,6 +144,20 @@ _GENERIC_CHARACTER_WORDS = {
     "abitante", "nobile", "signore", "dama", "barde", "cacciatore", "cacciatrice",
     "voice", "figure", "shadow", "crowd", "people", "pair", "group", "gang",
     "voce", "figura", "ombra", "folla", "gente", "gruppo", "banda",
+    # --- ROLES and DESCRIPTIONS measured as drafted characters ----------------
+    # Every word below headed a character entry the pipeline produced on the two
+    # benchmark sessions, each of which becomes a wiki page the DM has to delete:
+    # "Sceriffo", "Vice sceriffo", "Vicario", "il primario", "la nana", "la
+    # scimmietta", "Creatura piumata", "Uomo urlante", "il merlo". They are what
+    # the table CALLS somebody, not who they are.
+    "sheriff", "deputy", "marshal", "constable", "doctor", "nurse", "chief",
+    "sceriffo", "vicesceriffo", "vice", "vicario", "primario", "dottore",
+    "dottoressa", "medico", "infermiere", "infermiera", "capo",
+    "creature", "beast", "animal", "monkey", "bird", "raven", "crow", "gnome",
+    "dwarf", "halfling", "elf", "orc", "half-orc", "half-elf",
+    "creatura", "bestia", "animale", "scimmia", "scimmietta", "uccello",
+    "corvo", "merlo", "gnomo", "nano", "nana", "elfo", "elfi", "orco",
+    "mezzorco", "mezzelfo", "umanoide",
 }
 
 #: Out-of-world speaker names that must never become character pages: the
@@ -204,7 +228,37 @@ def is_generic_name(name: str, kind: str) -> bool:
     lexicon = (
         _GENERIC_CHARACTER_WORDS if kind == "character" else _GENERIC_LOCATION_WORDS
     )
+    # A PHRASE WITH NO NAME IN IT IS NOT A PAGE. "Uomo urlante", "Creatura piumata",
+    # "Vice sceriffo", "la nana": the phrase is built on a generic noun and the
+    # qualifier does not turn it into a name. Requiring EVERY token to be generic
+    # let all four through, because the qualifier is in no lexicon - and checking
+    # only one end of the phrase does not work either, because Italian puts the head
+    # first ("creatura piumata") and English puts it last ("screaming man").
+    #
+    # What separates a name from a description is a CAPITALISED word after the
+    # first: "Sir Lucius", "Hann Caleto", "Miles Falco", "Vice Sceriffo Miles Falco"
+    # all carry one and keep their page; none of the phrases above does.
+    if (
+        kind == "character"
+        and not _has_proper_token(name)
+        and (tokens[0] in lexicon or tokens[-1] in lexicon)
+    ):
+        return True
     return all(t in _FILLER_TOKENS or t in lexicon for t in tokens)
+
+
+def _has_proper_token(name: str) -> bool:
+    """Whether a phrase carries a name inside it: a capitalised word after the first.
+
+    Used to tell a NAME ("Sir Lucius", "Vice Sceriffo Miles Falco") from a phrase
+    built out of what somebody was or did ("Uomo urlante", "Creatura piumata"),
+    which the extraction writes in the table's own casing.
+    """
+    words = str(name or "").split()
+    return any(
+        len(word) > 1 and word[:1].isupper() and word.lower() not in _FILLER_TOKENS
+        for word in words[1:]
+    )
 
 
 def is_narrator_name(name: str) -> bool:
@@ -339,9 +393,290 @@ def _entity_confidence(appearances: int, total_chunks: int) -> float:
     return round(appearances / total_chunks, 3)
 
 
+def _new_bucket(name: str) -> dict[str, Any]:
+    """The empty accumulator for one entity: every field any chunk may set."""
+    return {
+        "name": name,
+        "aliases": [],
+        "description": "",
+        # v4 character page sections (appearance / temperament)
+        "physical_look": "",
+        "personality": "",
+        # v5 static info fields (race/class/gender/height/weight/age)
+        # and durable relationships: type -> [proper names]
+        "race": "",
+        "class": "",
+        "gender": "",
+        "height": "",
+        "weight": "",
+        "age": "",
+        "relationships": {},
+        "facts": [],
+        "session_facts": [],
+        # v3 category hints (characters: is_party; locations:
+        # place_type/part_of) - other kinds simply never set them
+        "is_party": False,
+        "place_type": "",
+        "part_of": "",
+        # v8 location page structure: narrative 'history' section +
+        # type-specific detail fields (characters never set them)
+        "history": "",
+        "founded": "",
+        "population": "",
+        "government": "",
+        "ruler": "",
+        "demographics": "",
+        "economy": "",
+        "defenses": "",
+        "religion": "",
+        "terrain": "",
+        "climate": "",
+        "capital": "",
+        "pantheon": "",
+        "planes": "",
+        "owner": "",
+        "purpose": "",
+        "entrance": "",
+        "levels": "",
+        "hazards": "",
+        "flora_fauna": "",
+        "districts": [],
+        "notable_locations": [],
+        "mentions": 0,
+        "appearances": 0,
+    }
+
+
+def _absorb(bucket: dict[str, Any], item: dict[str, Any]) -> None:
+    """Fold one extraction item (or one whole bucket) into an accumulator.
+
+    One set of rules for both callers: the per-chunk accumulation and the
+    cross-chunk unification below, so an entity that is folded twice cannot end
+    up merged by different rules than the ones that built it.
+    """
+    bucket["appearances"] += 1
+    if item.get("is_party"):
+        bucket["is_party"] = True
+    bucket["mentions"] += int(item.get("mentions") or 0)
+    bucket["aliases"].extend(a for a in item.get("aliases", []) if isinstance(a, str))
+    if _normalize(item.get("description", "")) != _normalize(bucket["description"]):
+        # longest description wins; keep the first non-empty otherwise
+        candidates = [bucket["description"], item.get("description", "")]
+        chosen = _longest(candidates)
+        bucket["description"] = chosen or bucket["description"]
+    for hint in ("physical_look", "personality", "place_type", "part_of"):
+        value = (item.get(hint) or "").strip()
+        if value:
+            bucket[hint] = _longest([bucket.get(hint, ""), value]) or bucket[hint]
+    # v5 static info: longest non-empty value wins (chunks agree in
+    # practice; a conflict surfaces for DM review like facts do)
+    for attr in ("race", "class", "gender", "height", "weight", "age"):
+        value = (item.get(attr) or "").strip()
+        if value:
+            bucket[attr] = _longest([bucket.get(attr, ""), value]) or bucket[attr]
+    # v8 location detail fields (scalars: longest wins; lists: union,
+    # deduped below). Characters never set them, so the buckets stay 0/[].
+    for attr in (
+        "history", "founded", "population", "government", "ruler",
+        "demographics", "economy", "defenses", "religion", "terrain",
+        "climate", "capital", "pantheon", "planes", "owner", "purpose",
+        "entrance", "levels", "hazards", "flora_fauna",
+    ):
+        value = (item.get(attr) or "").strip()
+        if value:
+            bucket[attr] = _longest([bucket.get(attr, ""), value]) or bucket[attr]
+    for list_attr in ("districts", "notable_locations"):
+        bucket[list_attr].extend(
+            v for v in item.get(list_attr, []) if isinstance(v, str)
+        )
+    # v5 durable relationships: union across chunks per type
+    for rel_type, names in _as_relationships(item.get("relationships")).items():
+        bucket["relationships"].setdefault(rel_type, []).extend(names)
+    bucket["facts"].extend(f for f in item.get("facts", []) if isinstance(f, str))
+    bucket["session_facts"].extend(
+        f for f in item.get("session_facts", []) if isinstance(f, str)
+    )
+
+
+def _times_written(corpus: str, name: str) -> int:
+    """Whole-word occurrences of a name in the recording's own text."""
+    if not corpus or not name:
+        return 0
+    return len(re.findall(rf"(?<!\w){re.escape(name)}(?!\w)", corpus, re.IGNORECASE))
+
+
+def _standing(bucket: dict[str, Any], corpus: str = "") -> tuple[int, int, int, int]:
+    """How much the session backs a name: (in the text, mentions, chunks, length).
+
+    Used to pick the name that SURVIVES a fold. The first component is the one
+    that decides it: how often the recording itself writes that spelling. The
+    model's own 'mentions' count is self-reported and noisy - on a real session it
+    had "Jace" (one line of the transcript) outweigh "Jackie" (seven), and the
+    fold then kept the mis-hearing and dropped the name the table actually used.
+    """
+    return (
+        _times_written(corpus, str(bucket.get("name") or "")),
+        int(bucket.get("mentions") or 0),
+        int(bucket.get("appearances") or 0),
+        len(str(bucket.get("name") or "")),
+    )
+
+
+def _is_token_prefix(shorter: str, longer: str) -> bool:
+    """Whether 'shorter' is the leading part of 'longer', token by token.
+
+    This is how a short name and a full name meet: "Hann" / "Hann Caleto",
+    "Shiran" / "Shiran Konno". A SUFFIX or a middle token is a different thing,
+    and the difference is measured, not stylistic - of the pairs a real session
+    produced, arbitrary containment folded these:
+
+        "Sceriffo" -> "Vice sceriffo"          (two different officers)
+        "Hyman"    -> "Letho Hyman Feulner"    (an NPC into a player character)
+
+    Both are wrong, and both are excluded by requiring the SHORT name to come
+    first.
+    """
+    short, long = _tokens(shorter), _tokens(longer)
+    return bool(short) and len(short) < len(long) and long[: len(short)] == short
+
+
+def _shares_opening(a: str, b: str, width: int = 2) -> bool:
+    """Whether two names open with the same characters (case-insensitive)."""
+    left, right = _normalize(a), _normalize(b)
+    return len(left) >= width and len(right) >= width and left[:width] == right[:width]
+
+
+def _same_entity(a: dict[str, Any], b: dict[str, Any], *, kind: str) -> bool:
+    """Whether two merged entities are one being under two names.
+
+    Signals, strongest first:
+
+    * one name is already an ALIAS of the other - the extraction said so ("Sir
+      Lucius" / aliases ["Sir Rushus"]) - AND the two names have a token in
+      common;
+    * (characters only) one name is the TOKEN PREFIX of the other, which is how
+      a short name and a full one meet ("Hann" / "Hann Caleto");
+    * the names are near-identical strings - the cross-session page ratio, or
+      (characters only) a looser one that additionally requires the two names to
+      OPEN alike, which is what a mis-heard name looks like ("Jackie" / "Jace",
+      both starting "ja", versus "Sceriffo" / "vicesceriffo", which do not).
+
+    THE TOKEN REQUIREMENT ON THE ALIAS RULE IS MEASURED, NOT TIDINESS. The alias
+    lists are written by the model, and a model that mis-hears a scene writes
+    whatever it inferred: one real run produced a character named "Hann" carrying
+    aliases ["Sir Lucius", "Sir Ruscio", "Galgith", "il nano dottore"], and the
+    fold - which trusts the alias - merged the researcher into Hann. Every beat
+    about Sir Lucius was then rewritten as Hann, and the draft said "Hann entra
+    nell'ospedale e trova Hann". Requiring the two names to share a token keeps
+    the case the rule exists for (Sir Rushus / Sir Lucius share "sir") and refuses
+    the ones where the model attached an unrelated person's name.
+
+    Token containment is NOT applied to locations: "Fatumastra" is contained in
+    "Ospedale di Fatumastra" and the two are a city and a building inside it -
+    that relation is 'part_of', not identity.
+    """
+    if _normalize(a.get("name") or "") == _normalize(b.get("name") or ""):
+        return True
+    name_a, name_b = str(a.get("name") or ""), str(b.get("name") or "")
+    tokens_a, tokens_b = _content_tokens(name_a), _content_tokens(name_b)
+    if not tokens_a or not tokens_b:
+        return False
+    aliases_a = {_normalize(x) for x in a.get("aliases") or []}
+    aliases_b = {_normalize(x) for x in b.get("aliases") or []}
+    if (
+        _normalize(name_b) in aliases_a or _normalize(name_a) in aliases_b
+    ) and tokens_a & tokens_b:
+        return True
+    # An alias the two names have nothing in common with is NOT a refusal: the
+    # names may still be one being by spelling alone ("Jackie" / "Jace"), which the
+    # rules below decide.
+    if tokens_a == tokens_b:
+        return True
+    if kind != "character":
+        return _names_ratio(name_a, name_b) >= NEAR_MATCH_RATIO
+    if _is_token_prefix(name_a, name_b) or _is_token_prefix(name_b, name_a):
+        return True
+    return (
+        _names_ratio(name_a, name_b) >= CHARACTER_NEAR_MATCH_RATIO
+        and _shares_opening(name_a, name_b)
+    )
+
+
+def _unify_entities(
+    buckets: list[dict[str, Any]], *, kind: str, corpus: str = ""
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Fold the same being under several names into ONE entity.
+
+    The per-chunk merge groups on the EXACT normalized name, and the chunks
+    cannot see each other, so a transcription that hears one NPC's name three
+    ways produced three characters - and the summary called him by two of them
+    in two consecutive paragraphs:
+
+        "Hann entra nell'ospedale e incontra Sir Rushus..."   (chunk 4)
+        "Hann Caleto entra nell'ospedale e trova Sir Lucius..."  (chunk 3)
+
+    Both lines are faithful to the recording: the transcriber really wrote
+    "Sir Rushus" once and "Sir Lucius" nine times. Faithfulness to a mis-hearing
+    is not the goal - ONE name for one being is, and this is the first place in
+    the pipeline that can decide it.
+
+    Returns (buckets, renames), where 'renames' maps every dropped spelling onto
+    the name that survived, so the beats and the timeline can be rewritten to
+    match (callers: merge_extractions, _rename_text).
+    """
+    kept: list[dict[str, Any]] = []
+    renames: dict[str, str] = {}
+    for bucket in sorted(buckets, key=lambda b: _standing(b, corpus), reverse=True):
+        target = next((k for k in kept if _same_entity(k, bucket, kind=kind)), None)
+        if target is None:
+            kept.append(bucket)
+            continue
+        dropped = str(bucket.get("name") or "")
+        _absorb(target, bucket)
+        if dropped and _normalize(dropped) != _normalize(target["name"]):
+            renames[dropped] = str(target["name"])
+        for alias in bucket.get("aliases") or []:
+            if _normalize(str(alias)) != _normalize(target["name"]):
+                renames.setdefault(str(alias), str(target["name"]))
+    return kept, renames
+
+
+def _rename_text(text: str, renames: dict[str, str]) -> str:
+    """Rewrite every dropped spelling of a folded name to the one kept.
+
+    The beats and the timeline were written by chunks that could not know the
+    other spelling existed, so they are rewritten here rather than left to the
+    composer to reconcile. Longest names are shielded first: replacing "Hann"
+    inside "Hann Caleto" would otherwise produce "Hann Caleto Caleto".
+    """
+    if not text or not renames:
+        return text
+    result = text
+    shields: dict[str, str] = {}
+    for index, canonical in enumerate(
+        sorted(set(renames.values()), key=len, reverse=True)
+    ):
+        pattern = re.compile(rf"(?<!\w){re.escape(canonical)}(?!\w)", re.IGNORECASE)
+        if pattern.search(result):
+            token = f"\x00{index}\x00"
+            result = pattern.sub(token, result)
+            shields[token] = canonical
+    for dropped, canonical in sorted(renames.items(), key=lambda kv: -len(kv[0])):
+        result = re.sub(
+            rf"(?<!\w){re.escape(dropped)}(?!\w)", canonical, result, flags=re.IGNORECASE
+        )
+    for token, canonical in shields.items():
+        result = result.replace(token, canonical)
+    return result
+
+
 def _merge_entities(
-    items: list[dict[str, Any]], total_chunks: int
-) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]],
+    total_chunks: int,
+    *,
+    kind: str = "character",
+    corpus: str = "",
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
     """Merge per-chunk entities of one kind (characters or locations)."""
     by_key: dict[str, dict[str, Any]] = {}
 
@@ -349,105 +684,13 @@ def _merge_entities(
         name = (item.get("name") or "").strip()
         if not name:
             continue
-        key = _normalize(name)
-        bucket = by_key.setdefault(
-            key,
-            {
-                "name": name,
-                "aliases": [],
-                "description": "",
-                # v4 character page sections (appearance / temperament)
-                "physical_look": "",
-                "personality": "",
-                # v5 static info fields (race/class/gender/height/weight/age)
-                # and durable relationships: type -> [proper names]
-                "race": "",
-                "class": "",
-                "gender": "",
-                "height": "",
-                "weight": "",
-                "age": "",
-                "relationships": {},
-                "facts": [],
-                "session_facts": [],
-                # v3 category hints (characters: is_party; locations:
-                # place_type/part_of) - other kinds simply never set them
-                "is_party": False,
-                "place_type": "",
-                "part_of": "",
-                # v8 location page structure: narrative 'history' section +
-                # type-specific detail fields (characters never set them)
-                "history": "",
-                "founded": "",
-                "population": "",
-                "government": "",
-                "ruler": "",
-                "demographics": "",
-                "economy": "",
-                "defenses": "",
-                "religion": "",
-                "terrain": "",
-                "climate": "",
-                "capital": "",
-                "pantheon": "",
-                "planes": "",
-                "owner": "",
-                "purpose": "",
-                "entrance": "",
-                "levels": "",
-                "hazards": "",
-                "flora_fauna": "",
-                "districts": [],
-                "notable_locations": [],
-                "mentions": 0,
-                "appearances": 0,
-            },
-        )
-        bucket["appearances"] += 1
-        if item.get("is_party"):
-            bucket["is_party"] = True
-        bucket["mentions"] += int(item.get("mentions") or 0)
-        bucket["aliases"].extend(a for a in item.get("aliases", []) if isinstance(a, str))
-        if _normalize(item.get("description", "")) != _normalize(bucket["description"]):
-            # longest description wins; keep the first non-empty otherwise
-            candidates = [bucket["description"], item.get("description", "")]
-            chosen = _longest(candidates)
-            bucket["description"] = chosen or bucket["description"]
-        for hint in ("physical_look", "personality", "place_type", "part_of"):
-            value = (item.get(hint) or "").strip()
-            if value:
-                bucket[hint] = _longest([bucket.get(hint, ""), value]) or bucket[hint]
-        # v5 static info: longest non-empty value wins (chunks agree in
-        # practice; a conflict surfaces for DM review like facts do)
-        for attr in ("race", "class", "gender", "height", "weight", "age"):
-            value = (item.get(attr) or "").strip()
-            if value:
-                bucket[attr] = _longest([bucket.get(attr, ""), value]) or bucket[attr]
-        # v8 location detail fields (scalars: longest wins; lists: union,
-        # deduped below). Characters never set them, so the buckets stay 0/[].
-        for attr in (
-            "history", "founded", "population", "government", "ruler",
-            "demographics", "economy", "defenses", "religion", "terrain",
-            "climate", "capital", "pantheon", "planes", "owner", "purpose",
-            "entrance", "levels", "hazards", "flora_fauna",
-        ):
-            value = (item.get(attr) or "").strip()
-            if value:
-                bucket[attr] = _longest([bucket.get(attr, ""), value]) or bucket[attr]
-        for list_attr in ("districts", "notable_locations"):
-            bucket[list_attr].extend(
-                v for v in item.get(list_attr, []) if isinstance(v, str)
-            )
-        # v5 durable relationships: union across chunks per type
-        for rel_type, names in _as_relationships(item.get("relationships")).items():
-            bucket["relationships"].setdefault(rel_type, []).extend(names)
-        bucket["facts"].extend(f for f in item.get("facts", []) if isinstance(f, str))
-        bucket["session_facts"].extend(
-            f for f in item.get("session_facts", []) if isinstance(f, str)
-        )
+        bucket = by_key.setdefault(_normalize(name), _new_bucket(name))
+        _absorb(bucket, item)
+
+    buckets, renames = _unify_entities(list(by_key.values()), kind=kind, corpus=corpus)
 
     merged = []
-    for key, bucket in by_key.items():
+    for bucket in buckets:
         bucket["aliases"] = _uniq(bucket["aliases"])
         bucket["facts"] = _uniq(bucket["facts"])
         bucket["session_facts"] = _uniq(bucket["session_facts"])
@@ -464,7 +707,7 @@ def _merge_entities(
         merged.append(bucket)
     # most-mentioned first, then name
     merged.sort(key=lambda e: (-e["mentions"], _normalize(e["name"])))
-    return merged
+    return merged, renames
 
 
 def _majority_language(extractions: list[dict[str, Any]]) -> str:
@@ -496,36 +739,75 @@ def _parse_time(time: str) -> int:
 
 
 #: Safety cap on the merged session summary: overlapping chunks can repeat a
-#: beat and a runaway model can emit dozens of lines per chunk. The prompt asks
-#: for 1-3 lines per chunk, so a real session lands far below this.
+#: beat and a runaway model can emit dozens of lines per chunk. Since v17 the
+#: prompt asks a chunk for a number of beats proportional to its part, so a real
+#: session lands in the twenties or thirties - still far below this.
 MAX_SUMMARY_LINES = 60
 
 
-def merge_summary_lines(summaries: list[str]) -> str:
-    """The whole-session summary: unique chunk lines, in chunk order.
+def summary_beats(
+    summaries: list[str], owned: list[OwnedPart] | None = None
+) -> list[dict[str, str]]:
+    """The merged beats, each carrying the span of the session it came from.
 
-    v11: the summary is the REVIEWABLE layer of the pipeline - the DM selects
-    the lines they want corrected - so it is stored as one beat per line.
-    Overlapping chunks repeat beats, hence the de-duplication by normalized
-    text; the surviving line keeps the first spelling seen.
+    v11: the summary is the REVIEWABLE layer of the pipeline, so it is one beat
+    per line. Overlapping chunks repeat beats, hence the de-duplication by
+    normalized text; the surviving line keeps the first spelling seen.
+
+    v18: a beat also carries the span its chunk NARRATED (chunking.OwnedPart).
+    That is the half the merger cannot supply on its own. It de-duplicates on
+    identical text, so two calls describing one scene in different words both
+    survive, and the composer - which is the only pass that sees every beat at
+    once - had no way to tell those two lines from two real moments. The spans
+    never overlap across chunks, so "different spans" means "written by readings
+    that could not see each other", which is exactly the condition under which a
+    scene on a chunk boundary gets recorded twice.
     """
-    lines: list[str] = []
+    parts = list(owned or [])
+    beats: list[dict[str, str]] = []
     seen: set[str] = set()
-    for summary in summaries:
+    for index, summary in enumerate(summaries):
+        span = parts[index] if index < len(parts) else None
         for raw in (summary or "").splitlines():
-            line = raw.strip().lstrip("-*•").strip()
-            if not line:
+            text = raw.strip().lstrip("-*•").strip()
+            if not text:
                 continue
-            key = _normalize(line)
+            key = _normalize(text)
             if key in seen:
                 continue
             seen.add(key)
-            lines.append(line)
-    return "\n".join(lines[:MAX_SUMMARY_LINES])
+            beats.append(
+                {
+                    "text": text,
+                    "from": span.start if span else "",
+                    "to": span.end if span else "",
+                }
+            )
+    return beats[:MAX_SUMMARY_LINES]
 
 
-def merge_extractions(extractions: list[dict[str, Any]]) -> dict[str, Any]:
-    """Combine per-chunk extractions into one structured result."""
+def merge_summary_lines(summaries: list[str]) -> str:
+    """The whole-session summary as one beat per line, in chunk order."""
+    return "\n".join(beat["text"] for beat in summary_beats(summaries))
+
+
+def merge_extractions(
+    extractions: list[dict[str, Any]],
+    *,
+    owned: list[OwnedPart] | None = None,
+    corpus: str = "",
+) -> dict[str, Any]:
+    """Combine per-chunk extractions into one structured result.
+
+    'owned' carries one OwnedPart per chunk, in chunk order, so every merged
+    beat can be tagged with the span of the session it came from (summary_beats).
+
+    'corpus' is the session's own text (the lines the chunks were given). When two
+    chunks name one being two ways, the spelling the recording uses MORE OFTEN is
+    the one that survives the unification: the alternative is trusting the
+    per-chunk 'mentions' counts, which are the model's own estimate and were
+    measured keeping a one-off mis-hearing over the name used seven times.
+    """
     total_chunks = max(1, len(extractions))
 
     characters: list[dict[str, Any]] = []
@@ -539,12 +821,20 @@ def merge_extractions(extractions: list[dict[str, Any]]) -> dict[str, Any]:
         locations.extend(extraction.get("locations", []))
         events.extend(extraction.get("events", []))
         timelines.extend(extraction.get("timeline_entries", []))
-        summary = (extraction.get("session_summary") or "").strip()
-        if summary:
-            summaries.append(summary)
+        # Appended even when empty: this list is INDEX-ALIGNED with 'owned', so
+        # dropping a chunk that reported no beats would shift every later chunk's
+        # span onto the wrong beats.
+        summaries.append((extraction.get("session_summary") or "").strip())
 
-    merged_characters = _merge_entities(characters, total_chunks)
-    merged_locations = _merge_entities(locations, total_chunks)
+    merged_characters, character_renames = _merge_entities(
+        characters, total_chunks, kind="character", corpus=corpus
+    )
+    merged_locations, location_renames = _merge_entities(
+        locations, total_chunks, kind="location", corpus=corpus
+    )
+    # Every spelling the unification folded away, so the beats and the timeline
+    # say one name for one being (see _unify_entities).
+    renames = {**character_renames, **location_renames}
 
     # Cross-session quality nets: (1) chunk-referencing filler text is
     # blanked/dropped, (2) the narrator (Dungeon Master / DM / Narratore) is
@@ -633,9 +923,25 @@ def merge_extractions(extractions: list[dict[str, Any]]) -> dict[str, Any]:
     else:
         overall = 0.5
 
+    if renames:
+        for entry in merged_timeline:
+            entry["summary"] = _rename_text(entry["summary"], renames)
+        for event in merged_events:
+            event["description"] = _rename_text(event["description"], renames)
+            event["participants"] = _uniq(
+                [_rename_text(str(p), renames) for p in event["participants"]]
+            )
+    beats = summary_beats(summaries, owned)
+    if renames:
+        for beat in beats:
+            beat["text"] = _rename_text(beat["text"], renames)
     return {
         "language": language,
-        "session_summary": merge_summary_lines(summaries),
+        "session_summary": "\n".join(beat["text"] for beat in beats),
+        # The same beats with their spans: what the compose call reads so it can
+        # tell a moment recorded twice from two moments. Not persisted - it is
+        # scaffolding for one call, not part of the session record.
+        "summary_beats": beats,
         "characters": merged_characters,
         "locations": merged_locations,
         "events": merged_events,
@@ -883,6 +1189,41 @@ def exclude_character_names(
         return merged
     out = dict(merged)
     out["characters"] = kept
+    return out
+
+
+def rename_characters(
+    merged: dict[str, Any], mapping: dict[str, str]
+) -> dict[str, Any]:
+    """Rewrite names in the story: a player's name stands for their character.
+
+    The recording is full of the people at the table - "Giulia, tocca a te" - and a
+    draft that carries the name into the narrative has named a person as an actor
+    in the fiction. The roster says Giulia plays Dalia, so the ACTION belongs to
+    Dalia and the prose has to say so. Returns a new dict when anything changed.
+
+    Only the story is rewritten, not the entity fields: a character page built from
+    a name the table never used for that character is a different, later problem,
+    and quietly rewriting the extraction is how a wrong identity gets frozen in.
+    """
+    if not mapping:
+        return merged
+    renames = {player: character for player, character in mapping.items() if player and character}
+    if not renames:
+        return merged
+    changed = False
+    beats = []
+    for beat in merged.get("summary_beats") or []:
+        text = str(beat.get("text") or "")
+        renamed = _rename_text(text, renames)
+        if renamed != text:
+            changed = True
+        beats.append({**beat, "text": renamed})
+    if not changed:
+        return merged
+    out = dict(merged)
+    out["summary_beats"] = beats
+    out["session_summary"] = "\n".join(beat["text"] for beat in beats)
     return out
 
 

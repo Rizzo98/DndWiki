@@ -11,6 +11,7 @@ from __future__ import annotations
 from app.summary import (
     MAX_SUMMARY_BLOCKS,
     blocks_to_text,
+    blocks_with_places,
     describe_blocks,
     normalize_blocks,
     summary_from,
@@ -104,6 +105,75 @@ def test_text_to_blocks_of_a_legacy_summary_has_no_labels():
         {"location": "", "text": "Un beat."},
         {"location": "", "text": "Un altro."},
     ]
+
+
+# --- carrying the place labels over a text the client sent back ---------------
+#
+# The DM's client sends the narrative as the plain text the page displays, so
+# the labels have to be re-attached to the blocks rebuilt from it: a correction
+# used to arrive with every place blanked out, because the revision call can
+# only copy the labels it is given (and it was given none).
+
+
+def _labeled() -> list[dict[str, str]]:
+    return [
+        {"location": "Locanda del Fumo Aspro", "text": "Il gruppo si ritrova."},
+        {"location": "Strada fuori dalla locanda", "text": "Fuori si sentono urla."},
+        {"location": "Ospedale di Fatumastra", "text": "All'ospedale lo visitano."},
+    ]
+
+
+def test_unchanged_text_keeps_every_label():
+    stored = _labeled()
+    assert blocks_with_places(blocks_to_text(stored), stored) == stored
+
+
+def test_a_reworded_paragraph_keeps_the_place_it_stands_in_for():
+    stored = _labeled()
+    edited = blocks_to_text(stored).replace(
+        "Fuori si sentono urla.", "Fuori si sentono delle urla."
+    )
+    assert blocks_with_places(edited, stored) == [
+        stored[0],
+        {"location": "Strada fuori dalla locanda", "text": "Fuori si sentono delle urla."},
+        stored[2],
+    ]
+
+
+def test_a_paragraph_the_dm_added_carries_no_place_of_its_own():
+    stored = _labeled()
+    added = blocks_to_text(stored[:2]) + "\n\nUn dettaglio in più." + "\n\n" + stored[2]["text"]
+    assert blocks_with_places(added, stored) == [
+        stored[0],
+        stored[1],
+        # the format reads an empty label as "continues the previous scene"
+        {"location": "", "text": "Un dettaglio in più."},
+        {**stored[2], "text": stored[2]["text"]},
+    ]
+
+
+def test_a_deleted_paragraph_does_not_shift_the_labels_below_it():
+    stored = _labeled()
+    dropped = "\n\n".join([stored[0]["text"], stored[2]["text"]])
+    assert blocks_with_places(dropped, stored) == [stored[0], stored[2]]
+
+
+def test_text_with_no_blocks_to_carry_from_has_no_labels():
+    assert blocks_with_places("Una storia nuova.", None) == [
+        {"location": "", "text": "Una storia nuova."}
+    ]
+    assert blocks_with_places("Una storia nuova.", []) == [
+        {"location": "", "text": "Una storia nuova."}
+    ]
+    # a legacy row holds its narrative as text: there is no label to carry
+    assert blocks_with_places("Un beat.\nUn altro.", "Un beat.\nUn altro.") == [
+        {"location": "", "text": "Un beat."},
+        {"location": "", "text": "Un altro."},
+    ]
+
+
+def test_blank_text_yields_no_blocks_at_all():
+    assert blocks_with_places("   ", _labeled()) == []
 
 
 def test_describe_blocks_names_the_places():

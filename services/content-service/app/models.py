@@ -103,6 +103,13 @@ class SessionSummary(Base):
     summary_blocks: Mapped[list | None] = mapped_column(
         JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=list, server_default="[]"
     )
+    # Beats that look like one moment the session recorded twice, as the
+    # pipeline found them: [{score, first: {text, from, to}, second: {...}}]
+    # (app/conflicts.py). A FLAG for the DM, not a question: nothing has to be
+    # answered, and an empty list - the normal case - renders nothing.
+    conflicts: Mapped[list | None] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=list, server_default="[]"
+    )
     # Transcript language the extraction was written in (draft page language).
     language: Mapped[str | None] = mapped_column(String(16))
     # Party CHARACTER names resolved at extraction time: the wiki phase tags

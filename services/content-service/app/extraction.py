@@ -66,16 +66,25 @@ from typing import Any
 
 from json_repair import loads as repair_loads
 
+from app.chunking import OwnedPart, markers_in_lines
 from app.core.config import ServiceSettings
 from app.prompts import (
     SUMMARY_COMPOSE_SYSTEM_PROMPT,
     SUMMARY_REVISION_SYSTEM_PROMPT,
+    SUMMARY_TIGHTEN_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
     build_chunk_message,
     build_summary_compose_message,
     build_summary_revision_message,
+    build_summary_tighten_message,
 )
 from app.revision import SummaryRevisionError, apply_summary_revision
+from app.speakers import (
+    CAST_SYSTEM_PROMPT,
+    SpeakerReading,
+    parse_reading,
+    sample_lines,
+)
 from app.summary import normalize_blocks
 
 logger = logging.getLogger(__name__)
@@ -122,6 +131,55 @@ TRUNCATED_JSON_MESSAGE = (
 
 #: finish_reason values meaning "the completion hit max_tokens".
 TRUNCATED_FINISH_REASONS = frozenset({"length", "max_tokens"})
+
+
+def reference_key(ref: Any) -> str:
+    """A citation the way the view offers it: no brackets, no whitespace.
+
+    THE MODEL COPIES WHAT IT SEES. A line reads "[00:18:40] SPEAKER_03: ...", so
+    the citation comes back as "[00:18:40]" while the marker the line offers is the
+    bare "00:18:40". Comparing the two raw made EVERY correct citation on the
+    diarized path look invented, and the pipeline dropped all of them: on a real
+    chunk, 25 to 46 real references per call were thrown away as fabrications. The
+    attributed view has the same trap for a model that writes "[u_00412]".
+    """
+    return str(ref or "").strip().strip("[]").strip()
+
+
+def drop_unresolvable_refs(payload: Any, allowed: set[str]) -> int:
+    """Remove every 'source_refs' entry that is not a reference of the view.
+
+    'allowed' is what the lines actually offer ('u_00412' in the attributed view,
+    '00:41:15' in the diarized one). Returns how many entries were dropped, so the
+    caller can log it: a model that invents references is a finding, not noise.
+
+    What survives is written back in the canonical (bracketed-free) form, so the
+    refs are comparable with the view everywhere downstream.
+
+    An item that loses ALL of its references keeps an empty list rather than the
+    invented ones. Downstream that is the honest state - "the lines behind this
+    could not be resolved" - and the attribution gate already treats an item with
+    no resolvable reference as one that may not reach a page.
+    """
+    if not isinstance(payload, (dict, list)):
+        return 0
+    dropped = 0
+    if isinstance(payload, list):
+        for item in payload:
+            dropped += drop_unresolvable_refs(item, allowed)
+        return dropped
+    for key, value in list(payload.items()):
+        if key == "source_refs" and isinstance(value, list):
+            kept = [
+                reference_key(ref)
+                for ref in value
+                if isinstance(ref, str) and reference_key(ref) in allowed
+            ]
+            dropped += len(value) - len(kept)
+            payload[key] = kept
+        else:
+            dropped += drop_unresolvable_refs(value, allowed)
+    return dropped
 
 
 class ExtractionError(Exception):
@@ -188,25 +246,67 @@ class LLMClient:
                 if base:
                     os.environ.setdefault(base_env, base)
 
+    async def read_speakers(self, lines: list[str]) -> SpeakerReading:
+        """Who is who, read ONCE from the whole session (raises ExtractionError).
+
+        Only the diarized path needs this: an attributed transcript carries the
+        roster. The reading is bounded (app.speakers.sample_lines) because the
+        evidence for it is concentrated at the head - where a table introduces
+        itself - and spread through the rest, and the whole transcript of a long
+        session does not fit.
+        """
+        sample = sample_lines(lines)
+        payload = await self._complete_json(
+            CAST_SYSTEM_PROMPT,
+            "\n".join(sample),
+            "the session's cast",
+            extraction=False,
+        )
+        return parse_reading(payload)
+
     async def extract_chunk(
         self,
         chunk_view: str,
         chunk_index: int,
         total_chunks: int,
         out_of_world: list[str] | None = None,
+        owned: OwnedPart | None = None,
     ) -> dict[str, Any]:
         """Extract structured facts from one chunk view (raises ExtractionError).
 
-        'out_of_world' names narrators (the DM) the model must never turn
-        into characters.
+        'out_of_world' names narrators (the DM) the model must never turn into
+        characters. 'owned' is the slice of the session this chunk narrates: the
+        lines above it are the previous chunk's, so they are context for the
+        entities but not material for the beats, and its size sets how many beats
+        the chunk owes (see prompts.build_chunk_message).
         """
-        return await self._complete_json(
+        payload = await self._complete_json(
             SYSTEM_PROMPT,
             build_chunk_message(
-                chunk_view, chunk_index, total_chunks, out_of_world=out_of_world
+                chunk_view,
+                chunk_index,
+                total_chunks,
+                out_of_world=out_of_world,
+                owned=owned,
+                lines_per_beat=self._settings.beat_lines,
             ),
             chunk_index,
         )
+        # The view is the ONLY source of a valid reference, so a reference that is
+        # not at the start of one of its lines is a fabrication. This is not
+        # hypothetical: on the DIARIZED view (a timestamp, no [u_XXXXX] ids) the
+        # model answered the "cite your lines" rule by enumerating invented ids -
+        # u_02896, u_02897, ... - until it ran out of output tokens, and the job
+        # failed. Dropping what cannot be resolved is the same rule the attribution
+        # gate applies, moved to the point where the lie is created.
+        dropped = drop_unresolvable_refs(payload, markers_in_lines(chunk_view.splitlines()))
+        if dropped:
+            logger.warning(
+                "chunk %d cited %d reference(s) that are not lines of the view; dropped",
+                chunk_index,
+                dropped,
+            )
+        return payload
     async def compose_summary(
         self,
         current: dict[str, Any],
@@ -229,6 +329,26 @@ class LLMClient:
             SUMMARY_COMPOSE_SYSTEM_PROMPT,
             build_summary_compose_message(current, language=language, scenes=scenes),
             "the session summary composition",
+            validate=_narrative_check,
+            extraction=False,
+        )
+        return normalize_blocks(payload.get("session_summary"))
+
+    async def tighten_summary(
+        self, blocks: list[dict[str, str]], *, target_sentences: int
+    ) -> list[dict[str, str]]:
+        """Rewrite a finished record shorter, losing nothing but the connective.
+
+        The composer selects AND writes, and it will not drop content it has
+        decided to keep (measured twice: a sentence budget alone lost benchmark
+        facts). This call sees only the finished text, so the two jobs are
+        separate - nothing new may enter, every fact must survive, and what goes is
+        the tissue between them.
+        """
+        payload = await self._complete_json(
+            SUMMARY_TIGHTEN_SYSTEM_PROMPT,
+            build_summary_tighten_message(blocks, target_sentences=target_sentences),
+            "the session summary tightening",
             validate=_narrative_check,
             extraction=False,
         )
@@ -460,15 +580,28 @@ class LLMClient:
         *,
         concurrency: int,
         out_of_world: list[str] | None = None,
+        owned: list[OwnedPart] | None = None,
     ) -> list[dict[str, Any]]:
-        """Extract every chunk with a bounded number of in-flight calls."""
+        """Extract every chunk with a bounded number of in-flight calls.
+
+        'owned' carries one OwnedPart per chunk (chunking.owned_parts): the slice
+        of the session that chunk narrates, and therefore which line its beats
+        start at and how many it owes. A shorter list - or none at all - leaves
+        the later chunks without a boundary, which is what the legacy path does,
+        so the parameter stays optional rather than required.
+        """
         semaphore = asyncio.Semaphore(concurrency)
+        parts = list(owned or [])
 
         async def _one(index: int, view: str) -> dict[str, Any]:
             async with semaphore:
                 logger.info("extracting chunk %d/%d", index + 1, len(chunk_views))
                 return await self.extract_chunk(
-                    view, index, len(chunk_views), out_of_world=out_of_world
+                    view,
+                    index,
+                    len(chunk_views),
+                    out_of_world=out_of_world,
+                    owned=parts[index] if index < len(parts) else None,
                 )
 
         return list(await asyncio.gather(*(_one(i, v) for i, v in enumerate(chunk_views))))

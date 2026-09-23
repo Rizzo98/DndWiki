@@ -1,5 +1,8 @@
 """Tests for the cross-chunk merger + wiki draft builder."""
 
+from itertools import pairwise
+
+from app.chunking import OwnedPart
 from app.merger import (
     MAX_SUMMARY_LINES,
     POSSIBLE_DUPLICATE,
@@ -1000,3 +1003,260 @@ def test_merge_summary_lines_strips_bullets_and_caps_length():
 
 def test_merge_summary_lines_empty_when_nothing_reported():
     assert merge_summary_lines(["", "   "]) == ""
+
+# --------------------------------------------------------------------------
+# the span each beat came from (v18)
+# --------------------------------------------------------------------------
+#
+# The extraction partition tells each chunk which LINES it narrates, but that
+# information stopped at the merger: the compose call got a flat list of beats and
+# could not tell "one moment the session recorded twice" - the chunks overlap, so
+# a scene falling on a boundary is described from both sides - from "two moments
+# that look alike". It kept both, in one sentence, which is how one NPC became
+# "una ragazza" and "una nana" in the same line.
+
+
+def _chunk(summary: str) -> dict:
+    return {
+        "language": "en",
+        "session_summary": summary,
+        "characters": [],
+        "locations": [],
+        "events": [],
+        "timeline_entries": [],
+    }
+
+
+def test_beats_carry_the_span_of_the_session_they_came_from():
+    extractions = [_chunk("The party reaches Moria."), _chunk("The gate is sealed.")]
+    owned = [
+        OwnedPart("u_00001", "u_00164", 164),
+        OwnedPart("u_00165", "u_00299", 135),
+    ]
+    beats = merge_extractions(extractions, owned=owned)["summary_beats"]
+    assert beats == [
+        {"text": "The party reaches Moria.", "from": "u_00001", "to": "u_00164"},
+        {"text": "The gate is sealed.", "from": "u_00165", "to": "u_00299"},
+    ]
+
+
+def test_the_spans_of_two_chunks_never_touch():
+    """What makes "different spans" mean "readings that could not see each other"."""
+    owned = [
+        OwnedPart("u_00001", "u_00164", 164),
+        OwnedPart("u_00165", "u_00299", 135),
+        OwnedPart("u_00300", "u_00435", 136),
+    ]
+    beats = merge_extractions([_chunk("a"), _chunk("b"), _chunk("c")], owned=owned)[
+        "summary_beats"
+    ]
+    spans = [(beat["from"], beat["to"]) for beat in beats]
+    assert spans == [
+        ("u_00001", "u_00164"),
+        ("u_00165", "u_00299"),
+        ("u_00300", "u_00435"),
+    ]
+    assert all(left[1] != right[0] for left, right in pairwise(spans))
+
+
+def test_a_chunk_that_reported_no_beats_does_not_shift_the_others_spans():
+    """The list of summaries is index-aligned with the parts, so an empty chunk
+    must still occupy its slot: dropping it would hang every later span on the
+    wrong beats, which is worse than having no spans at all."""
+    owned = [
+        OwnedPart("u_00001", "u_00164", 164),
+        OwnedPart("u_00165", "u_00299", 135),
+        OwnedPart("u_00300", "u_00435", 136),
+    ]
+    beats = merge_extractions([_chunk("first"), _chunk(""), _chunk("third")], owned=owned)[
+        "summary_beats"
+    ]
+    assert [(beat["text"], beat["from"]) for beat in beats] == [
+        ("first", "u_00001"),
+        ("third", "u_00300"),
+    ]
+
+
+def test_beats_without_parts_carry_no_span():
+    """The legacy path has no refs to name a span with; the composer then works
+    as it did before v18 rather than being handed a wrong one."""
+    beats = merge_extractions([_chunk("a beat")])["summary_beats"]
+    assert beats == [{"text": "a beat", "from": "", "to": ""}]
+
+
+def test_the_session_summary_is_the_beats_joined():
+    owned = [OwnedPart("u_00001", "u_00010", 10), OwnedPart("u_00011", "u_00020", 10)]
+    merged = merge_extractions([_chunk("one"), _chunk("two")], owned=owned)
+    assert merged["session_summary"] == "one\ntwo"
+    assert merged["session_summary"] == "\n".join(
+        beat["text"] for beat in merged["summary_beats"]
+    )
+
+
+# --------------------------------------------------------------------------
+# one being, one name (the per-chunk names a session cannot reconcile)
+# --------------------------------------------------------------------------
+#
+# The per-chunk merge groups on the EXACT normalized name and the chunks cannot
+# see each other, so a recording that hears one NPC's name two ways produced two
+# characters and the summary used BOTH - in two consecutive paragraphs. This was
+# measured on a real session (evals/fixtures/s1e2_bugie_inutili), where the
+# transcriber wrote "Sir Rushus" once and "Sir Lucius" nine times.
+
+
+def _named_chunk(name: str, summary: str, **entity) -> dict:
+    chunk = _chunk(summary)
+    chunk["characters"] = [_entity(name, **entity)]
+    return chunk
+
+
+def test_one_being_under_two_spellings_becomes_one_entity():
+    extractions = [
+        _named_chunk("Sir Rushus", "Hann incontra Sir Rushus.", mentions=1),
+        _named_chunk(
+            "Sir Lucius",
+            "Hann Caleto trova Sir Lucius.",
+            aliases=["Sir Rushus"],
+            mentions=9,
+        ),
+    ]
+    merged = merge_extractions(extractions)
+    names = [c["name"] for c in merged["characters"]]
+    assert names == ["Sir Lucius"]
+    # the beat that used the dropped spelling is rewritten, so the narrative
+    # cannot call one man two names
+    assert merged["session_summary"].splitlines() == [
+        "Hann incontra Sir Lucius.",
+        "Hann Caleto trova Sir Lucius.",
+    ]
+
+
+def test_a_model_written_alias_cannot_merge_an_unrelated_character():
+    """Measured: one run had a character named "Hann" carrying the aliases
+    ["Sir Lucius", "Galgith"], and the alias rule - which trusts the extraction -
+    merged the researcher into Hann. Every beat about Sir Lucius was then rewritten
+    as Hann and the draft said "Hann entra nell'ospedale e trova Hann"."""
+    extractions = [
+        _named_chunk(
+            "Hann",
+            "Hann entra nell'ospedale e incontra Sir Lucius.",
+            aliases=["Sir Lucius", "Galgith", "il nano dottore"],
+            mentions=30,
+        ),
+        _named_chunk("Sir Lucius", "Sir Lucius accoglie Hann.", mentions=8),
+    ]
+    merged = merge_extractions(extractions)
+    assert sorted(c["name"] for c in merged["characters"]) == ["Hann", "Sir Lucius"]
+    assert "incontra Sir Lucius" in merged["session_summary"]
+
+
+def test_an_alias_that_shares_a_token_still_folds():
+    """The case the alias rule exists for: two spellings of one title and name."""
+    extractions = [
+        _named_chunk("Sir Rushus", "Hann incontra Sir Rushus.", mentions=1),
+        _named_chunk("Sir Lucius", "Hann trova Sir Lucius.", aliases=["Sir Rushus"], mentions=9),
+    ]
+    merged = merge_extractions(extractions)
+    assert [c["name"] for c in merged["characters"]] == ["Sir Lucius"]
+
+
+def test_the_name_the_session_used_most_often_survives():
+    extractions = [
+        _named_chunk("Jace", "Hann torna da Jace.", mentions=1),
+        _named_chunk("Jackie", "Il merlo Jackie scende.", aliases=["Jace"], mentions=6),
+    ]
+    merged = merge_extractions(extractions)
+    assert [c["name"] for c in merged["characters"]] == ["Jackie"]
+
+
+def test_the_recording_decides_the_spelling_not_the_model_s_own_count():
+    """The case that was measured: 'Jace' claimed 5 mentions, 'Jackie' one.
+
+    The recording writes Jackie seven times and Jace once - it is a mis-hearing in
+    a single line. Trusting the per-chunk 'mentions' number kept the mis-hearing,
+    which is why the corpus is what decides.
+    """
+    extractions = [
+        _named_chunk("Jace", "Hann torna da Jace.", mentions=5),
+        _named_chunk("Jackie", "Il merlo Jackie scende.", mentions=1),
+    ]
+    corpus = "Jackie scende. Jackie sta bene. Hann controlla Jackie. Poi torna da Jace."
+    merged = merge_extractions(extractions, corpus=corpus)
+    assert [c["name"] for c in merged["characters"]] == ["Jackie"]
+    assert merged["session_summary"].splitlines()[0] == "Hann torna da Jackie."
+
+
+def test_without_a_corpus_the_model_s_mentions_still_decide():
+    """The legacy path passes no transcript text; the fold must still pick one."""
+    extractions = [
+        _named_chunk("Jace", "Hann torna da Jace.", mentions=5),
+        _named_chunk("Jackie", "Il merlo Jackie scende.", mentions=1),
+    ]
+    merged = merge_extractions(extractions)
+    assert [c["name"] for c in merged["characters"]] == ["Jace"]
+
+
+def test_a_first_name_and_a_full_name_are_one_character():
+    extractions = [
+        _named_chunk("Hann", "Hann si sveglia.", mentions=4),
+        _named_chunk("Hann Caleto", "Hann Caleto si guarda.", mentions=3),
+    ]
+    merged = merge_extractions(extractions)
+    assert [c["name"] for c in merged["characters"]] == ["Hann"]
+
+
+def test_a_city_is_not_folded_into_the_building_inside_it():
+    """Containment is identity for a person's name and 'part_of' for a place."""
+    chunk = _chunk("Il gruppo entra nell'ospedale di Fatumastra, in città.")
+    chunk["locations"] = [
+        {"name": "Fatumastra", "aliases": [], "description": "La città.", "mentions": 5},
+        {
+            "name": "Ospedale di Fatumastra",
+            "aliases": [],
+            "description": "Dove è ricoverato l'uomo.",
+            "mentions": 3,
+        },
+    ]
+    merged = merge_extractions([chunk])
+    assert [loc["name"] for loc in merged["locations"]] == [
+        "Fatumastra",
+        "Ospedale di Fatumastra",
+    ]
+
+
+def test_a_role_or_a_description_never_becomes_a_character():
+    """Every name here was drafted as a character on a benchmark session and would
+    have become a wiki page the DM has to delete. A phrase built ON a generic noun
+    ("uomo urlante", "creatura piumata", "Vice sceriffo", "la nana") is what the
+    table calls somebody, not who they are - and requiring EVERY token to be
+    generic let all of them through, because the qualifier is in no lexicon."""
+    chunk = _chunk("Il nano medico e il mezzorco dottore discutono con lo sceriffo.")
+    chunk["characters"] = [
+        _entity("nano medico", mentions=4),
+        _entity("mezzorco dottore", mentions=3),
+        _entity("Sceriffo", mentions=5),
+        _entity("Vice sceriffo", mentions=3),
+        _entity("Creatura piumata", mentions=6),
+        _entity("Uomo urlante", mentions=4),
+        _entity("la nana", mentions=2),
+        _entity("Vicario", mentions=2),
+    ]
+    assert merge_extractions([chunk])["characters"] == []
+
+
+def test_a_proper_name_survives_a_role_in_front_of_it():
+    """The net is about the HEAD of the name: what identifies somebody is the last
+    token, so a titled character keeps their page."""
+    chunk = _chunk("Il vice sceriffo Miles Falco entra con Sir Lucius.")
+    chunk["characters"] = [
+        _entity("Vice Sceriffo Miles Falco", mentions=3),
+        _entity("Sir Lucius", mentions=4),
+        _entity("Hann Caleto", mentions=2),
+        _entity("Jackie", mentions=2),
+    ]
+    assert sorted(c["name"] for c in merge_extractions([chunk])["characters"]) == [
+        "Hann Caleto",
+        "Jackie",
+        "Sir Lucius",
+        "Vice Sceriffo Miles Falco",
+    ]

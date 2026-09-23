@@ -28,6 +28,7 @@ lines, which is exactly what the DM highlights portions of.
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 from typing import Any
 
 #: A leading list marker ("- ", "* ", "• ") never belongs in a paragraph of
@@ -104,6 +105,67 @@ def text_to_blocks(text: Any) -> list[dict[str, str]]:
     # render as a readable story rather than one enormous paragraph.
     paragraphs = normalized.split(separator)
     return [{"location": "", "text": _clean(p)} for p in paragraphs if _clean(p)]
+
+
+def _match_key(value: Any) -> str:
+    """How two paragraphs are recognised as the same one, labels aside."""
+    return _clean(value).casefold()
+
+
+def _places_of(stored: list[dict[str, str]], blocks: list[dict[str, str]]) -> list[str]:
+    """One place label per block, taken from the blocks a text came from.
+
+    The two lists are aligned by the paragraphs' own text, so a paragraph that
+    the DM did not touch finds its block wherever it moved to (a paragraph
+    inserted above it is an insertion, not a shift of everything below).
+    """
+    labels = [""] * len(blocks)
+    matcher = SequenceMatcher(
+        None,
+        [_match_key(block["text"]) for block in stored],
+        [_match_key(block["text"]) for block in blocks],
+        autojunk=False,
+    )
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            span = i2 - i1
+        elif tag == "replace":
+            # Reworded, not moved: the paragraphs still stand where they stood,
+            # so the first ones keep the places of the blocks they replace.
+            span = min(i2 - i1, j2 - j1)
+        else:  # a paragraph that was inserted has no place of its own
+            continue
+        for offset in range(span):
+            labels[j1 + offset] = stored[i1 + offset]["location"]
+    return labels
+
+
+def blocks_with_places(text: Any, previous: Any) -> list[dict[str, str]]:
+    """Blocks from a replacement narrative, carrying the place labels over.
+
+    The DM's client sends the narrative as the plain TEXT the page displays
+    (the passages they highlight are quoted from it). A place label is block
+    METADATA, so the text cannot carry it: rebuilding the blocks from the text
+    alone blanks every label at once - and the summary-revision call, which is
+    handed blocks and told to copy the ones it does not touch "verbatim, labels
+    included", can only copy the labels it was given. That is how a correction
+    to a single sentence used to arrive with the whole session re-labelled as
+    "somewhere unknown".
+
+    So the labels of the blocks the text came from are re-attached here: a
+    paragraph that survived the DM's edit keeps its place, and a reworded one
+    keeps the place of the block it stands in for, so that fixing a sentence
+    does not cost its scene the name. A paragraph with no counterpart - text
+    the DM added - is left unlabelled, which the format already reads as
+    "continues the previous scene".
+    """
+    blocks = text_to_blocks(text)
+    stored = normalize_blocks(previous)
+    if not blocks or not stored:
+        return blocks
+    for block, label in zip(blocks, _places_of(stored, blocks)):
+        block["location"] = label
+    return blocks
 
 
 def blocks_to_text(blocks: Any) -> str:

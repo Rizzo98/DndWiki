@@ -1,0 +1,56 @@
+name: s1e1_elfi_e_indaco
+session_id: 54e9ec84-1caa-4621-8130-045b195576f7
+language: it
+captured_at: '2026-09-19T19:00:20+02:00'
+source:
+  kind: diarized_transcript
+  file: transcript.json
+  transcription_provider: assemblyai
+  transcription_model: universal-3-5-pro
+input: transcript
+utterances: 391
+# NOTHING IS IDENTIFIED YET. The recording has diarization labels and no voice
+# print match, so the view shows SPEAKER_00.. like a session whose speakers the
+# DM has not named. Fill this in (label -> character) to run the OTHER branch, the
+# one that starts after speaker identification named everyone.
+speakers: {}
+# The DM narrates the world and is not a character; the deployed worker resolves
+# this from campaign-service, which an offline run cannot reach.
+dm_speakers: []
+# THE CAMPAIGN'S ROSTER, in campaign-service's own shape (member -> character).
+# The worker fetches this at run time (GET /internal/campaigns/{id}/members, the
+# endpoint refiner-service already uses for speaker attribution); offline it is
+# fixture metadata. It is CAMPAIGN data, not session data: it says who plays whom,
+# never who did what, and it is what stops the wiki naming the people at the table
+# ("Giulia si avvicina alle guardie") instead of their characters. See the
+# fixture README for where these six come from.
+roster:
+  dm: [Matt]
+  players:
+    Gianandrea: Galgith
+    Giulia: Dalia
+    Sara: Shiran
+    Tommy: Letho
+    Andross: Rendar
+    Simone: Hann Caleto
+  # What each character LOOKS like - the campaign's own field for it
+  # ('character_description'; refiner-service feeds it to its own LLM pass).
+  # CARRIED, NOT RENDERED: putting it in the '[Table]' note was measured and made
+  # the draft worse (contradictions 2.2 -> 5.6 over five runs against five), because
+  # material that lets a model PLACE a name makes it place names it cannot support.
+  # See app/roster.py CampaignRoster.descriptions.
+  appearance:
+    Galgith: fanciulla bionda
+    Dalia: giovane halfling
+    Shiran: giovane donna dai capelli castani
+    Letho: uomo dai capelli corvini
+    Rendar: mezzelfo possente
+    Hann Caleto: piccolo umanoide coperto di piume di gufo, con grandi occhi gialli
+benchmark:
+  file: benchmark.txt
+  title: 'S1E1 - Elfi e indaco'
+  source: the campaign wiki
+  written_by: a human
+truth:
+  file: truth.txt
+  note: a longer human account of the same session, for judging facts

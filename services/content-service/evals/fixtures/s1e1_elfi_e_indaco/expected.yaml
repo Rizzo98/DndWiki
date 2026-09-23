@@ -1,0 +1,81 @@
+# Checks asserted on every run of this fixture.
+#
+# These are SHAPE checks. The substantive measurement for this fixture is the
+# benchmark comparison evals/compare.py prints after each run: the draft against
+# the human-written summary of the same recording (benchmark.txt). A draft can
+# pass everything here and still be a worse summary than a person wrote, which is
+# exactly what these fixtures exist to detect.
+
+baseline:
+  known_failures: []
+
+checks:
+  - id: no-beat-markers-in-the-prose
+    kind: text_not_matches
+    applies_to: text
+    blocking: true
+    pattern: "\\[\\d+\\]"
+    why: >
+      the beats reach the composer as a list; a composer that echoes the numbers
+      turns the story into a numbered list of paragraphs
+
+  - id: no-list-markers
+    kind: text_not_matches
+    applies_to: text
+    blocking: false
+    pattern: "(?m)^\\s*[-*\u2022]\\s"
+    why: a leading bullet in a paragraph means the model answered with a list
+
+  - id: no-placeholders
+    kind: text_not_matches
+    applies_to: text
+    blocking: true
+    pattern: "(?i)\\b(un personaggio|a character|qualcuno di cui non|SPEAKER_\\d+|unknown)\\b"
+    why: >
+      a diarized transcript hands the model unnamed speakers; the failure this
+      catches is the draft writing the LABEL or an empty placeholder into the
+      story instead of describing what happened
+
+
+  - id: no-player-names
+    kind: text_not_matches
+    applies_to: text
+    blocking: true
+    pattern: "(?i)\\b(Giulia|Sara|Tommy|Simone|Gianandrea|Matt)\\b"
+    why: >
+      the wiki names CHARACTERS, never the players at the table, and a diarized view
+      cannot tell which names are which - the rule exists in the prompt but it has
+      nothing to check against. Measured on this fixture, five runs out of eight put
+      "Giulia si avvicina alle guardie" in the narrative, and Giulia is the player;
+      her character is Dalia. The names here are the ones THIS fixture's truth.txt
+      uses for people rather than characters; Andross is left out on purpose,
+      because this session's account uses it for the half-elf himself.
+
+  - id: no-role-or-description-characters
+    kind: entity_names_not_matching
+    applies_to: run
+    blocking: true
+    pattern: "(?i)^(l'|lo |la |il |gli |i )?(sceriffo|vice ?sceriffo|primario|dottore|medico|nano dottore|mezzorco (dottore|medico)|guardia|terza guardia|nana|nano|uomo urlante|creatura( piumata)?|elfi|indaco|scimmietta|merlo|oste|locandiere|vicario)$"
+    why: >
+      a drafted character has to be ONE PERSON with a name the table uses. A ROLE
+      ("lo sceriffo", "il vice sceriffo", "il primario"), a DESCRIPTION ("l'uomo
+      urlante", "la creatura piumata", "la nana") and a PEOPLE or faction ("gli
+      elfi", "l'Indaco") are none of those, and every one of them was drafted as a
+      character on the benchmark sessions - each becoming a wiki page the DM has to
+      delete. The prose can still call these people what the lines call them; this
+      check is about the ENTRIES.
+
+  - id: beat-budget
+    kind: min_beats
+    applies_to: run
+    blocking: false
+    value: 20
+    note: a 40-60 minute session has more than twenty moments worth telling
+
+  - id: no-duplicated-moments
+    kind: max_duplicate_similarity
+    applies_to: run
+    blocking: false
+    value: 0.35
+    min_words: 5
+    note: a proxy for the overlapping-chunk seam defect, not a proof
