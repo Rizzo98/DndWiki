@@ -204,8 +204,9 @@ def test_merge_events_stay_in_the_summary():
     assert event["participants"] == ["Aragorn", "Gimli"]
     assert event["confidence"] == 1.0
 
-    drafts, relations, _ = build_page_drafts(merged, "c", "s")
+    drafts, updates, relations, _ = build_page_drafts(merged, "c", "s")
     assert drafts == []  # no event pages anymore
+    assert updates == []
     assert relations == []
 
 
@@ -278,7 +279,7 @@ def test_map_location_type():
 
 def test_build_page_drafts():
     merged = merge_extractions([make_extraction()])
-    drafts, relations, duplicates = build_page_drafts(
+    drafts, updates, relations, duplicates = build_page_drafts(
         merged, "22222222-2222-2222-2222-222222222222", "11111111-1111-1111-1111-111111111111"
     )
 
@@ -318,12 +319,13 @@ def test_build_page_drafts():
     assert location["content_json"]["attributes"] == {"location_type": "dungeon"}
 
     assert duplicates == []
+    assert updates == []  # nothing to fold into: the campaign has no pages yet
     assert relations == []  # appears_in is gone with the event pages
 
 
 def test_build_page_drafts_tags_party_characters_by_name():
     merged = merge_extractions([make_extraction()])
-    drafts, _, _ = build_page_drafts(
+    drafts, _, _, _ = build_page_drafts(
         merged, "c", "s", party_characters=["Aragorn", "Gimli"]
     )
     character = next(d for d in drafts if d["kind"] == "character")
@@ -338,7 +340,7 @@ def test_build_page_drafts_tags_party_by_alias():
     """The page may be titled by the character name while the member data
     carries an alias (or vice versa): matching goes through aliases too."""
     merged = merge_extractions([make_extraction()])
-    drafts, _, _ = build_page_drafts(merged, "c", "s", party_characters=["Strider"])
+    drafts, _, _, _ = build_page_drafts(merged, "c", "s", party_characters=["Strider"])
     character = next(d for d in drafts if d["kind"] == "character")
     assert character["content_json"]["attributes"]["character_type"] == "player"
 
@@ -348,7 +350,7 @@ def test_build_page_drafts_tags_party_by_model_hint():
     extraction["characters"][0]["is_party"] = True
     merged = merge_extractions([extraction])
     assert merged["characters"][0]["is_party"] is True
-    drafts, _, _ = build_page_drafts(merged, "c", "s")
+    drafts, _, _, _ = build_page_drafts(merged, "c", "s")
     character = next(d for d in drafts if d["kind"] == "character")
     assert character["content_json"]["attributes"]["character_type"] == "player"
 
@@ -359,7 +361,7 @@ def test_build_page_drafts_location_region_attribute():
     extraction["locations"][0]["part_of"] = "Terra di Mezzo"
     extraction["locations"][0]["name"] = "Fatumastra"
     merged = merge_extractions([extraction])
-    drafts, _, _ = build_page_drafts(merged, "c", "s")
+    drafts, _, _, _ = build_page_drafts(merged, "c", "s")
     location = next(d for d in drafts if d["kind"] == "location")
     assert location["content_json"]["attributes"] == {
         "location_type": "city",
@@ -455,7 +457,7 @@ def test_build_page_drafts_location_type_specific_attributes():
         "events": [],
         "timeline_entries": [],
     }
-    drafts, _, _ = build_page_drafts(merged, "c", "s")
+    drafts, _, _, _ = build_page_drafts(merged, "c", "s")
     by_title = {d["title"]: d for d in drafts if d["kind"] == "location"}
 
     city_attrs = by_title["Fatumastra"]["content_json"]["attributes"]
@@ -492,7 +494,7 @@ def test_build_page_drafts_location_world_and_dungeon_attributes():
         "events": [],
         "timeline_entries": [],
     }
-    drafts, _, _ = build_page_drafts(merged, "c", "s")
+    drafts, _, _, _ = build_page_drafts(merged, "c", "s")
     by_title = {d["title"]: d for d in drafts if d["kind"] == "location"}
     assert by_title["Terra di Mezzo"]["content_json"]["attributes"] == {
         "location_type": "world", "pantheon": "Dodici Dei", "planes": "Piano Materiale"
@@ -507,7 +509,7 @@ def test_build_page_drafts_location_history_section():
     extraction = make_extraction()
     extraction["locations"][0]["history"] = "Fondata dai primi coloni."
     merged = merge_extractions([extraction])
-    drafts, _, _ = build_page_drafts(merged, "c", "s")
+    drafts, _, _, _ = build_page_drafts(merged, "c", "s")
     location = next(d for d in drafts if d["kind"] == "location")
     assert location["content_json"]["history"] == "Fondata dai primi coloni."
 
@@ -516,15 +518,16 @@ def test_build_page_drafts_unknown_place_type_omitted():
     extraction = make_extraction()
     extraction["locations"][0]["place_type"] = "qualcosa di strano"
     merged = merge_extractions([extraction])
-    drafts, _, _ = build_page_drafts(merged, "c", "s")
+    drafts, _, _, _ = build_page_drafts(merged, "c", "s")
     location = next(d for d in drafts if d["kind"] == "location")
     assert location["content_json"].get("attributes") in (None, {"region": ""})
     assert "location_type" not in (location["content_json"].get("attributes") or {})
 
 
-def test_build_page_drafts_exact_match_skips_duplicate():
-    """An entity the wiki already documents is not re-drafted; its new facts
-    remain visible on the persisted session summary (session page)."""
+def test_build_page_drafts_exact_match_folds_the_session_into_the_page():
+    """An entity the wiki already documents is NOT re-drafted and NOT skipped:
+    the session is folded into its page, which gains what the session adds and
+    keeps everything it already said."""
     merged = merge_extractions([make_extraction()])
     existing = [
         {
@@ -534,28 +537,45 @@ def test_build_page_drafts_exact_match_skips_duplicate():
             "kind": "location",
             "status": "published",
             "aliases": ["Mines of Moria"],
+            "content_json": {
+                "summary": "An ancient dwarven mine.",
+                "language": "en",
+                "attributes": {"location_type": "dungeon", "population": "none"},
+                "session_references": [
+                    {"session_id": "00000000-0000-0000-0000-000000000000",
+                     "facts": ["Its doors were sealed."]}
+                ],
+            },
         }
     ]
-    drafts, relations, duplicates = build_page_drafts(
-        merged, "22222222-2222-2222-2222-222222222222", "11111111-1111-1111-1111-111111111111",
+    drafts, updates, relations, duplicates = build_page_drafts(
+        merged, "22222222-2222-2222-2222-222222222222",
+        "11111111-1111-1111-1111-111111111111",
         existing_pages=existing,
     )
 
-    kinds = sorted(d["kind"] for d in drafts)
-    assert kinds == ["character"]  # no Moria draft, no session note
-
-    assert duplicates == [
-        {
-            "title": "Moria",
-            "kind": "location",
-            "matched_page_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            "matched_title": "Moria",
-        }
-    ]
+    assert sorted(d["kind"] for d in drafts) == ["character"]  # no Moria draft
+    assert duplicates == []
     assert relations == []
 
+    assert len(updates) == 1
+    update = updates[0]
+    assert update["page_id"] == "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    assert update["kind"] == "location"
+    assert update["title"] == "Moria"  # the page keeps the name it has
+    content = update["content_json"]
+    # the page's own words are kept, and the sessions are kept apart
+    assert content["summary"] == "An ancient dwarven mine."
+    assert content["attributes"] == {"location_type": "dungeon", "population": "none"}
+    assert content["session_references"] == [
+        {"session_id": "00000000-0000-0000-0000-000000000000",
+         "facts": ["Its doors were sealed."]},
+        {"session_id": "11111111-1111-1111-1111-111111111111",
+         "facts": ["Its west-door opened to the password."]},
+    ]
 
-def test_build_page_drafts_alias_match_skips_duplicate():
+
+def test_build_page_drafts_alias_match_folds_the_session_into_the_page():
     merged = merge_extractions([make_extraction()])
     existing = [
         {
@@ -565,15 +585,164 @@ def test_build_page_drafts_alias_match_skips_duplicate():
             "kind": "character",
             "status": "published",  # already in the wiki (dedupe input)
             "aliases": [],
+            "content_json": {"personality": "Watchful."},
         }
     ]
-    drafts, _, duplicates = build_page_drafts(merged, "c", "s", existing_pages=existing)
+    drafts, updates, _, duplicates = build_page_drafts(
+        merged, "c", "s", existing_pages=existing
+    )
     assert all(d["title"] != "Aragorn" for d in drafts)
-    assert duplicates[0]["title"] == "Aragorn"
-    assert duplicates[0]["matched_page_id"] == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    assert duplicates == []
+    assert len(updates) == 1
+    assert updates[0]["page_id"] == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    assert updates[0]["title"] == "Strider"  # never renamed by the session
+    # what the page said survives; what the session heard is added to it
+    assert updates[0]["content_json"]["personality"] == (
+        "Watchful.\n\nWary of strangers, loyal to the party."
+    )
 
 
-def test_build_page_drafts_near_match_gets_possible_duplicate_relation():
+def test_build_page_drafts_misspelled_name_updates_the_page_it_is():
+    """The case this exists for: the table says "Coca Verde", the wiki has
+    "Concaverde". They are ONE place, so the session lands on that page - it
+    does not get a second page of its own, and the mis-hearing becomes an
+    alias of the page it belongs to."""
+    extraction = make_extraction()
+    extraction["locations"][0]["name"] = "Coca Verde"
+    extraction["locations"][0]["description"] = "A swamp the party got lost in."
+    merged = merge_extractions([extraction])
+    existing = [
+        {
+            "id": "5cd2af39-0e6e-4c01-a482-778bce759a86",
+            "title": "Concaverde",
+            "slug": "concaverde",
+            "kind": "location",
+            "status": "published",
+            "aliases": [],
+            "content_json": {
+                "summary": "A region of swamps.",
+                "attributes": {"location_type": "region", "terrain": "paludi"},
+            },
+        }
+    ]
+    drafts, updates, relations, duplicates = build_page_drafts(
+        merged, "c", "s", existing_pages=existing
+    )
+
+    # no second page for one place (Aragorn is unrelated and still drafted)
+    assert [d["kind"] for d in drafts] == ["character"]
+    assert duplicates == []
+    assert relations == []  # and no 'possible_duplicate' link to itself
+    assert len(updates) == 1
+    update = updates[0]
+    assert update["page_id"] == "5cd2af39-0e6e-4c01-a482-778bce759a86"
+    assert update["title"] == "Concaverde"
+    content = update["content_json"]
+    # the two descriptions of one swamp sit together: the page's own first
+    assert content["summary"] == "A region of swamps.\n\nA swamp the party got lost in."
+    # the mis-heard name is how the page answers to that name from now on
+    assert content["aliases"] == ["Coca Verde"]
+    # a sheet the page already fills is never contradicted by a hearing
+    assert content["attributes"] == {"location_type": "region", "terrain": "paludi"}
+
+
+def test_build_page_drafts_two_spellings_of_one_place_make_one_update():
+    """Two entities of ONE session folding into the same page must not become
+    two changes fighting over it: the second folds into what the first merged,
+    and the page gains one description, not one per spelling."""
+    merged = {
+        "language": "it",
+        "characters": [],
+        "locations": [
+            # fuzzy match on the page's title...
+            {
+                "name": "Coca Verde",
+                "aliases": [],
+                "description": "Where the party got lost.",
+                "facts": [],
+                "session_facts": [],
+            },
+            # ...and an exact match on one of its stored aliases
+            {
+                "name": "Conca Verde",
+                "aliases": [],
+                "description": "A swamp.",
+                "facts": [],
+                "session_facts": [],
+            },
+        ],
+        "events": [],
+    }
+    existing = [
+        {
+            "id": "5cd2af39-0e6e-4c01-a482-778bce759a86",
+            "title": "Concaverde",
+            "slug": "concaverde",
+            "kind": "location",
+            "status": "published",
+            "aliases": ["Conca Verde"],
+            "content_json": {"summary": "A region of swamps."},
+        }
+    ]
+    drafts, updates, relations, duplicates = build_page_drafts(
+        merged, "c", "s", existing_pages=existing
+    )
+    assert drafts == []
+    assert duplicates == []
+    assert relations == []
+    assert len(updates) == 1
+    content = updates[0]["content_json"]
+    assert content["summary"] == (
+        "A region of swamps.\n\nWhere the party got lost.\n\nA swamp."
+    )
+    assert content["aliases"] == ["Coca Verde", "Conca Verde"]
+
+
+def test_build_page_drafts_a_page_that_already_says_it_all_is_context():
+    """A match that would add NOTHING to the page is not a change: proposing it
+    would ask the DM to confirm a page rewritten with its own content."""
+    merged = merge_extractions([make_extraction()])
+    existing = [
+        {
+            "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "title": "Moria",
+            "slug": "moria",
+            "kind": "location",
+            "status": "published",
+            "aliases": ["Mines of Moria"],
+            # exactly what the extraction carries: the summary and the very
+            # same session reference, already recorded from an earlier run
+            "content_json": {
+                "summary": "An ancient dwarven mine.",
+                "language": "en",
+                "attributes": {"location_type": "dungeon"},
+                "session_references": [
+                    {"session_id": "11111111-1111-1111-1111-111111111111",
+                     "facts": ["Its west-door opened to the password."]}
+                ],
+            },
+        }
+    ]
+    _drafts, updates, relations, duplicates = build_page_drafts(
+        merged, "c", "11111111-1111-1111-1111-111111111111", existing_pages=existing
+    )
+    assert updates == []
+    assert relations == []
+    assert duplicates == [
+        {
+            "title": "Moria",
+            "kind": "location",
+            "matched_page_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "matched_title": "Moria",
+            "reason": "already documented by this campaign, and adds nothing new",
+        }
+    ]
+
+
+def test_build_page_drafts_a_name_inside_another_is_related_not_the_same():
+    """Containment is not identity: "Città di Fatumastra" is IN the name of the
+    page "Fatumastra", but a city is not its region. The entity is drafted,
+    with a 'possible_duplicate' link for the DM to judge."""
     extraction = make_extraction()
     extraction["locations"][0]["name"] = "Città di Fatumastra"
     merged = merge_extractions([extraction])
@@ -587,10 +756,12 @@ def test_build_page_drafts_near_match_gets_possible_duplicate_relation():
             "aliases": [],
         }
     ]
-    drafts, relations, duplicates = build_page_drafts(merged, "c", "s", existing_pages=existing)
+    drafts, updates, relations, duplicates = build_page_drafts(
+        merged, "c", "s", existing_pages=existing
+    )
 
-    # near match: draft IS created (DM decides), plus a relation proposal
     assert any(d["title"] == "Città di Fatumastra" and d["kind"] == "location" for d in drafts)
+    assert updates == []
     assert duplicates == []
     duplicate_relations = [r for r in relations if r["relation_type"] == POSSIBLE_DUPLICATE]
     assert duplicate_relations == [
@@ -633,7 +804,7 @@ def test_build_page_drafts_proposes_durable_relationships():
     ]
     extraction["locations"] = []
     merged = merge_extractions([extraction])
-    drafts, relations, _ = build_page_drafts(merged, "c", "s")
+    drafts, _, relations, _ = build_page_drafts(merged, "c", "s")
 
     assert [d["title"] for d in drafts] == ["Aragorn", "Gimli"]
     durable = [r for r in relations if r["relation_type"] != POSSIBLE_DUPLICATE]
@@ -741,7 +912,7 @@ def test_merge_renames_generic_location_with_named_anchor():
     merged = merge_extractions([extraction])
     assert [loc["name"] for loc in merged["locations"]] == ["Ospedale di Fatumastra"]
     assert merged["locations"][0]["aliases"] == []  # generic alias dropped
-    drafts, _, _ = build_page_drafts(merged, "c", "s")
+    drafts, _, _, _ = build_page_drafts(merged, "c", "s")
     assert drafts[0]["title"] == "Ospedale di Fatumastra"
     assert drafts[0]["content_json"]["attributes"] == {
         "location_type": "building",

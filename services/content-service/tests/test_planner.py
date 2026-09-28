@@ -67,7 +67,10 @@ def test_plan_proposes_updates_for_documented_events():
     assert update["after"]["content_json"]["attributes"]["participants"] == ["Aragorn"]
 
 
-def test_plan_skips_entities_the_campaign_documents():
+def test_plan_updates_a_page_the_campaign_documents():
+    """An entity the campaign already has is not re-created and not skipped:
+    the session is proposed as an UPDATE of its page, carrying the page's
+    current content so the DM reviews a diff and not a new page."""
     existing = [
         {
             "id": PAGE_UUIDS["Moria"],
@@ -76,19 +79,108 @@ def test_plan_skips_entities_the_campaign_documents():
             "kind": "location",
             "status": "published",
             "aliases": ["Mines of Moria"],
+            "content_json": {"summary": "An ancient dwarven mine."},
         }
     ]
     plan = _plan(existing_pages=existing)
-    assert "Moria" not in [c["title"] for c in plan["changes"]]
-    # reported as context, never as a change
+    assert [(c["action"], c["title"]) for c in plan["changes"]] == [
+        ("create", "Aragorn"),
+        ("update", "Moria"),
+        ("create", "Entering Moria"),
+    ]
+    update = plan["changes"][1]
+    # the PAGE's own kind, not 'event': it decides how the review renders it
+    assert update["kind"] == "location"
+    assert update["page_id"] == PAGE_UUIDS["Moria"]
+    assert update["timeline"] is None  # only event pages back a timeline entry
+    # the DM diffs against what the page says today
+    assert update["before"] == {
+        "title": "Moria",
+        "content_json": {"summary": "An ancient dwarven mine."},
+    }
+    content = update["after"]["content_json"]
+    assert content["summary"] == "An ancient dwarven mine."  # kept, not replaced
+    assert content["session_references"] == [
+        {"session_id": SESSION_ID, "facts": ["Its west-door opened to the password."]}
+    ]
+    assert plan["skipped"] == []
+
+
+def test_plan_reports_a_match_that_adds_nothing_as_context():
+    """A page that already says everything the session adds is context, not a
+    change: the DM is not asked to confirm a page rewritten with its own
+    content."""
+    existing = [
+        {
+            "id": PAGE_UUIDS["Moria"],
+            "title": "Moria",
+            "slug": "moria",
+            "kind": "location",
+            "status": "published",
+            "aliases": ["Mines of Moria"],
+            "content_json": {
+                "summary": "An ancient dwarven mine.",
+                "language": "en",
+                "attributes": {"location_type": "dungeon"},
+                "session_references": [
+                    {"session_id": SESSION_ID, "facts": ["Its west-door opened to the password."]}
+                ],
+            },
+        }
+    ]
+    plan = _plan(existing_pages=existing)
+    assert [c["title"] for c in plan["changes"]] == ["Aragorn", "Entering Moria"]
     assert plan["skipped"] == [
         {
             "title": "Moria",
             "kind": "location",
             "matched_title": "Moria",
-            "reason": "already documented by this campaign",
+            "reason": "already documented by this campaign, and adds nothing new",
         }
     ]
+
+
+def test_plan_updates_the_page_a_misspelled_name_belongs_to():
+    """The pipeline hears the same place spelled differently: that is the SAME
+    page, so the plan proposes updating it (under its own title) instead of
+    creating a second page with a 'possible_duplicate' link."""
+    existing = [
+        {
+            "id": PAGE_UUIDS["Moria"],
+            "title": "Concaverde",
+            "slug": "concaverde",
+            "kind": "location",
+            "status": "published",
+            "aliases": [],
+            "content_json": {
+                "summary": "A region of swamps.",
+                "attributes": {"location_type": "region", "terrain": "paludi"},
+            },
+        }
+    ]
+    extraction = make_extraction()
+    extraction["locations"] = [
+        {
+            "name": "Coca Verde",  # how the table actually said it
+            "aliases": [],
+            "description": "Where the party got lost.",
+            "facts": [],
+            "session_facts": [],
+            "mentions": 1,
+        }
+    ]
+    plan = _plan(existing_pages=existing, extraction=extraction)
+    updates = [c for c in plan["changes"] if c["action"] == "update"]
+    assert [(c["title"], c["kind"]) for c in updates] == [("Concaverde", "location")]
+    assert updates[0]["page_id"] == PAGE_UUIDS["Moria"]
+    assert "Coca Verde" not in [c["title"] for c in plan["changes"]]
+    # the mis-heard name becomes an alias of the page it belongs to, and the
+    # page's own words stay where they are
+    content = updates[0]["after"]["content_json"]
+    assert content["aliases"] == ["Coca Verde"]
+    assert content["summary"] == "A region of swamps.\n\nWhere the party got lost."
+    assert updates[0]["before"]["content_json"]["summary"] == "A region of swamps."
+    assert plan["relations"] == []  # no 'possible_duplicate' link to itself
 
 
 def test_plan_collects_relations_and_marks_party_characters():

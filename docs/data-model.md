@@ -283,8 +283,11 @@ page_relations
   page_id       uuid FK -> wiki_pages
   related_page_id uuid FK -> wiki_pages
   relation_type text   -- appears_in|member_of|allied_with|led_by|owner|possible_duplicate|...
-                        -- possible_duplicate: content-service tags a fresh draft that
-                        -- looks like an existing page (the DM merges manually)
+                        -- possible_duplicate: content-service tags a fresh draft whose
+                        -- name CONTAINS an existing page's name (a hospital in
+                        -- the city it is named after); the DM merges manually.
+                        -- A page the campaign documents under another spelling
+                        -- of the name is an UPDATE of that page, not this link
                         -- owner: content-service auto-proposes durable ownership
                         -- (character --[owner]--> place/item) from the transcript
   UNIQUE (page_id, related_page_id, relation_type)
@@ -374,8 +377,10 @@ wiki_change_sets                     -- the PROPOSED wiki changes of a session
                                       --   in_world_date} | null, dropped}]
   relations     jsonb DEFAULT '[]'    -- [{id, from_title, to_title, to_page_id,
                                       --   relation_type, dropped}]
-  skipped       jsonb DEFAULT '[]'    -- entities the campaign already documents
-                                      -- (context for the DM, never changes)
+  skipped       jsonb DEFAULT '[]'    -- matches no change could be made of: a
+                                      -- name colliding with another kind's page,
+                                      -- or a page that already says everything
+                                      -- the session adds (context, never changes)
   confirmed_at  timestamptz NULL      -- DM confirmation of the proposed changes
   confirmed_by  uuid NULL
   applied_at    timestamptz NULL      -- when the wiki accepted them

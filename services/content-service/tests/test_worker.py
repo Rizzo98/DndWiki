@@ -421,9 +421,10 @@ async def test_process_job_happy_path(session_factory, settings):
     }
     assert payload["skipped"] == []
 
-async def test_process_job_skips_entities_already_documented(session_factory, settings):
-    """An entity the wiki already has is not re-drafted; its new facts stay
-    visible on the persisted session summary (session page)."""
+async def test_process_job_updates_entities_already_documented(session_factory, settings):
+    """An entity the wiki already has is not re-drafted and not dropped: the
+    session is folded into its page as an update, alongside the pages the
+    campaign does not have yet."""
     wiki_client = FakeWikiClient(
         existing_pages=[
             {
@@ -447,12 +448,19 @@ async def test_process_job_skips_entities_already_documented(session_factory, se
     assert [d["kind"] for d in wiki_client.created] == ["character", "event"]
     assert all(d["title"] != "Moria" for d in wiki_client.created)
 
-    # the DM sees it as context ("already documented"), not as a change
+    # Moria's page is UPDATED with what this session adds to it
+    assert [page_id for page_id, _ in wiki_client.updated] == [PAGE_UUIDS["Moria"]]
     plan = await _plan_row(session_factory)
-    assert [s["title"] for s in plan.skipped] == ["Moria"]
+    assert plan.skipped == []
+    update = next(c for c in plan.changes if c["action"] == "update")
+    assert (update["title"], update["kind"]) == ("Moria", "location")
+    assert update["after"]["content_json"]["session_references"] == [
+        {"session_id": SESSION_ID, "facts": ["Its west-door opened to the password."]}
+    ]
     ready = next(ev for ev in publisher.events if ev.type == "content.plan.ready")
-    assert ready.payload["skipped"] == 1
+    assert ready.payload["skipped"] == 0
     assert ready.payload["create"] == 2
+    assert ready.payload["update"] == 1
 
 
 async def test_the_stretch_note_reaches_the_lines_it_licenses(settings):

@@ -137,10 +137,14 @@ the same `content.generate` queue:
     written (`after`), and updates also carry the page's CURRENT title and
     `content_json` (`before`) so the session page can render a per-field
     diff — the "git status" of the session. **Still nothing is written to the
-    wiki.** Cross-session dedupe happens here: an entity the campaign already
-    documents (exact title/alias match) is reported as *skipped*, never
-    proposed again; fuzzy look-alikes get a change plus a
-    `possible_duplicate` link.
+    wiki.** Cross-session dedupe happens here, in three tiers: an entity the
+    campaign already documents — by the same name OR under another spelling of
+    it ("Coca Verde" for the page "Concaverde") — becomes an **update** of that
+    page, carrying the page's own content with the session folded in and the
+    freshly heard name added to its aliases; a name that merely CONTAINS
+    another page's name ("Ospedale di Fatumastra" vs "Fatumastra") is a related
+    page, so the entity is created with a `possible_duplicate` link; and a
+    match that would add nothing to the page lands in *skipped* as context.
 12. The run is recorded (`phase='wiki'`, no draft ids), the session parks on
     `wiki_plan_ready` and `content.plan.ready` is published. The DM now
     inspects/edits/drops single changes (`PUT /api/content/sessions/{id}/plan`)
@@ -152,9 +156,9 @@ the same `content.generate` queue:
     `plan.confirmed`; the worker moves the session to `applying_wiki` and
     applies the confirmed set through **wiki-service**
     (`POST /internal/wiki/changes/apply`): the new pages are created
-    **published** and new timeline entries **approved**, the existing event
-    pages are updated in place (never duplicated) and the proposed relations
-    are created. The apply endpoint is idempotent: a create the campaign
+    **published** and new timeline entries **approved**, the pages an update
+    targets — character, location or event — are rewritten in place (never
+    duplicated) and the proposed relations are created. The apply endpoint is idempotent: a create the campaign
     already documents (or one this session already wrote) is skipped and
     reported, so a retried message cannot duplicate a page.
 14. The run is recorded (`phase='apply'`, the written page ids, mean

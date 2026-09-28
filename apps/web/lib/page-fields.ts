@@ -113,6 +113,27 @@ export interface FieldDiff {
   after: unknown;
 }
 
+/**
+ * The part of a prose value that is genuinely NEW.
+ *
+ * A session that describes a page the campaign already has APPENDS its own
+ * words to what the page says (services/content-service/app/merger.py), so the
+ * proposed value normally keeps the current one verbatim and adds to it. This
+ * returns just that tail, so the review can show what the session contributes
+ * instead of a wall of text the DM has already read. Null when the two values
+ * are unrelated (a field that was replaced, or one that is new altogether):
+ * the caller then shows the whole proposed value.
+ */
+export function appendedText(before: unknown, after: unknown): string | null {
+  if (typeof before !== "string" || typeof after !== "string") return null;
+  const current = before.trim();
+  const proposed = after.trim();
+  if (!current || !proposed.startsWith(current) || proposed.length <= current.length) {
+    return null;
+  }
+  return proposed.slice(current.length).trim() || null;
+}
+
 /** The fields that differ between the current page and the proposed one. */
 export function diffChange(change: PlanChange): FieldDiff[] {
   const before = flattenContent(change.before?.content_json ?? {});

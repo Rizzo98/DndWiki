@@ -352,8 +352,10 @@ the set.
 ```
 
 > `create`/`update` count the proposed pages, `relations` the proposed
-> cross-references and `skipped` the entities the campaign already documents
-> (they are not proposed again).
+> cross-references and `skipped` the entities no change could be made of: a
+> name colliding with a page of another kind, or a page that already says
+> everything this session adds. An entity the campaign documents — under the
+> same name or under another spelling of it — is an `update` of its page.
 
 ## plan.confirmed
 
@@ -420,7 +422,9 @@ confirmation is the approval), so nothing pipeline-generated ever lands in a
 > when unknown). Pages are CHARACTER and LOCATION pages, plus EVENT pages for
 > world-significant events (each event page backs a campaign timeline entry,
 > written approved because the DM confirmed it; events already on the timeline
-> are updated, not duplicated). Fuzzy look-alikes still get a page plus a
+> are updated, not duplicated). An entity the campaign already documents is
+> updated in place, whatever spelling the session used for it; a name that
+> merely contains an existing page's name still gets a page plus a
 > `possible_duplicate` page relation for the DM to merge.
 
 ## wiki.published / wiki.updated / wiki.archived

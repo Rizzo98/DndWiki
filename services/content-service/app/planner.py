@@ -10,7 +10,9 @@ wiki-service (see app/workers/generate.py, phase 3).
 Each change carries:
 
 - 'action': 'create' (a page the campaign does not document yet) or 'update'
-  (an existing page — typically an event page — gaining new information);
+  (a page it DOES document gaining this session: an event page, or a
+  character/location page the session matched — including one it matched
+  under a different spelling of the name);
 - 'after': the payload that would be written (title, content_json,
   visibility, confidence);
 - 'before': for updates, the page's CURRENT title/content_json, so the UI can
@@ -20,8 +22,10 @@ Each change carries:
 - 'dropped': the DM unchecked it — kept in the set so the review is
   reversible.
 
-Entities the campaign already documents (exact title/alias match) are NOT
-changes: they land in 'skipped' and stay visible on the session summary.
+Entities the campaign already documents are not re-created: they become the
+'update' that folds the session into their page. A match that would add
+NOTHING to the page (the same facts, already stated) lands in 'skipped'
+instead — context rather than a change the DM has to review.
 """
 
 from __future__ import annotations
@@ -60,7 +64,7 @@ def build_change_set(
     back without inventing identifiers.
     """
     existing_pages = existing_pages or []
-    drafts, relations, duplicates = build_page_drafts(
+    drafts, page_updates, relations, duplicates = build_page_drafts(
         merged,
         campaign_id,
         session_id,
@@ -124,28 +128,30 @@ def build_change_set(
             }
         )
 
-    for draft in drafts:
-        _add_create(draft, None)
-    for draft in event_drafts:
-        _add_create(draft, timeline_by_title.get(draft["title"]))
-
-    for update in event_updates:
+    def _add_update(update: dict[str, Any], timeline: dict[str, Any] | None) -> None:
+        """An existing page gaining this session. The page keeps its OWN title:
+        the session may have called it something else ("Coca Verde" for
+        "Concaverde") and that name lands in the diff as a new alias, but the
+        page the DM is reviewing is the one the campaign already reads."""
+        nonlocal counter
         counter += 1
         page = _lookup_page(existing_pages, str(update["page_id"]))
-        timeline = timeline_by_page.get(str(update["page_id"]))
+        title = (page or {}).get("title") or update["title"]
         changes.append(
             {
                 "id": f"c{counter}",
                 "action": "update",
-                "kind": "event",
-                "title": update["title"],
+                # the page's OWN kind: it decides how the review renders the
+                # page, its fields and the diff of this change
+                "kind": update.get("kind") or "event",
+                "title": title,
                 "page_id": str(update["page_id"]),
                 "before": {
-                    "title": (page or {}).get("title") or update["title"],
+                    "title": title,
                     "content_json": (page or {}).get("content_json") or {},
                 },
                 "after": {
-                    "title": (page or {}).get("title") or update["title"],
+                    "title": title,
                     "content_json": update.get("content_json") or {},
                     "visibility": (page or {}).get("visibility") or "public",
                     "confidence": None,
@@ -161,6 +167,15 @@ def build_change_set(
                 "dropped": False,
             }
         )
+
+    for draft in drafts:
+        _add_create(draft, None)
+    for update in page_updates:
+        _add_update(update, None)
+    for draft in event_drafts:
+        _add_create(draft, timeline_by_title.get(draft["title"]))
+    for update in event_updates:
+        _add_update(update, timeline_by_page.get(str(update["page_id"])))
 
     planned_relations: list[dict[str, Any]] = []
     for index, rel in enumerate(relations, start=1):
@@ -180,7 +195,7 @@ def build_change_set(
             "title": duplicate["title"],
             "kind": duplicate["kind"],
             "matched_title": duplicate.get("matched_title"),
-            "reason": "already documented by this campaign",
+            "reason": duplicate.get("reason") or "already documented by this campaign",
         }
         for duplicate in [*duplicates, *event_duplicates]
     ]

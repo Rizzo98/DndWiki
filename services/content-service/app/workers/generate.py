@@ -50,8 +50,9 @@ Pipeline (per session):
    result in 'session_summaries' as a draft (revision 1). The DM reads it and
    highlights the passages to correct; each rewrite bumps the revision.
 6. PHASE 2 expands the confirmed summary into the change set (cross-session
-   dedupe: an entity the campaign already documents is skipped, not
-   re-proposed) and records the generation_jobs row.
+   dedupe: an entity the campaign already documents becomes an UPDATE of its
+   page — under whatever spelling the session used for it — never a second
+   page) and records the generation_jobs row.
 7. PHASE 3 applies the confirmed change set, records the run and publishes
    content.generated.
 

@@ -22,18 +22,24 @@ Wiki-quality guards (v2):
   drafts WORLD-SIGNIFICANT events as event pages (kind='event') and upserts
   their campaign timeline entries (pending DM approval). Events already on the
   timeline are updated, not duplicated. Session recaps stay on the session page.
-- an extraction whose name (or alias) matches an existing page is NOT drafted
-  again; its new facts remain visible on the persisted session summary shown
-  on the session page. A fuzzy (near-match) hit still becomes a draft, plus
-  a 'possible_duplicate' relation proposal pointing at the existing page.
+- an extraction that matches a page the campaign already has is NOT drafted
+  again: the session is folded INTO that page as an 'update' (see
+  _merged_entity_content). A name the campaign documents under another
+  spelling - "Coca Verde" for the page "Concaverde" - IS the same entity, so
+  it updates the page instead of creating a second one for one place. Only a
+  match that would add nothing to the page is reported as 'skipped'.
+- a name that merely CONTAINS another page's name ("Ospedale di Fatumastra"
+  against "Fatumastra") is a related page, not the same one: it is drafted,
+  with a 'possible_duplicate' relation pointing at the page it echoes.
 - player characters are tagged attributes.character_type='player' (vs 'npc')
   from the party's member character names and the model's 'is_party' hint;
   the wiki always refers to players by their CHARACTER name, never the
   player's own name.
 
-Also maps the merged result to wiki-service draft payloads (PageCreate JSON)
-plus 'possible_duplicate' relation proposals for near-matches of existing
-pages.
+Also maps the merged result to wiki-service draft payloads (PageCreate JSON),
+page-update payloads for entities the campaign already documents and
+'possible_duplicate' relation proposals for the pages a fresh entity merely
+echoes.
 """
 
 from __future__ import annotations
@@ -71,6 +77,13 @@ NEAR_MATCH_RATIO = 0.84
 #: so "Sceriffo" and "vicesceriffo" (also 0.80, two different officers) stay two
 #: people. Calibrated on the pairs two real sessions produced - see _same_entity.
 CHARACTER_NEAR_MATCH_RATIO = 0.78
+
+#: How a fresh entity relates to a page the campaign already has. Only the
+#: first two mean "this is that page"; the third means "this page is in the
+#: name somewhere", which is a different thing entirely.
+MATCH_SAME_NAME = "same_name"  # the title or a stored alias IS this name
+MATCH_SAME_ENTITY = "same_entity"  # the same name, heard or written differently
+MATCH_RELATED = "related"  # one name CONTAINS the other: related, not the same
 
 
 # --------------------------------------------------------------------------
@@ -300,6 +313,73 @@ def known_names_for_page(page: dict[str, Any]) -> list[str]:
     return [n for n in names if n]
 
 
+def _same_name(a: str, b: str) -> bool:
+    """True when two names are the same name, spelled the same way.
+
+    The comparison is over IDENTITY-BEARING tokens (articles dropped), so
+    "the Bree" and "Bree" are one name. A name with no identity-bearing token
+    at all matches nothing: two empty token sets are not a match, they are
+    two names nobody said.
+    """
+    tokens = _content_tokens(a)
+    return bool(tokens) and tokens == _content_tokens(b)
+
+
+def classify_existing_page(
+    title: str,
+    aliases: list[str],
+    existing_pages: list[dict[str, Any]] | None,
+    *,
+    kind: str | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """(page, how) for the page of the campaign this fresh entity matches.
+
+    Returns the match tier as MATCH_SAME_NAME, MATCH_SAME_ENTITY or
+    MATCH_RELATED, or (None, None) when the campaign has nothing close.
+
+    'kind' restricts the search to pages of that kind. A location that shares
+    a character's name is a title COLLISION, not the same entity: folding one
+    into the other would rewrite the wrong page, so the caller asks for its
+    own kind first and only then for the collision.
+
+    An exact match wins outright; otherwise the closest near match does. The
+    tier of that closest match is what tells the caller whether the campaign
+    documents this entity (first two tiers: fold the session into the page)
+    or merely has a page whose name this one echoes (containment only: draft
+    the entity and propose a 'possible_duplicate' relation).
+    """
+    pages = [
+        page
+        for page in (existing_pages or [])
+        if (page.get("status") or "") != "archived"
+        and (kind is None or (page.get("kind") or "") == kind)
+    ]
+    if not pages:
+        return None, None
+
+    candidates = [title, *(a for a in aliases if a)]
+
+    for page in pages:
+        names = known_names_for_page(page)
+        if any(_same_name(c, n) for c in candidates for n in names):
+            return page, MATCH_SAME_NAME
+
+    near: tuple[float, dict[str, Any]] | None = None
+    for page in pages:
+        names = known_names_for_page(page)
+        for candidate in candidates:
+            for name in names:
+                if not _is_near_match(candidate, name):
+                    continue
+                ratio = _names_ratio(candidate, name)
+                if near is None or ratio > near[0]:
+                    near = (ratio, page)
+    if near is None:
+        return None, None
+    ratio, page = near
+    return page, MATCH_SAME_ENTITY if ratio >= NEAR_MATCH_RATIO else MATCH_RELATED
+
+
 def match_existing_page(
     title: str,
     aliases: list[str],
@@ -311,34 +391,12 @@ def match_existing_page(
     match wins (no new draft at all); otherwise the best near match (if any)
     lets the caller propose a 'possible_duplicate' relation.
     """
-    if not existing_pages:
+    page, how = classify_existing_page(title, aliases, existing_pages)
+    if page is None:
         return None, None
-
-    candidates = [title, *(a for a in aliases if a)]
-
-    def _matches(names: list[str], predicate) -> bool:
-        return any(predicate(c, n) for c in candidates for n in names)
-
-    for page in existing_pages:
-        if (page.get("status") or "") == "archived":
-            continue
-        names = known_names_for_page(page)
-        if _matches(names, lambda c, n: _content_tokens(c) == _content_tokens(n)):
-            return page, None
-
-    near: tuple[float, dict[str, Any]] | None = None
-    for page in existing_pages:
-        if (page.get("status") or "") == "archived":
-            continue
-        names = known_names_for_page(page)
-        if _matches(names, _is_near_match):
-            best = max(
-                (_names_ratio(c, n) for c in candidates for n in names),
-                default=0.0,
-            )
-            if near is None or best > near[0]:
-                near = (best, page)
-    return None, (near[1] if near else None)
+    if how == MATCH_SAME_NAME:
+        return page, None
+    return None, page
 
 
 # --------------------------------------------------------------------------
@@ -1267,39 +1325,175 @@ def _content_json(
     return body
 
 
+# --------------------------------------------------------------------------
+# folding a session into a page the campaign already has
+# --------------------------------------------------------------------------
+
+#: Prose sections a later session may extend: characters carry physical_look /
+#: personality / history, locations the summary and the history (and 'body' is
+#: the free text of a hand-written page).
+_MERGEABLE_PROSE = ("summary", "body", "physical_look", "personality", "history")
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    """Coerce an untrusted JSON value into a plain dict ({} when it is not one)."""
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _merge_prose(existing: Any, fresh: Any) -> str | None:
+    """What the page says today, with what this session adds to it.
+
+    Appending is the point. A later session describing the same place in its
+    own words IS new information about it, and a wiki that drops it forgets
+    the campaign it exists to record. Prose the page already carries is never
+    repeated; a session that simply said more than the page (its wording
+    contains the page's own) replaces it instead of stacking on top.
+    """
+    old = existing.strip() if isinstance(existing, str) else ""
+    new = fresh.strip() if isinstance(fresh, str) else ""
+    if not new:
+        return old or None
+    if not old:
+        return new
+    if _normalize(new) in _normalize(old):
+        return old
+    if _normalize(old) in _normalize(new):
+        return new
+    return old + "\n\n" + new
+
+
+def _merge_session_references(existing: Any, fresh: Any) -> list[dict[str, Any]]:
+    """The page's session references plus the session's, one entry per session."""
+    refs = [
+        *(existing if isinstance(existing, list) else []),
+        *(fresh if isinstance(fresh, list) else []),
+    ]
+    merged: list[dict[str, Any]] = []
+    by_session: dict[str, dict[str, Any]] = {}
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        session_id = str(ref.get("session_id") or "")
+        if not session_id:
+            continue
+        facts = _strings(ref.get("facts"))
+        current = by_session.get(session_id)
+        if current is None:
+            current = {"session_id": session_id, "facts": facts}
+            by_session[session_id] = current
+            merged.append(current)
+            continue
+        current["facts"] = _uniq([*current["facts"], *facts])
+    return merged
+
+
+def _merged_entity_content(
+    existing: dict[str, Any],
+    fresh: dict[str, Any],
+    *,
+    page_title: str,
+    fresh_title: str,
+) -> dict[str, Any]:
+    """A page the campaign already documents, with this session folded into it.
+
+    The rule is ADD, NEVER OVERWRITE. The page is the record the DM and the
+    players have been reading; a later session is only ever more information
+    about the same entity, so prose is appended, attributes are filled in
+    where the page is silent (never contradicted) and lists are unioned. A
+    key the fresh payload does not carry is left exactly as it was, so a
+    hand-edited page cannot be blanked by a re-run.
+
+    The name THIS session used becomes an alias of the page: "Coca Verde" is
+    how the table said "Concaverde", and recording that is what stops the next
+    session from proposing a third page for the same swamp.
+    """
+    merged = dict(existing or {})
+
+    for key in _MERGEABLE_PROSE:
+        if key not in fresh:
+            continue
+        value = _merge_prose(merged.get(key), fresh.get(key))
+        if value:
+            merged[key] = value
+
+    if fresh.get("language") and not str(merged.get("language") or "").strip():
+        merged["language"] = fresh["language"]
+
+    # Every name this session heard for the entity is a name the page answers
+    # to from now on. The page's own title is not an alias of itself.
+    aliases = _uniq(
+        [*_strings(merged.get("aliases")), *_strings(fresh.get("aliases")), fresh_title]
+    )
+    aliases = [name for name in aliases if _normalize(name) != _normalize(page_title)]
+    if aliases:
+        merged["aliases"] = aliases
+
+    facts = _uniq([*_strings(merged.get("facts")), *_strings(fresh.get("facts"))])
+    if facts:
+        merged["facts"] = facts
+
+    # What the page already states wins; the session only fills the blanks (a
+    # place whose kind nobody knew until now finally gets its location_type).
+    attributes = {**_as_dict(fresh.get("attributes")), **_as_dict(merged.get("attributes"))}
+    if attributes:
+        merged["attributes"] = attributes
+
+    references = _merge_session_references(
+        merged.get("session_references"), fresh.get("session_references")
+    )
+    if references:
+        merged["session_references"] = references
+
+    return merged
+
+
 def build_page_drafts(
     merged: dict[str, Any],
     campaign_id: str,
     session_id: str,
     existing_pages: list[dict[str, Any]] | None = None,
     party_characters: list[str] | None = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Map a merged result to wiki PageCreate payloads + relation proposals.
+) -> tuple[
+    list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]
+]:
+    """Map a merged result to wiki page payloads + relation proposals.
 
-    Only character and location pages are drafted here; events go through
+    Only character and location pages are handled here; events go through
     build_event_drafts() (event pages + timeline entries). Session recaps
     live on the dedicated session page.
 
-    Returns (drafts, relations, duplicates):
+    Returns (drafts, updates, relations, duplicates):
 
-    - drafts: PageCreate-shaped payloads. Characters always carry
+    - drafts: PageCreate-shaped payloads for entities the campaign does not
+      document yet. Characters always carry
       content_json.attributes.character_type ('player' when they match the
       party's character names or the model's is_party hint, 'npc' otherwise).
+    - updates: {'page_id', 'kind', 'title', 'content_json', 'change_note'} for
+      entities the campaign DOES document — including the ones it documents
+      under another spelling of the name. content_json is the page's own
+      content with this session folded in (see _merged_entity_content), so
+      the page gains what the session adds and loses nothing it said before.
     - relations: {'from_title', 'to_page_id', 'relation_type'} proposals for
-      fresh drafts that look like existing pages ('possible_duplicate'),
-      resolved after the drafts are created.
-    - duplicates: entities skipped because the campaign already documents
-      them ({'title', 'kind', 'matched_page_id', 'matched_title'}). Their new
-      facts stay visible on the persisted session summary (session page).
+      fresh drafts that merely ECHO an existing page ('possible_duplicate' —
+      resolved once the drafts are created).
+    - duplicates: matches that could not become a change — a name colliding
+      with a page of another kind, or a page that already says everything
+      this session adds ({'title', 'kind', 'matched_page_id',
+      'matched_title'}). Their new facts stay visible on the persisted
+      session summary (session page).
 
     'existing_pages' is the flat page listing from wiki-service
-    (id/title/kind/status/aliases); without it no dedupe happens.
+    (id/title/kind/status/aliases/content_json); without it nothing matches
+    and every entity is drafted.
     'party_characters' lists the party's CHARACTER names (campaign members);
     matching entities are tagged as player characters.
     """
     drafts: list[dict[str, Any]] = []
     relations: list[dict[str, Any]] = []
     duplicates: list[dict[str, Any]] = []
+    #: page_id -> the ONE update this session gives that page (several
+    #: spellings of one entity in one session must not fight over it).
+    updates: dict[str, dict[str, Any]] = {}
     language = (merged.get("language") or "").strip()
     party = {
         normalize_entity_name(name)
@@ -1328,36 +1522,102 @@ def build_page_drafts(
             "source_session_id": session_id,
         }
 
-    def _match_or_record(
-        entity: dict[str, Any], kind: str, aliases: list[str]
-    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-        """(skip-record, near-page) for one entity; None/None = draft it."""
-        exact, near = match_existing_page(entity["name"], aliases, existing_pages)
-        if exact is not None:
-            return (
-                {
-                    "title": entity["name"],
-                    "kind": kind,
-                    "matched_page_id": str(exact.get("id") or ""),
-                    "matched_title": exact.get("title") or "",
-                },
-                None,
-            )
-        if near is not None:
+    def _collision(title: str, kind: str, page: dict[str, Any]) -> dict[str, Any]:
+        """The skip record of a name a page of ANOTHER kind already carries."""
+        return {
+            "title": title,
+            "kind": kind,
+            "matched_page_id": str(page.get("id") or ""),
+            "matched_title": page.get("title") or title,
+        }
+
+    def _relate(from_title: str, page: dict[str, Any]) -> None:
+        """Propose the 'possible_duplicate' link to the page a name echoes."""
+        page_id = str(page.get("id") or "")
+        if page_id:
             relations.append(
                 {
-                    "from_title": entity["name"],
-                    "to_page_id": str(near.get("id") or ""),
+                    "from_title": from_title,
+                    "to_page_id": page_id,
                     "relation_type": POSSIBLE_DUPLICATE,
                 }
             )
-        return None, near
+
+    def _route(
+        entity: dict[str, Any], kind: str, aliases: list[str]
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Route one entity against the pages the campaign already has.
+
+        Returns ('update', page) when the campaign DOCUMENTS this entity — by
+        the same name or under another spelling of it — and the session is to
+        be folded into that page; ('skip', page) when the name collides with
+        a page of ANOTHER kind, which is reported and never written over;
+        ('draft', page_or_None) when the entity is new, 'page' being the page
+        whose name it merely echoes and that it gets a 'possible_duplicate'
+        link to.
+        """
+        page, how = classify_existing_page(
+            entity["name"], aliases, existing_pages, kind=kind
+        )
+        if page is not None and str(page.get("id") or ""):
+            if how == MATCH_RELATED:
+                _relate(entity["name"], page)
+                return "draft", page
+            return "update", page
+        # Nothing of this kind is close. The only thing left that can stop a
+        # draft is a page of ANOTHER kind carrying the very same name.
+        other, other_how = classify_existing_page(entity["name"], aliases, existing_pages)
+        if other is not None and str(other.get("id") or ""):
+            if other_how == MATCH_SAME_NAME:
+                return "skip", other
+            _relate(entity["name"], other)
+            return "draft", other
+        return "draft", None
+
+    def _fold_into(
+        page: dict[str, Any], kind: str, fresh_title: str, fresh: dict[str, Any]
+    ) -> None:
+        """Fold one entity of this session into the page the campaign has.
+
+        Two spellings of one place in ONE session must not become two changes
+        fighting over one page: the second folds into what the first merged.
+        The change always diffs against what the page says TODAY, however many
+        entities folded into it.
+        """
+        page_id = str(page.get("id") or "")
+        page_title = str(page.get("title") or fresh_title)
+        current = updates.get(page_id)
+        base = current["content_json"] if current else _as_dict(page.get("content_json"))
+        folded = _merged_entity_content(
+            base, fresh, page_title=page_title, fresh_title=fresh_title
+        )
+        if current is not None:
+            current["content_json"] = folded
+            return
+        if folded == base:
+            # The page already says everything this session adds. That is
+            # context, not a change: proposing it would ask the DM to confirm
+            # a page rewritten with its own content.
+            duplicates.append(
+                {
+                    **_collision(fresh_title, kind, page),
+                    "reason": "already documented by this campaign, and adds nothing new",
+                }
+            )
+            return
+        updates[page_id] = {
+            "page_id": page_id,
+            "kind": kind,
+            "title": page_title,
+            "content_json": folded,
+            "change_note": f"Updated from session {session_id}",
+        }
 
     for character in merged.get("characters", []):
         aliases = [a for a in character.get("aliases", []) if isinstance(a, str)]
-        duplicate, _near = _match_or_record(character, "character", aliases)
-        if duplicate is not None:
-            duplicates.append(duplicate)
+        route, page = _route(character, "character", aliases)
+        if route == "skip":
+            duplicates.append(_collision(character["name"], "character", page))
             continue
 
         facts = [f for f in character.get("facts", []) if isinstance(f, str)]
@@ -1395,7 +1655,12 @@ def build_page_drafts(
             personality=personality or None,
             attributes=attributes,
         )
-        drafts.append(_draft_payload("character", character, content))
+        if route == "update":
+            # The campaign documents this character (possibly under another
+            # spelling): the session is folded into its page.
+            _fold_into(page, "character", character["name"], content)
+        else:
+            drafts.append(_draft_payload("character", character, content))
 
         # Durable relationships -> wiki relation proposals. PERSISTENT ties
         # only (the prompt enforces it, the whitelist guarantees it);
@@ -1416,9 +1681,9 @@ def build_page_drafts(
 
     for location in merged.get("locations", []):
         aliases = [a for a in location.get("aliases", []) if isinstance(a, str)]
-        duplicate, _near = _match_or_record(location, "location", aliases)
-        if duplicate is not None:
-            duplicates.append(duplicate)
+        route, page = _route(location, "location", aliases)
+        if route == "skip":
+            duplicates.append(_collision(location["name"], "location", page))
             continue
 
         facts = [f for f in location.get("facts", []) if isinstance(f, str)]
@@ -1446,9 +1711,14 @@ def build_page_drafts(
             # cross-type narrative section: the place's durable past
             history=(location.get("history") or "").strip() or None,
         )
-        drafts.append(_draft_payload("location", location, content))
+        if route == "update":
+            # The campaign documents this place (possibly under another
+            # spelling): the session is folded into its page.
+            _fold_into(page, "location", location["name"], content)
+        else:
+            drafts.append(_draft_payload("location", location, content))
 
-    return drafts, relations, duplicates
+    return drafts, list(updates.values()), relations, duplicates
 
 
 def build_event_drafts(

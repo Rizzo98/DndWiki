@@ -18,7 +18,7 @@ import type { LinkIndex } from "@/components/linked-text";
 import type { PageLinkSuggestion } from "@/components/page-link-editor";
 import { PAGE_KIND_ICON, PAGE_KIND_TINT } from "@/lib/page-kinds";
 import { PAGE_KIND_TITLES, type PlanChange, type WikiVisibility } from "@/lib/api";
-import { diffChange, displayValue, type FieldDiff } from "@/lib/page-fields";
+import { appendedText, diffChange, displayValue, type FieldDiff } from "@/lib/page-fields";
 
 /** The editable shape of one change: what "Apply to the proposal" writes. */
 export interface ChangeDraft {
@@ -381,36 +381,71 @@ function diffValue(path: string, value: unknown): string {
   return displayValue(value);
 }
 
-/** What the page says today, next to what the change set would write. */
+/**
+ * What the page says today, and what it will say — one row per changed field.
+ *
+ * Always visible, never folded away: an update IS this list, and a diff the DM
+ * has to unfold is a diff the DM does not read. Each row reads top to bottom
+ * as "today" then "after this session": the value the page carries now, then
+ * what the session adds to it behind a NEW tag.
+ *
+ * A row whose value was KEPT and extended keeps the old text unstruck (it is
+ * still there, the session appended to it); a row that REPLACES what the page
+ * said strikes the old value through, so "added to" and "overwritten" never
+ * look the same.
+ */
 function ChangeDiff({ diffs }: { diffs: FieldDiff[] }) {
   return (
-    <details className="group">
-      <summary className="flex cursor-pointer flex-wrap items-center gap-2 text-xs marker:hidden">
-        <RlIcon
-          name="chevron"
-          size={14}
-          className="text-[color:var(--rl-text-on-parchment-muted)] transition-transform group-open:rotate-90"
-        />
-        <span className="font-semibold text-[color:var(--rl-text-on-parchment-primary)]">
-          {diffs.length} field{diffs.length === 1 ? "" : "s"} change
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-baseline gap-2">
+        <span className="rl-eyebrow">What changes</span>
+        <span className="rl-card-meta">
+          what the page says today, and what it will say
         </span>
-        <span className="text-[color:var(--rl-text-on-parchment-muted)]">
-          what the page says today, and what it would say
-        </span>
-      </summary>
-      <ul className="mt-3 divide-y divide-[color:var(--rl-border-parchment)] rounded-[var(--rl-radius-sm)] border border-[color:var(--rl-border-parchment)]">
+      </div>
+      <ul className="divide-y divide-[color:var(--rl-border-parchment)] rounded-[var(--rl-radius-sm)] border border-[color:var(--rl-border-parchment)]">
         {diffs.map((diff) => (
-          <li key={diff.path} className="grid gap-1 px-3 py-2 sm:grid-cols-[9rem_minmax(0,1fr)_minmax(0,1fr)]">
-            <span className="rl-eyebrow">{diff.label}</span>
-            <span className="break-words text-xs text-[color:var(--rl-text-on-parchment-muted)] line-through">
-              {diffValue(diff.path, diff.before) || "—"}
-            </span>
-            <span className="break-words text-xs font-semibold text-[color:var(--rl-text-on-parchment-primary)]">
-              {diffValue(diff.path, diff.after) || "removed"}
-            </span>
-          </li>
+          <ChangeDiffRow key={diff.path} diff={diff} />
         ))}
       </ul>
-    </details>
+    </div>
+  );
+}
+
+function ChangeDiffRow({ diff }: { diff: FieldDiff }) {
+  const current = diffValue(diff.path, diff.before);
+  const added = appendedText(diff.before, diff.after);
+  const proposed = diffValue(diff.path, diff.after);
+  return (
+    <li className="grid gap-1.5 px-3 py-2.5 sm:grid-cols-[8rem_minmax(0,1fr)]">
+      <span className="rl-eyebrow">{diff.label}</span>
+      <div className="space-y-1.5">
+        {current ? (
+          <p
+            className={
+              "break-words text-xs text-[color:var(--rl-text-on-parchment-muted)]" +
+              (added ? "" : " line-through")
+            }
+          >
+            {current}
+          </p>
+        ) : null}
+        {proposed ? (
+          <p className="flex flex-wrap items-baseline gap-1.5">
+            <RlTag tint="accent">new</RlTag>
+            <span className="whitespace-pre-wrap break-words text-xs font-semibold text-[color:var(--rl-text-on-parchment-primary)]">
+              {added ?? proposed}
+            </span>
+          </p>
+        ) : (
+          <p className="flex flex-wrap items-baseline gap-1.5">
+            <RlTag tint="villain">removed</RlTag>
+            <span className="text-xs text-[color:var(--rl-text-on-parchment-muted)]">
+              the page will no longer carry this
+            </span>
+          </p>
+        )}
+      </div>
+    </li>
   );
 }
