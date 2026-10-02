@@ -111,10 +111,18 @@ from app.merger import (
     rename_characters,
 )
 from app.models import PHASE_APPLY, PHASE_SUMMARY, PHASE_WIKI, PLAN_APPLIED
+
+# The note plan reads its prose from the DM's notes instead of a transcript, but
+# it proposes changes of exactly the same shape, so it is planned and applied by
+# the same machinery - only the source of the text and the row that carries the
+# progress differ (a campaign's note_plans row instead of a session's state).
+from app.note_planner import build_change_set as build_note_change_set
 from app.planner import build_change_set
 from app.revision import apply_summary_revision, describe_revision
 from app.roster import CampaignRoster, roster_from_members
 from app.roster import describe as describe_roster
+from app.services import note_plans as note_plan_services
+from app.services import notes as note_services
 from app.services.summaries import summary_lines
 from app.speakers import describe as describe_reading
 from app.storage import ObjectStorage
@@ -1193,6 +1201,193 @@ async def process_plan_application(
         raise
 
 
+# --------------------------------------------------------------------------
+# the DM toolkit's plan: the DM's own notes -> wiki pages
+# --------------------------------------------------------------------------
+#
+# A note is what the DM wrote for themselves; there is no session, no
+# transcript and no state machine behind it. What replaces the session's state
+# machine is the note_plans row itself: it is opened as 'generating' by the API
+# before the event is published, and these two phases move it to 'draft' (a
+# proposal to review) or 'failed' (with the reason), then to 'applied'.
+#
+# Both phases are idempotent against the row rather than against a broker
+# transition: the payload names the plan id it was published for, so a
+# redelivery after the DM already discarded the proposal - or after a NEWER
+# generation replaced it - is acked as a no-op instead of resurrecting a set
+# nobody is waiting for.
+
+#: Correlated event published when the proposal built from a set of notes is
+#: stored and waiting for the DM's review.
+NOTE_PLAN_READY = "content.note_plan.ready"
+
+#: Correlated event published when a confirmed note plan has been written.
+NOTE_PLAN_APPLIED = "content.note_plan.applied"
+
+
+async def process_note_plan_generation(
+    event: Event,
+    settings: ServiceSettings,
+    wiki_client: WikiServiceClient,
+    llm: LLMClient,
+    publisher: Callable[[Event], Awaitable[None]],
+    db: AsyncSession,
+) -> None:
+    """Read the selected notes and store the change set they propose.
+
+    Nothing is written to the wiki here: the pages, updates and links are
+    stored as a draft the DM reviews, exactly like a session's change set.
+    """
+    payload = event.payload
+    campaign_id = str(payload.get("campaign_id", ""))
+    plan_id = str(payload.get("plan_id", ""))
+    if not campaign_id:
+        logger.warning("note.plan.requested without a campaign_id; ignoring")
+        return
+
+    plan = await note_plan_services.get_plan(db, UUID(campaign_id))
+    if plan is None or str(plan.id) != plan_id:
+        logger.info(
+            "note plan %s of campaign %s is gone or superseded; skipping",
+            plan_id, campaign_id,
+        )
+        return
+
+    try:
+        note_ids: list[UUID] = []
+        for raw in plan.note_ids or []:
+            try:
+                note_ids.append(UUID(str(raw)))
+            except ValueError:
+                continue
+        rows = await note_services.get_notes_by_ids(db, UUID(campaign_id), note_ids)
+        if not rows:
+            raise ValueError(
+                "the notes this proposal was built from no longer exist"
+            )
+        selected = [{"title": row.title, "body": row.body} for row in rows]
+
+        # The campaign's pages are context for the model (so it uses the name
+        # the table already reads), the dedupe input for the planner, and the
+        # content read out for the pages a note TAGS. A listing failure must not
+        # block the proposal: we lose the dedupe net and every page becomes a
+        # create, which the DM can still drop.
+        try:
+            # The whole listing, not the default page of it: a tagged page that
+            # fell off the end would look like a page that does not exist yet,
+            # and the proposal would create a second one beside it.
+            existing_pages = await wiki_client.list_campaign_pages(campaign_id, limit=500)
+        except WikiServiceError as exc:
+            logger.warning("could not list existing pages for %s: %s", campaign_id, exc)
+            existing_pages = []
+
+        proposal = await llm.plan_from_notes(selected, existing_pages)
+        change_set = build_note_change_set(proposal, existing_pages=existing_pages)
+        language = proposal.get("language") if isinstance(proposal, dict) else None
+
+        plan = await note_plan_services.save_generation(
+            db, UUID(campaign_id), change_set=change_set, language=language
+        )
+        counts = {
+            "create": sum(1 for c in change_set["changes"] if c["action"] == "create"),
+            "update": sum(1 for c in change_set["changes"] if c["action"] == "update"),
+            "relations": len(change_set["relations"]),
+            "skipped": len(change_set["skipped"]),
+        }
+        await publisher(
+            Event(
+                type=NOTE_PLAN_READY,
+                payload={
+                    "campaign_id": campaign_id,
+                    "plan_id": str(plan.id),
+                    "note_ids": [str(row.id) for row in rows],
+                    **counts,
+                },
+            )
+        )
+        logger.info(
+            "campaign %s -> note plan %s (%d new, %d updates, %d links) from %d note(s); "
+            "awaiting DM confirmation",
+            campaign_id, plan.id, counts["create"], counts["update"],
+            counts["relations"], len(rows),
+        )
+    except Exception as exc:
+        logger.exception("note plan generation failed for campaign %s", campaign_id)
+        await note_plan_services.fail_generation(db, UUID(campaign_id), error=str(exc))
+        raise
+
+
+async def process_note_plan_application(
+    event: Event,
+    settings: ServiceSettings,
+    wiki_client: WikiServiceClient,
+    publisher: Callable[[Event], Awaitable[None]],
+    db: AsyncSession,
+) -> None:
+    """Write the CONFIRMED note plan into the wiki.
+
+    The pages land published and their timeline entries approved (wiki-service
+    creates both that way when the confirmed set arrives): the DM reviewed the
+    proposal, so nothing generated ever sits in "pending review".
+    """
+    payload = event.payload
+    campaign_id = str(payload.get("campaign_id", ""))
+    if not campaign_id:
+        logger.warning("note.plan.confirmed without a campaign_id; ignoring")
+        return
+
+    plan = await note_plan_services.get_plan(db, UUID(campaign_id))
+    if plan is None:
+        logger.info("campaign %s has no note plan to apply; skipping", campaign_id)
+        return
+    if plan.status == PLAN_APPLIED:
+        logger.info("the note plan of campaign %s is already applied; skipping", campaign_id)
+        return
+
+    try:
+        # The API stamps the confirmation when the DM clicks; stamping again
+        # here keeps the row consistent for a redelivered message.
+        if plan.confirmed_by is None:
+            confirmed_by = payload.get("confirmed_by")
+            plan = await note_plan_services.confirm_plan(
+                db, UUID(campaign_id), confirmed_by=UUID(str(confirmed_by)) if confirmed_by else None
+            )
+        await note_plan_services.mark_applying(db, UUID(campaign_id))
+        confirmed_by = plan.confirmed_by or payload.get("confirmed_by")
+        result = await wiki_client.apply_changes(
+            _apply_payload(plan, campaign_id, None, confirmed_by)
+        )
+        created = result.get("created") or []
+        updated = result.get("updated") or []
+        skipped = result.get("skipped") or []
+        plan = await note_plan_services.mark_applied(db, UUID(campaign_id))
+        await publisher(
+            Event(
+                type=NOTE_PLAN_APPLIED,
+                payload={
+                    "campaign_id": campaign_id,
+                    "plan_id": str(plan.id),
+                    "note_ids": list(plan.note_ids or []),
+                    "created": created,
+                    "updated": updated,
+                    "skipped": skipped,
+                    "timeline_entries": result.get("timeline_entries") or 0,
+                    "relations_created": result.get("relations_created") or 0,
+                    "confirmed_by": str(confirmed_by) if confirmed_by else None,
+                },
+            )
+        )
+        logger.info(
+            "campaign %s -> note plan applied: %d created, %d updated, %d skipped",
+            campaign_id, len(created), len(updated), len(skipped),
+        )
+    except Exception as exc:
+        logger.exception("note plan application failed for campaign %s", campaign_id)
+        # the DM keeps the reviewed set: a retry re-confirms the same draft
+        await note_plan_services.mark_draft(db, UUID(campaign_id), error=str(exc)[:2000])
+        raise
+
+
 async def handle(event: Event, connection: aio_pika.abc.AbstractConnection) -> None:
     """Consume handler: route the event to its pipeline phase."""
     settings = _get_settings()
@@ -1215,6 +1410,15 @@ async def handle(event: Event, connection: aio_pika.abc.AbstractConnection) -> N
             await process_plan_application(
                 event, settings, get_session_client(settings),
                 get_wiki_client(settings), publisher, db,
+            )
+        elif event.type == "note.plan.requested":
+            await process_note_plan_generation(
+                event, settings, get_wiki_client(settings), get_llm(settings),
+                publisher, db,
+            )
+        elif event.type == "note.plan.confirmed":
+            await process_note_plan_application(
+                event, settings, get_wiki_client(settings), publisher, db,
             )
         else:
             await process_job(

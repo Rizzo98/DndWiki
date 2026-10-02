@@ -34,9 +34,20 @@ class WikiServiceClient:
         self._settings = settings
         self._base_url = settings.wiki_service_url.rstrip("/")
 
-    async def list_campaign_pages(self, campaign_id: str) -> list[dict[str, Any]]:
-        """GET /internal/wiki/pages — flat listing used for cross-run dedupe."""
-        return await self._get(f"/internal/wiki/pages?campaign_id={campaign_id}")
+    async def list_campaign_pages(
+        self, campaign_id: str, *, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        """GET /internal/wiki/pages — flat listing used for cross-run dedupe.
+
+        Each entry carries the page's full 'content_json'. The listing is what
+        the note plan reads out for the pages a note TAGS, so a campaign larger
+        than the default page of results asks for more: a tagged page that fell
+        off the end would look like a page that does not exist, and the proposal
+        would create a second one beside it.
+        """
+        return await self._get(
+            f"/internal/wiki/pages?campaign_id={campaign_id}&limit={limit}"
+        )
 
     async def apply_changes(self, payload: dict[str, Any]) -> dict[str, Any]:
         """POST /internal/wiki/changes/apply — write a DM-confirmed change set.

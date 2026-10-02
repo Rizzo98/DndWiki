@@ -1,6 +1,10 @@
 // The wiki list: one campaign's pages, optionally scoped to a single category
 // (the sidebar's "The world" entries are the menu, so this component no longer
 // carries one) + DM page creation.
+//
+// The Locations category is the one list that is not a list: places nest, so
+// it renders as a tree (components/campaign/location-tree.tsx) and its status/
+// search filters are applied there, where the hierarchy can be kept intact.
 
 "use client";
 
@@ -21,6 +25,7 @@ import {
   fmtDate,
   fmtPercent,
 } from "@/components/ui";
+import { LocationTree } from "@/components/campaign/location-tree";
 import { useAuth } from "@/lib/auth";
 import {
   PAGE_KINDS,
@@ -50,18 +55,28 @@ export function WikiTab({ campaign, kind }: { campaign: Campaign; kind?: WikiPag
     return () => window.clearTimeout(t);
   }, [q]);
 
+  // The location tree carries its own page data and its own filtering, so the
+  // flat query is skipped for that category instead of fetching the same pages
+  // twice. listKind === undefined for "all categories", which stays flat.
+  const listKind = kind === "location" ? undefined : (kind ?? undefined);
+
   const { data: pages, error, loading, reload } = useAsyncData<PageSummary[]>(
     (t) =>
-      wikiApi.pages(t, campaign.id, {
-        ...(kind ? { kind } : {}),
-        ...(status ? { status: status as WikiPageStatus } : {}),
-        ...(debouncedQ ? { q: debouncedQ } : {}),
-        limit: 100,
-      }),
-    [campaign.id, kind, status, debouncedQ],
+      kind === "location"
+        ? Promise.resolve([] as PageSummary[])
+        : wikiApi.pages(t, campaign.id, {
+            ...(listKind ? { kind: listKind } : {}),
+            ...(status ? { status: status as WikiPageStatus } : {}),
+            ...(debouncedQ ? { q: debouncedQ } : {}),
+            limit: 100,
+          }),
+    [campaign.id, listKind, status, debouncedQ],
   );
 
   const visiblePages = pages ?? [];
+
+  // The tree refetches when the DM creates a place from the form above it.
+  const [created, setCreated] = useState(0);
 
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState({
@@ -98,6 +113,7 @@ export function WikiTab({ campaign, kind }: { campaign: Campaign; kind?: WikiPag
     try {
       const res = await wikiApi.deleteAllPages(token, campaign.id);
       setNotice("Wiki reset: deleted " + res.deleted + " page(s).");
+      setCreated((n) => n + 1);
       reload();
     } catch (err) {
       setFormError(errMessage(err));
@@ -134,6 +150,7 @@ export function WikiTab({ campaign, kind }: { campaign: Campaign; kind?: WikiPag
       setNotice('Page "' + form.title.trim() + '" created.');
       setForm({ kind: form.kind, title: "", slug: "", status: "draft", visibility: "public", contentJson: "" });
       setShowCreate(false);
+      setCreated((n) => n + 1);
       reload();
     } catch (err) {
       setFormError(errMessage(err));
@@ -223,39 +240,43 @@ export function WikiTab({ campaign, kind }: { campaign: Campaign; kind?: WikiPag
         ) : null}
       </Card>
 
-      <Card>
-        {loading ? (
-          <p className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">Loading pages…</p>
-        ) : error ? (
-          <Alert tone="error">{error}</Alert>
-        ) : visiblePages.length === 0 ? (
-          <EmptyState>
-            No pages here yet. Pages appear once a session summary is distilled and you
-            confirm the proposed changes on the session page.
-          </EmptyState>
-        ) : (
-          <div className="divide-y divide-[color:var(--rl-border-parchment)]">
-            {visiblePages.map((p) => (
-              <Link key={p.id} href={`/campaigns/${campaign.id}/pages/${p.id}`} className="flex flex-wrap items-center justify-between gap-3 py-3 transition hover:bg-[color:var(--rl-bg-parchment-sunk)]">
-                <div className="min-w-0">
+      {kind === "location" ? (
+        <LocationTree campaign={campaign} status={status} q={debouncedQ} refreshKey={created} />
+      ) : (
+        <Card>
+          {loading ? (
+            <p className="text-sm text-[color:var(--rl-text-on-parchment-muted)]">Loading pages…</p>
+          ) : error ? (
+            <Alert tone="error">{error}</Alert>
+          ) : visiblePages.length === 0 ? (
+            <EmptyState>
+              No pages here yet. Pages appear once a session summary is distilled and you
+              confirm the proposed changes on the session page.
+            </EmptyState>
+          ) : (
+            <div className="divide-y divide-[color:var(--rl-border-parchment)]">
+              {visiblePages.map((p) => (
+                <Link key={p.id} href={`/campaigns/${campaign.id}/pages/${p.id}`} className="flex flex-wrap items-center justify-between gap-3 py-3 transition hover:bg-[color:var(--rl-bg-parchment-sunk)]">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm font-medium text-[color:var(--rl-text-on-parchment-primary)]">{p.title}</span>
+                      <Badge tone="slate">{PAGE_KIND_LABELS[p.kind] ?? p.kind}</Badge>
+                    </div>
+                    <div className="mt-0.5 text-xs text-[color:var(--rl-text-on-parchment-muted)]">
+                      {p.slug} · updated {fmtDate(p.updated_at)}
+                      {p.confidence !== null && p.confidence !== undefined ? ` · confidence ${fmtPercent(p.confidence)}` : ""}
+                    </div>
+                  </div>
                   <div className="flex items-center gap-2">
-                    <span className="truncate text-sm font-medium text-[color:var(--rl-text-on-parchment-primary)]">{p.title}</span>
-                    <Badge tone="slate">{PAGE_KIND_LABELS[p.kind] ?? p.kind}</Badge>
+                    <PageStatusBadge status={p.status} />
+                    <VisibilityBadge visibility={p.visibility} />
                   </div>
-                  <div className="mt-0.5 text-xs text-[color:var(--rl-text-on-parchment-muted)]">
-                    {p.slug} · updated {fmtDate(p.updated_at)}
-                    {p.confidence !== null && p.confidence !== undefined ? ` · confidence ${fmtPercent(p.confidence)}` : ""}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <PageStatusBadge status={p.status} />
-                  <VisibilityBadge visibility={p.visibility} />
-                </div>
-              </Link>
-            ))}
-          </div>
-        )}
-      </Card>
+                </Link>
+              ))}
+            </div>
+          )}
+        </Card>
+      )}
     </div>
   );
 }

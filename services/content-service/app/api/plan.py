@@ -114,8 +114,12 @@ class PlanUpdateRequest(BaseModel):
     relations: list[PlanRelationEdit] | None = Field(default=None, max_length=MAX_RELATIONS)
 
 
-def _counts(changes: list[dict[str, Any]], relations: list[dict[str, Any]]) -> dict[str, int]:
-    """The change counters the header of the review card shows."""
+def plan_counts(changes: list[dict[str, Any]], relations: list[dict[str, Any]]) -> dict[str, int]:
+    """The change counters the header of the review card shows.
+
+    Shared with the note plan's review (app/api/notes.py): the two sets are the
+    same shape, so the two review cards must count them the same way.
+    """
     active = [c for c in changes if not c.get("dropped")]
     return {
         "create": sum(1 for c in active if c.get("action") == "create"),
@@ -143,7 +147,7 @@ def serialize_plan(row: Any) -> dict[str, Any]:
         "changes": changes,
         "relations": relations,
         "skipped": list(row.skipped or []),
-        "counts": _counts(changes, relations),
+        "counts": plan_counts(changes, relations),
         "error": row.error,
         "confirmed_at": row.confirmed_at.isoformat() if row.confirmed_at else None,
         "confirmed_by": str(row.confirmed_by) if row.confirmed_by else None,
@@ -247,7 +251,7 @@ async def confirm_session_plan(
         )
     user_id = str(user.get("sub") or "") or None
     row = await plans.confirm_plan(db, session_id, confirmed_by=UUID(user_id) if user_id else None)
-    counts = _counts(list(row.changes or []), list(row.relations or []))
+    counts = plan_counts(list(row.changes or []), list(row.relations or []))
     await publisher.publish(
         Event(
             type="plan.confirmed",

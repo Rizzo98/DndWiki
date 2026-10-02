@@ -5,10 +5,13 @@ import json
 from app.chunking import OwnedPart, beat_budget
 from app.prompts import (
     EXTRACTION_SCHEMA,
+    NOTE_PLAN_PROMPT_VERSION,
     PROMPT_VERSION,
     SUMMARY_REVISION_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
     build_chunk_message,
+    build_note_plan_message,
+    build_note_plan_system_prompt,
     build_summary_revision_message,
 )
 from app.summary import blocks_to_text
@@ -446,3 +449,65 @@ def test_build_summary_revision_message_survives_empty_edits():
     # the ask is the PATCH: the whole narrative plus only what changes
     assert "Return the patch JSON object described in your instructions" in message
     assert "whole narrative in 'session_summary'" in message
+
+# ------------------------------- the DM's own notes -> wiki pages (the toolkit)
+
+
+def _bree_page() -> dict:
+    return {
+        "id": "p1",
+        "title": "Bree",
+        "slug": "bree",
+        "kind": "location",
+        "status": "published",
+        "content_json": {"summary": "A market town on the north road."},
+    }
+
+
+def test_note_plan_prompt_version_is_current():
+    # np1 -> np2: the pages a note TAGS are read out with their current content
+    # (app/note_references.py) instead of being only a name in the listing. The
+    # fold never overwrites, so without the content the model restates a page
+    # the table already has and the change is dropped as a no-op.
+    assert NOTE_PLAN_PROMPT_VERSION == "np2"
+
+
+def test_the_content_of_a_tagged_page_reaches_the_model():
+    notes = [{"title": "Kaelor's road", "body": "He rides for @bree before the thaw."}]
+    message = build_note_plan_message(notes, [_bree_page()])
+    assert "PAGES THE NOTES TAG" in message
+    assert "--- Bree (location, slug bree) ---" in message
+    assert "summary: A market town on the north road." in message
+
+
+def test_a_page_the_notes_do_not_tag_is_not_read_out():
+    # Only what the DM pointed at: the campaign's whole content is not context,
+    # and the notes stay the source of the generation.
+    notes = [{"title": "n", "body": "The party rides north."}]
+    page = _bree_page()
+    page["content_json"] = {"summary": "SECRET TOWN LORE"}
+    message = build_note_plan_message(notes, [page])
+    assert "SECRET TOWN LORE" not in message
+    assert "PAGES THE NOTES TAG" not in message
+
+
+def test_a_tag_for_an_unknown_page_reads_out_nothing():
+    notes = [{"title": "n", "body": "The road to @nowhere."}]
+    message = build_note_plan_message(notes, [_bree_page()])
+    assert "PAGES THE NOTES TAG" not in message
+    # the mention is still in the note the model reads
+    assert "@nowhere" in message
+
+
+def test_the_notes_are_still_the_source():
+    notes = [{"title": "Kaelor's road", "body": "He rides for @bree before the thaw."}]
+    message = build_note_plan_message(notes, [_bree_page()])
+    assert "NOTE 1 - Kaelor's road:" in message
+    assert message.index("PAGES THE NOTES TAG") < message.index("NOTE 1 -")
+
+
+def test_the_system_prompt_explains_what_a_tag_is():
+    prompt = build_note_plan_system_prompt()
+    assert '"@slug" or "#slug" in a note is a TAG the DM made on purpose' in prompt
+    assert "the tagged pages are read out to you with what they already say" in prompt
+

@@ -7,11 +7,16 @@
 // case-insensitively, so "Locanda del Fumo Aspro" links even when written
 // "locanda del fumo aspro", and a shorter name never shadows a longer one.
 //
-// The same index powers the manual "#slug" link syntax: a "#slug" token
-// that matches a campaign page slug is rendered as a link to that page
-// (displayed with the page's real title). The edit forms produce these
-// tokens through PageLinkEditor's "#" autocomplete, but they can also be
-// typed by hand in any free-text field.
+// The same index powers the manual slug-link syntax: a "#slug" or "@slug"
+// token that matches a campaign page slug is rendered as a link to that page
+// (displayed with the page's real title). The edit forms produce these tokens
+// through PageLinkEditor's autocomplete, but they can also be typed by hand in
+// any free-text field.
+//
+// Both markers mean the same thing here, and that is deliberate: "#" is the
+// wiki's own in-field syntax, "@" is the one a DM reaches for in their notes
+// (the toolkit's 'plan' tool), and a note is rendered with this very
+// component. One token, one rule, two ways of typing it.
 
 "use client";
 
@@ -64,8 +69,9 @@ export function buildLinkIndex(
   };
 }
 
-// A "#page_slug" token (the future manual-linking syntax). Slug-safe charset.
-const SLUG_SOURCE = "#[a-z0-9]+(?:-[a-z0-9]+)*";
+// A "#page_slug" / "@page_slug" token (the manual-linking syntax). Slug-safe
+// charset; the marker is either character.
+const SLUG_SOURCE = "[#@][a-z0-9]+(?:-[a-z0-9]+)*";
 
 function buildPattern(index: LinkIndex): RegExp | null {
   if (index.names.length === 0) return null;
@@ -87,12 +93,21 @@ export function LinkedText({
   campaignId,
   index,
   currentPageId,
+  tokenLabel = "title",
 }: {
   text: string;
   campaignId?: string;
   index?: LinkIndex | null;
   /** The page being viewed: its own names are never linked to itself. */
   currentPageId?: string | null;
+  /**
+   * What a "#slug" / "@slug" token reads as: the page's real title, or the token
+   * the author typed. A wiki body reads better with the name ("@bree" becomes
+   * "Bree", which is how the campaign talks about it); a list that is quoting
+   * the DM's own notes back at them keeps their shorthand, because that is what
+   * they wrote and what they will edit.
+   */
+  tokenLabel?: "title" | "token";
 }) {
   const pattern = useMemo(() => (index ? buildPattern(index) : null), [index]);
 
@@ -106,12 +121,12 @@ export function LinkedText({
     const raw = match[0];
     const at = match.index ?? 0;
     if (at > last) nodes.push(text.slice(last, at));
-    const isSlugLink = raw.startsWith("#");
+    const isSlugLink = raw.startsWith("#") || raw.startsWith("@");
     const target = isSlugLink
       ? index.bySlug.get(raw.slice(1))
       : index.byName.get(normalizeName(raw));
     if (target && target.id !== currentPageId) {
-      // "#slug" tokens display as the page's real title; plain names keep
+      // slug tokens display as the page's real title; plain names keep
       // the text as written.
       nodes.push(
         <Link
@@ -119,7 +134,7 @@ export function LinkedText({
           href={`/campaigns/${campaignId}/pages/${target.id}`}
           className="rl-text-accent hover:underline"
         >
-          {isSlugLink ? target.title : raw}
+          {isSlugLink && tokenLabel === "title" ? target.title : raw}
         </Link>
       );
     } else {

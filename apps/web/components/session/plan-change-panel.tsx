@@ -218,6 +218,7 @@ export function PlanChangePanel({
                   content={draft.content}
                   onChange={(content) => onDraftChange({ ...draft, content })}
                   pages={pages}
+                  campaignId={campaignId}
                   excludePageId={change.page_id}
                   sessionNames={sessionNames}
                 />

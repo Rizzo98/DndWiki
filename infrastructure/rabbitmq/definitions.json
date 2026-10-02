@@ -39,6 +39,8 @@
     { "source": "dnd.events", "vhost": "/", "destination": "content.generate", "destination_type": "queue", "routing_key": "summary.regenerate", "arguments": {} },
     { "source": "dnd.events", "vhost": "/", "destination": "content.generate", "destination_type": "queue", "routing_key": "summary.confirmed", "arguments": {} },
     { "source": "dnd.events", "vhost": "/", "destination": "content.generate", "destination_type": "queue", "routing_key": "plan.confirmed", "arguments": {} },
+    { "source": "dnd.events", "vhost": "/", "destination": "content.generate", "destination_type": "queue", "routing_key": "note.plan.requested", "arguments": {} },
+    { "source": "dnd.events", "vhost": "/", "destination": "content.generate", "destination_type": "queue", "routing_key": "note.plan.confirmed", "arguments": {} },
     { "source": "dnd.events", "vhost": "/", "destination": "search.events", "destination_type": "queue", "routing_key": "wiki.published", "arguments": {} },
     { "source": "dnd.events", "vhost": "/", "destination": "search.events", "destination_type": "queue", "routing_key": "wiki.updated", "arguments": {} },
     { "source": "dnd.events", "vhost": "/", "destination": "search.events", "destination_type": "queue", "routing_key": "wiki.archived", "arguments": {} },

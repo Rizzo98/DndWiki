@@ -1,6 +1,14 @@
 """Business logic for wiki-service (pages, relations, timeline, change sets)."""
 
 from app.services.changes import apply_change_set
+from app.services.locations import (
+    LOCATION_KIND,
+    TYPE_RANK,
+    LocationNode,
+    build_location_tree,
+    count_nodes,
+    location_tree,
+)
 from app.services.pages import (
     ARCHIVED,
     DM_ONLY,
@@ -43,12 +51,17 @@ __all__ = [
     "DM_ONLY",
     "DRAFT",
     "HIDDEN",
+    "LOCATION_KIND",
     "PUBLIC",
     "PUBLISHED",
     "SERVICE_CREATE_STATUSES",
+    "TYPE_RANK",
+    "LocationNode",
     "apply_change_set",
     "approve_page",
     "archive_page",
+    "build_location_tree",
+    "count_nodes",
     "create_page",
     "create_relation",
     "create_timeline_event",
@@ -63,6 +76,7 @@ __all__ = [
     "list_relations",
     "list_timeline_events",
     "list_versions",
+    "location_tree",
     "page_event_payload",
     "session_content",
     "set_visibility",

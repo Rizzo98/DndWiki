@@ -104,6 +104,24 @@ class PageSummaryOut(BaseModel):
     updated_at: datetime
 
 
+class LocationNodeOut(PageSummaryOut):
+    """One place of the location tree: a page plus the places it contains.
+
+    The tree is derived, never stored (app/services/locations.py): location_type
+    comes from content_json.attributes.location_type and drives the badge the
+    UI shows, while unresolved_region carries the free-text region that named
+    no page, so the UI can explain why a place sits at the top level.
+    """
+
+    location_type: str = "other"
+    unresolved_region: str | None = None
+    children: list["LocationNodeOut"] = Field(default_factory=list)
+
+
+# A node nests nodes: resolve the forward reference now that the class exists.
+LocationNodeOut.model_rebuild()
+
+
 class ExistingPageOut(BaseModel):
     """Flat page view for internal consumers (content-service dedupe).
 
@@ -272,13 +290,19 @@ class PlannedRelation(BaseModel):
 class ChangeSetApply(BaseModel):
     """Payload for POST /internal/wiki/changes/apply (service token).
 
-    Sent by content-service ONLY after the DM confirmed the proposed change
-    set on the session page: the pages are created published (no draft review
-    step) and new timeline entries are created approved.
+    Sent by content-service ONLY after the DM confirmed a proposed change set:
+    the pages are created published (no draft review step) and new timeline
+    entries are created approved.
+
+    'session_id' is optional because there are now two things that confirm a
+    change set: a session (the pipeline read a recording) and a campaign's note
+    plan (the DM's own planning notes). Only the first has a session to
+    attribute the pages to; a page written from notes carries no
+    source_session_id, which is exactly what that nullable column means.
     """
 
     campaign_id: UUID
-    session_id: UUID
+    session_id: UUID | None = None
     confirmed_by: UUID | None = None
     changes: list[PlannedPage] = Field(default_factory=list, max_length=200)
     relations: list[PlannedRelation] = Field(default_factory=list, max_length=200)

@@ -74,6 +74,8 @@ from app.prompts import (
     SUMMARY_TIGHTEN_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
     build_chunk_message,
+    build_note_plan_message,
+    build_note_plan_system_prompt,
     build_summary_compose_message,
     build_summary_revision_message,
     build_summary_tighten_message,
@@ -223,6 +225,29 @@ def _revision_patch_check(current: dict[str, Any]) -> Callable[[Any], None]:
     return check
 
 
+def _note_plan_check(payload: Any) -> None:
+    """The check a note-plan answer must pass before it is accepted.
+
+    Loose on purpose: the answer is a PROPOSAL, and app/note_planner.py drops
+    whatever it cannot use (an unknown kind, a page with no title, an attribute
+    the wiki would refuse), so an empty reading is a legitimate answer and must
+    not be retried. What is refused here is the one shape that means the model
+    did not answer the question at all - a JSON object with no 'pages' list -
+    because retrying THAT, with the complaint, is what turns a rambling answer
+    into a usable one.
+    """
+    if not isinstance(payload, dict):
+        raise ExtractionError("the answer is not a JSON object")
+    pages = payload.get("pages")
+    if pages is None:
+        raise ExtractionError(
+            "the answer has no 'pages' list; return the JSON object described in "
+            "your instructions, with one entry per subject the notes describe"
+        )
+    if not isinstance(pages, list):
+        raise ExtractionError("'pages' must be a list of page objects")
+
+
 class LLMClient:
     """Async wrapper around litellm.acompletion for the extraction prompts."""
 
@@ -245,6 +270,29 @@ class LLMClient:
                 base = getattr(self._settings, provider + "_base_url", "") or ""
                 if base:
                     os.environ.setdefault(base_env, base)
+
+    async def plan_from_notes(
+        self,
+        notes: list[dict[str, Any]],
+        existing_pages: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Read the DM's planning notes into proposed pages (raises ExtractionError).
+
+        Unlike every other prompt in this module there is no transcript behind
+        the input: the notes ARE the source, they are the DM's own words, and
+        nothing in them can be traced back to an utterance. The answer is a
+        proposal - which pages the notes are about and what each should say -
+        and app/note_planner.py decides afterwards what is new and what is an
+        update, so the model is never asked a question about the campaign's
+        current state that it could get wrong.
+        """
+        return await self._complete_json(
+            build_note_plan_system_prompt(),
+            build_note_plan_message(notes, existing_pages),
+            "the planning notes",
+            validate=_note_plan_check,
+            extraction=False,
+        )
 
     async def read_speakers(self, lines: list[str]) -> SpeakerReading:
         """Who is who, read ONCE from the whole session (raises ExtractionError).

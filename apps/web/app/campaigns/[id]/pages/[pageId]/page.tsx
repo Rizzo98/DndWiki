@@ -6,12 +6,13 @@
 import Link from "next/link";
 import { FormEvent, useMemo, useState } from "react";
 import { buildLinkIndex, type LinkIndex } from "@/components/linked-text";
+import { LocationBreadcrumb, findLocationPath } from "@/components/campaign/location-tree";
 import { PageContent } from "@/components/page-content";
 import { PageLinkEditor } from "@/components/page-link-editor";
 import { RelationsCard } from "@/components/page-relations";
 import { Alert, Badge, Button, Card, Field, PageStatusBadge, Select, TextArea, TextInput, VisibilityBadge, fmtDate, fmtPercent } from "@/components/ui";
 import { AuthGate, useAuth } from "@/lib/auth";
-import { PAGE_KIND_TITLES, sessionsApi, VISIBILITIES, wikiApi, type PageDetail, type PageSummary, type PageVersion, type Session, type TimelineEvent, type WikiVisibility } from "@/lib/api";
+import { PAGE_KIND_TITLES, sessionsApi, VISIBILITIES, wikiApi, type LocationTreeNode, type PageDetail, type PageSummary, type PageVersion, type Session, type TimelineEvent, type WikiVisibility } from "@/lib/api";
 import { useCampaign } from "@/lib/campaign-context";
 import { errMessage, useAsyncData } from "@/lib/use-async";
 
@@ -137,6 +138,22 @@ export default function PageDetailPage({ params }: { params: { id: string; pageI
   // Campaign page index: entity names in the page text link to their pages.
   const { data: pages } = useAsyncData<PageSummary[]>((t) => wikiApi.pages(t, params.id, { limit: 500 }), [params.id]);
   const linkIndex: LinkIndex | null = useMemo(() => buildLinkIndex(pages ?? []), [pages]);
+
+  // Locations sit somewhere: the same tree the Locations tab renders also
+  // answers "what contains this page", which becomes the header breadcrumb.
+  // Only location pages pay for the extra request — every other kind resolves
+  // to an empty tree without a call.
+  const { data: locationTree } = useAsyncData<LocationTreeNode[]>(
+    (t) =>
+      page?.kind === "location"
+        ? wikiApi.locationTree(t, params.id)
+        : Promise.resolve([] as LocationTreeNode[]),
+    [params.id, page?.kind],
+  );
+  const locationPath = useMemo(
+    () => (page?.kind === "location" ? findLocationPath(locationTree ?? [], page.id) : []),
+    [locationTree, page?.kind, page?.id],
+  );
 
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -523,6 +540,11 @@ export default function PageDetailPage({ params }: { params: { id: string; pageI
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <Link href={`/campaigns/${params.id}`} className="text-xs text-[color:var(--rl-text-on-parchment-muted)] hover:text-[color:var(--rl-text-on-parchment-primary)]">← back to campaign</Link>
+          {locationPath.length > 0 ? (
+            <div className="mt-1.5">
+              <LocationBreadcrumb campaignId={params.id} path={locationPath} />
+            </div>
+          ) : null}
           <h1 className="rl-title mt-1 text-3xl">{page.title}</h1>
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
             <Badge tone="slate">{PAGE_KIND_TITLES[page.kind] ?? page.kind}</Badge>
@@ -674,13 +696,13 @@ export default function PageDetailPage({ params }: { params: { id: string; pageI
                   <TextInput value={editForm.age} onChange={(e) => setChar("age", e.target.value)} />
                 </Field>
                 <Field label="Physical look" hint="Physical description of the character">
-                  <PageLinkEditor rows={4} value={editForm.physicalLook} onChange={(v) => setChar("physicalLook", v)} pages={pages ?? []} excludePageId={page.id} />
+                  <PageLinkEditor rows={4} value={editForm.physicalLook} onChange={(v) => setChar("physicalLook", v)} pages={pages ?? []} campaignId={params.id} excludePageId={page.id} />
                 </Field>
                 <Field label="Personality">
-                  <PageLinkEditor rows={4} value={editForm.personality} onChange={(v) => setChar("personality", v)} pages={pages ?? []} excludePageId={page.id} />
+                  <PageLinkEditor rows={4} value={editForm.personality} onChange={(v) => setChar("personality", v)} pages={pages ?? []} campaignId={params.id} excludePageId={page.id} />
                 </Field>
                 <Field label="Facts" hint="One fact per line — type # to link a page">
-                  <PageLinkEditor rows={4} value={editForm.facts} onChange={(v) => setChar("facts", v)} pages={pages ?? []} excludePageId={page.id} />
+                  <PageLinkEditor rows={4} value={editForm.facts} onChange={(v) => setChar("facts", v)} pages={pages ?? []} campaignId={params.id} excludePageId={page.id} />
                 </Field>
                 <Field label="Aliases" hint="One alias per line">
                   <TextArea rows={2} value={editForm.aliases} onChange={(e) => setChar("aliases", e.target.value)} />
@@ -704,7 +726,10 @@ export default function PageDetailPage({ params }: { params: { id: string; pageI
                   </Field>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-3">
-                  <Field label="Region">
+                  <Field
+                    label="Region"
+                    hint="The place that contains this one. Name another location page and this page nests under it on the Locations tab."
+                  >
                     <TextInput value={editForm.region} onChange={(e) => setChar("region", e.target.value)} placeholder="Containing region" />
                   </Field>
                   <Field label="Latitude">
@@ -715,13 +740,13 @@ export default function PageDetailPage({ params }: { params: { id: string; pageI
                   </Field>
                 </div>
                 <Field label="Overview" hint="Short narrative description — type # to link a page">
-                  <PageLinkEditor rows={3} value={editForm.overview} onChange={(v) => setChar("overview", v)} pages={pages ?? []} excludePageId={page.id} />
+                  <PageLinkEditor rows={3} value={editForm.overview} onChange={(v) => setChar("overview", v)} pages={pages ?? []} campaignId={params.id} excludePageId={page.id} />
                 </Field>
                 <Field label="History" hint="Founding, wars, famous events — type # to link a page">
-                  <PageLinkEditor rows={4} value={editForm.history} onChange={(v) => setChar("history", v)} pages={pages ?? []} excludePageId={page.id} />
+                  <PageLinkEditor rows={4} value={editForm.history} onChange={(v) => setChar("history", v)} pages={pages ?? []} campaignId={params.id} excludePageId={page.id} />
                 </Field>
                 <Field label="Facts" hint="One fact per line — type # to link a page">
-                  <PageLinkEditor rows={4} value={editForm.facts} onChange={(v) => setChar("facts", v)} pages={pages ?? []} excludePageId={page.id} />
+                  <PageLinkEditor rows={4} value={editForm.facts} onChange={(v) => setChar("facts", v)} pages={pages ?? []} campaignId={params.id} excludePageId={page.id} />
                 </Field>
                 <Field label="Aliases" hint="One alias per line">
                   <TextArea rows={2} value={editForm.aliases} onChange={(e) => setChar("aliases", e.target.value)} />
@@ -733,7 +758,7 @@ export default function PageDetailPage({ params }: { params: { id: string; pageI
                       {group.fields.map((field) =>
                         field.list ? (
                           <Field key={field.key} label={field.label} hint="One per line — type # to link a page">
-                            <PageLinkEditor rows={2} value={editForm[field.key as keyof typeof editForm] as string} onChange={(v) => setChar(field.key as keyof typeof editForm, v)} pages={pages ?? []} excludePageId={page.id} />
+                            <PageLinkEditor rows={2} value={editForm[field.key as keyof typeof editForm] as string} onChange={(v) => setChar(field.key as keyof typeof editForm, v)} pages={pages ?? []} campaignId={params.id} excludePageId={page.id} />
                           </Field>
                         ) : (
                           <Field key={field.key} label={field.label}>
@@ -748,10 +773,10 @@ export default function PageDetailPage({ params }: { params: { id: string; pageI
             ) : isSimpleKind ? (
               <>
                 <Field label="Overview" hint="Short narrative description — type # to link a page">
-                  <PageLinkEditor rows={4} value={editForm.overview} onChange={(v) => setChar("overview", v)} pages={pages ?? []} excludePageId={page.id} />
+                  <PageLinkEditor rows={4} value={editForm.overview} onChange={(v) => setChar("overview", v)} pages={pages ?? []} campaignId={params.id} excludePageId={page.id} />
                 </Field>
                 <Field label="Facts" hint="One fact per line — type # to link a page">
-                  <PageLinkEditor rows={4} value={editForm.facts} onChange={(v) => setChar("facts", v)} pages={pages ?? []} excludePageId={page.id} />
+                  <PageLinkEditor rows={4} value={editForm.facts} onChange={(v) => setChar("facts", v)} pages={pages ?? []} campaignId={params.id} excludePageId={page.id} />
                 </Field>
                 <Field label="Aliases" hint="One alias per line">
                   <TextArea rows={2} value={editForm.aliases} onChange={(e) => setChar("aliases", e.target.value)} />
@@ -826,13 +851,13 @@ export default function PageDetailPage({ params }: { params: { id: string; pageI
                   </Field>
                 </div>
                 <Field label="Overview" hint="What happened — type # to link a page">
-                  <PageLinkEditor rows={4} value={editForm.overview} onChange={(v) => setChar("overview", v)} pages={pages ?? []} excludePageId={page.id} />
+                  <PageLinkEditor rows={4} value={editForm.overview} onChange={(v) => setChar("overview", v)} pages={pages ?? []} campaignId={params.id} excludePageId={page.id} />
                 </Field>
                 <Field label="Participants" hint="One per line — type # to link a page">
-                  <PageLinkEditor rows={3} value={editForm.participants} onChange={(v) => setChar("participants", v)} pages={pages ?? []} excludePageId={page.id} />
+                  <PageLinkEditor rows={3} value={editForm.participants} onChange={(v) => setChar("participants", v)} pages={pages ?? []} campaignId={params.id} excludePageId={page.id} />
                 </Field>
                 <Field label="Facts" hint="One fact per line — type # to link a page">
-                  <PageLinkEditor rows={4} value={editForm.facts} onChange={(v) => setChar("facts", v)} pages={pages ?? []} excludePageId={page.id} />
+                  <PageLinkEditor rows={4} value={editForm.facts} onChange={(v) => setChar("facts", v)} pages={pages ?? []} campaignId={params.id} excludePageId={page.id} />
                 </Field>
                 <Field label="Aliases" hint="One alias per line">
                   <TextArea rows={2} value={editForm.aliases} onChange={(e) => setChar("aliases", e.target.value)} />

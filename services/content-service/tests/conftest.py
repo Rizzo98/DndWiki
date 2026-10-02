@@ -232,6 +232,9 @@ class FakeWikiClient:
         self.created: list[dict] = []
         self.relations: list[tuple[str, str, str]] = []
         self.list_calls: list[str] = []
+        #: The 'limit' each listing was asked for, so a test can see that the
+        #: note path asks for the whole listing (it resolves tagged pages).
+        self.list_limits: list[int] = []
         self.existing_pages = existing_pages or []
         self.updated: list[tuple[str, dict]] = []  # (page_id, payload)
         self.timeline_upserts: list[dict] = []
@@ -239,8 +242,11 @@ class FakeWikiClient:
         self.applied: list[dict] = []  # the change-set payloads received
         self.apply_error: Exception | None = None
 
-    async def list_campaign_pages(self, campaign_id: str) -> list[dict]:
+    async def list_campaign_pages(
+        self, campaign_id: str, *, limit: int = 200
+    ) -> list[dict]:
         self.list_calls.append(campaign_id)
+        self.list_limits.append(limit)
         return self.existing_pages
 
     async def apply_changes(self, payload: dict) -> dict:
@@ -375,6 +381,12 @@ class FakeLLM:
         self.reading: SpeakerReading | None = SpeakerReading()
         self.reading_error: Exception | None = None
         self.cast_lines: list[str] = []
+        #: What plan_from_notes() returns (the DM toolkit's plan). The default
+        #: proposes nothing, so a test that does not care about the toolkit gets
+        #: an empty - and perfectly valid - reading of the notes.
+        self.note_plan: dict | None = None
+        self.note_plan_error: Exception | None = None
+        self.note_plan_calls: list[dict] = []
 
     async def extract_many(
         self,
@@ -406,6 +418,22 @@ class FakeLLM:
         if self.reading_error is not None:
             raise self.reading_error
         return self.reading
+
+    async def plan_from_notes(
+        self, notes: list[dict], existing_pages: list[dict] | None = None
+    ) -> dict:
+        """What the model read out of a set of DM notes (the toolkit's plan).
+
+        'note_plan' is the canned answer; the default proposes nothing, which is
+        a legitimate reading ("these notes are not about a page") and keeps the
+        tests that do not care about the toolkit from inventing pages.
+        'note_plan_error' drives the failure path; the call is recorded so a test
+        can assert WHICH notes and which existing pages were shown.
+        """
+        self.note_plan_calls.append({"notes": list(notes), "existing_pages": existing_pages})
+        if self.note_plan_error is not None:
+            raise self.note_plan_error
+        return dict(self.note_plan) if self.note_plan is not None else {"pages": []}
 
     async def compose_summary(
         self,

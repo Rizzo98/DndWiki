@@ -188,7 +188,9 @@ label places in):
 from __future__ import annotations
 
 import json
+from typing import Any
 
+from app import note_references
 from app.chunking import LINES_PER_BEAT, OwnedPart, beat_budget
 from app.revision import indexed_for_prompt
 from app.summary import blocks_with_places
@@ -1621,3 +1623,193 @@ def build_summary_revision_message(
         "whole narrative in 'session_summary', plus only the items the "
         "corrections change."
     )
+
+
+# --- the DM's own notes -> wiki pages (the 'plan' toolkit) -------------------
+#
+# Everything above reads what the TABLE said. This reads what the DM WROTE:
+# free prose about the world they are preparing, either before the first
+# session or between two of them. There is no transcript behind it, so nothing
+# can be traced back to an utterance - the notes ARE the source, and the DM is
+# the authority on them.
+#
+# Versioned separately from PROMPT_VERSION on purpose: that constant describes
+# the session extraction, and this prompt changes on its own schedule. The
+# version is recorded on the note_plans row, so a proposal can say which
+# reading of the notes produced it.
+#
+# np1 -> np2: the pages a note TAGS ('@bree') used to be nothing but an entry in
+# the listing of names the campaign already uses. They are now read out with
+# their current content (app/note_references.py), which is what lets a note
+# about a page the table has already visited say what it ADDS to that page:
+# the fold never overwrites, so a sentence that only restates the page is
+# dropped before the DM ever sees it.
+
+NOTE_PLAN_PROMPT_VERSION = "np2"
+
+#: The attribute fields offered per kind, rendered from the same table that
+#: SANITIZES the answer (app/note_attributes.py). Asking for exactly what is
+#: accepted is what keeps the two from drifting: the wiki refuses an unknown
+#: attribute key outright, and a refusal there fails the whole apply.
+def _attribute_menu() -> str:
+    from app.note_attributes import (
+        LOCATION_BY_TYPE,
+        LOCATION_COMMON,
+        PLAIN_ATTRIBUTES,
+    )
+
+    def render(fields: dict) -> str:
+        parts = []
+        for key, spec in fields.items():
+            if spec[0] == "enum":
+                parts.append(key + " (" + "|".join(spec[1]) + ")")
+            elif spec[0] == "list":
+                parts.append(key + " (list of strings)")
+            elif spec[0] == "float":
+                parts.append(key + " (number)")
+            else:
+                parts.append(key + " (text)")
+        return ", ".join(parts)
+
+    lines = []
+    for kind, fields in PLAIN_ATTRIBUTES.items():
+        lines.append("- " + kind + ": " + render(fields))
+    lines.append("- location, always: " + render(LOCATION_COMMON))
+    seen: set[str] = set()
+    for location_type, fields in LOCATION_BY_TYPE.items():
+        if not fields:
+            continue
+        rendered = render(fields)
+        if rendered in seen:
+            continue
+        seen.add(rendered)
+        lines.append("- location, location_type=" + location_type + " adds: " + rendered)
+    return "\n".join(lines)
+
+
+def build_note_plan_system_prompt() -> str:
+    """The system prompt for reading a DM's planning notes.
+
+    Built rather than written out so the attribute menu is generated from the
+    sanitizer: the model is told it may use exactly the fields the pipeline
+    accepts, and a field the wiki would reject is never asked for.
+    """
+    return f"""You turn a Dungeon Master's planning notes into wiki pages for their tabletop RPG campaign.
+
+The notes are the DM's OWN words, written by hand: what they have in mind for the world, before a campaign starts or between two sessions. They are private working material - the players never see them - and they are the only source you have. Do not invent campaign facts that are not in them.
+
+Your job is to say WHICH PAGES the notes are about and WHAT each page should say. You do NOT decide whether a page is new or already exists: you are shown the campaign's current pages only so that you describe each subject ONCE, under the name the campaign already uses when there is one. For the pages the notes TAG, and only for those, you are also shown what they currently say.
+
+Respond with a single JSON object (no markdown, no commentary outside it):
+
+{{
+  "language": "<the BCP-47-ish code of the language the notes are written in, e.g. 'en', 'it'>",
+  "pages": [
+    {{
+      "kind": "character|location|faction|item|quest|event",
+      "title": "<the page's name>",
+      "also_known_as": ["<other names the notes give it>"],
+      "content": {{
+        "summary": "<what this is, in the notes' language>",
+        "history": "<its past, if the notes say>",
+        "physical_look": "<characters only: how they look>",
+        "personality": "<characters only: how they behave>",
+        "facts": ["<durable facts, one per entry>"],
+        "attributes": {{}}
+      }}
+    }}
+  ],
+  "relations": [
+    {{"from_title": "<page above>", "to_title": "<another page>", "relation_type": "appears_in|member_of|allied_with|led_by|owner|related_to"}}
+  ],
+  "skipped": [
+    {{"title": "<something in the notes that is not a page>", "reason": "<why>"}}
+  ]
+}}
+
+How to read the notes:
+- A page is a SUBJECT the notes describe: a person, a place, an organisation, an object, a quest, or something that happened. One page per subject, however the notes scatter it across paragraphs.
+- Write each section in the language of the notes, in the DM's own register. Keep their names, their spelling, and their invented words exactly as they wrote them.
+- "summary" is what the subject IS (characters and places alike). "history" is what happened to it before now. "physical_look" and "personality" are for characters only. "facts" are short, durable statements - each one a thing that stays true whatever happens next - not a retelling of the notes.
+- Put into a section only what the notes actually say. An empty section is left out entirely; never write a placeholder, and never pad a page with things a fantasy setting would plausibly have.
+- The DM's notes often name the same thing twice under different names ("the Ashen Keep", "Kaelor's keep"). That is ONE page, with the other names in "also_known_as".
+- "@slug" or "#slug" in a note is a TAG the DM made on purpose: it points at one of the campaign's pages ("@bree" is the page "Bree"), and the tagged pages are read out to you with what they already say. Write the ADDITION in the light of that - never repeat what the page already says, and never write it a second time in different words. A note that only passes through a tagged page ("the party rides to @bree") adds nothing to it, and proposes no change to it; the page is still the right target for a relation the notes state.
+- Write in the THIRD PERSON even when the notes are quick jottings: "Kaelor distrusts the guild", not "make Kaelor distrust the guild". Do not carry over instructions the DM wrote TO THEMSELVES ("remember to roll for the ambush") - those are not facts about the world, and belong in "skipped" if they matter.
+- "relations" links pages you proposed, or a page you proposed and one the campaign already has. Give the relation only if the notes state it. A relation naming a page that does not exist and that you did not propose is dropped, so do not guess at one.
+- "skipped" is for material in the notes that is NOT a page: an idea for a future session, a reminder, a rule question, a subject too vague to write down. Say briefly why. Leaving it out silently is worse - the DM needs to know their note was read.
+
+Structured attributes (put them in "attributes"; omit any you cannot fill from the notes; use ONLY these keys, and only the ones listed for that kind):
+{_attribute_menu()}
+
+How a page is reviewed:
+- You are proposing, not writing. Every page you return is shown to the DM as a proposed change they can edit, drop, or reject before anything reaches the wiki.
+- The page you describe for a subject the campaign already documents is folded into that page, never written over it: your "summary" is ADDED to what it already says. So describe what the notes add, do not restate the page.
+- A note that yields nothing writable is a legitimate answer: return "pages": [] rather than inventing a page to fill the space."""
+
+
+def build_note_plan_message(
+    notes: list[dict[str, Any]], existing_pages: list[dict[str, Any]] | None = None
+) -> str:
+    """The user message: the selected notes, plus the campaign's current pages.
+
+    The existing pages are context, not instructions: they tell the model which
+    names the campaign already uses, so a note about a place the table has
+    already visited is described under its established name instead of a second
+    one. Whether that page is created or updated is decided afterwards, in
+    app/note_planner.py.
+
+    The listing carries each page's SLUG because the notes may reference a page
+    by it: the editor writes "@bree" when the DM picks a page from the
+    autocomplete. The model is told what that token is, so a reference the DM
+    deliberately made is read as naming a page instead of being skimmed over as
+    decoration - and a relation between two referenced pages can then be
+    proposed with the titles the apply needs.
+
+    The tagged pages then get a section of their own, carrying their CONTENT:
+    a name in a list says which page to write under, but only the page's own
+    text says what is already written there, and the fold that follows never
+    overwrites. Without it the model restates the page, the fold adds nothing,
+    and app/note_planner.py drops the change as a no-op - the DM would see an
+    empty proposal for a note that was in fact already covered.
+    """
+    parts: list[str] = []
+    if existing_pages:
+        listing = [
+            {
+                "title": page.get("title"),
+                "kind": page.get("kind"),
+                "slug": page.get("slug"),
+                "also_known_as": (page.get("content_json") or {}).get("aliases") or [],
+            }
+            for page in existing_pages
+        ]
+        parts.append(
+            "PAGES THIS CAMPAIGN ALREADY HAS (context: use the established name and "
+            "do not restate what they already say):\n"
+            + json.dumps(listing, ensure_ascii=False)
+            + "\nIn the notes, '@slug' is a REFERENCE to one of these pages that the DM "
+            "made on purpose ('@bree' is the page 'Bree'): read it as naming that page, "
+            "and use the page's real title when you write about it. The pages a note "
+            "actually tags are read out below, with what they already say."
+        )
+    else:
+        parts.append("PAGES THIS CAMPAIGN ALREADY HAS: none yet.")
+
+    referenced = note_references.resolve_references(notes, existing_pages)
+    if referenced:
+        parts.append(
+            "PAGES THE NOTES TAG (the DM linked these on purpose, so the notes are "
+            "about THEM - here is what they already say):\n"
+            + note_references.render_reference_context(referenced)
+        )
+
+    for index, note in enumerate(notes, start=1):
+        title = str(note.get("title") or "").strip() or "(untitled note)"
+        body = str(note.get("body") or "").strip() or "(empty)"
+        parts.append(f"NOTE {index} - {title}:\n{body}")
+
+    parts.append(
+        "Read these notes and return the JSON object described in your "
+        "instructions. Describe every subject the notes are about, once each."
+    )
+    return "\n\n".join(parts)

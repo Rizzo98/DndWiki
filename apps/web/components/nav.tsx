@@ -13,6 +13,7 @@ import { usePathname } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 import { PAGE_KINDS, PAGE_KIND_LABELS, campaignsApi, type Campaign } from "@/lib/api";
 import { PAGE_KIND_ICON, worldPath } from "@/lib/page-kinds";
+import { DM_TOOLKITS } from "@/lib/toolkits";
 import { useAsyncData } from "@/lib/use-async";
 import { RlIcon, type RlIconName } from "@/components/ravenlore";
 
@@ -148,6 +149,22 @@ function CampaignLinks({ campaign, pathname }: { campaign: Campaign; pathname: s
           active={pathname.startsWith(worldPath(campaign.id, kind))}
         />
       ))}
+      {/* The DM's own workbench. It is a GROUP rather than a single entry
+          because it is where the tools the DM alone uses accumulate: 'Plan'
+          today, whatever the next one turns out to be tomorrow. Players never
+          see the label, let alone the tools under it. */}
+      {isDm ? (
+        <>
+          <span className="rl-nav-group">DM toolkits</span>
+          {DM_TOOLKITS.map((tool) => (
+            <SidebarLink
+              key={tool.href}
+              link={{ ...tool, href: base + tool.href }}
+              active={pathname.startsWith(base + tool.href)}
+            />
+          ))}
+        </>
+      ) : null}
     </>
   );
 }

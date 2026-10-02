@@ -147,8 +147,18 @@ async def test_wiki_list_campaign_pages(monkeypatch, settings):
     pages = await WikiServiceClient(settings).list_campaign_pages("c1")
     assert pages[0]["title"] == "Aragorn"
     url, body, _ = fake.calls[0]
-    assert url == "http://wiki.test/internal/wiki/pages?campaign_id=c1"
+    assert url == "http://wiki.test/internal/wiki/pages?campaign_id=c1&limit=200"
     assert body is None
+
+
+async def test_wiki_list_campaign_pages_can_ask_for_more(monkeypatch, settings):
+    # The note plan resolves the pages a note TAGS out of this listing, so a
+    # tagged page past the default page of results must still be there.
+    fake = FakeAsyncClient(response=httpx.Response(200, json=[]), method="get")
+    _patch(monkeypatch, wiki_mod, fake)
+    await WikiServiceClient(settings).list_campaign_pages("c1", limit=500)
+    url, _, _ = fake.calls[0]
+    assert url == "http://wiki.test/internal/wiki/pages?campaign_id=c1&limit=500"
 
 
 # ------------------------------------------------------------- user

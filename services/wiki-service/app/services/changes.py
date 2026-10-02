@@ -41,6 +41,17 @@ def _title_key(title: str) -> str:
     return " ".join((title or "").lower().split())
 
 
+def _origin(body: ChangeSetApply) -> str:
+    """Where a confirmed change set came from, for page history and logs.
+
+    Two things produce change sets now: a session (content-service read a
+    recording) and a campaign's note plan (the DM's own planning notes). The
+    pages record which, because a DM reading a page's version history needs to
+    know whether a machine or their own notes wrote it.
+    """
+    return f"session {body.session_id}" if body.session_id else "the DM's planning notes"
+
+
 def _campaign_index(pages: list) -> tuple[dict[str, Any], dict[tuple[str, str], Any]]:
     """(title/alias -> page, (kind, title) -> page) over the campaign's pages."""
     by_name: dict[str, Any] = {}
@@ -103,7 +114,7 @@ async def apply_change_set(
             source_session_id=body.session_id,
             created_by=body.confirmed_by,
             change_note=change.change_note
-            or f"Confirmed change set of session {body.session_id}",
+            or f"Confirmed change set of {_origin(body)}",
         )
         created_by_title[_title_key(page.title)] = page
         by_kind_title[key] = page
@@ -161,9 +172,9 @@ async def apply_change_set(
         db, body, resolved=resolved, resolved_by_kind_title=resolved_by_kind_title
     )
     logger.info(
-        "change set of session %s applied: %d created, %d updated, %d skipped, "
+        "change set of %s applied: %d created, %d updated, %d skipped, "
         "%d timeline entries, %d relations",
-        body.session_id, len(created), len(updated), len(skipped), timeline_written,
+        _origin(body), len(created), len(updated), len(skipped), timeline_written,
         relations_created,
     )
     return {
@@ -219,7 +230,7 @@ async def _apply_update(
         title=change.title or page.title,
         content_json=change.content_json or (page.content_json or {}),
         change_note=change.change_note
-        or f"Updated from the confirmed change set of session {body.session_id}",
+        or f"Updated from the confirmed change set of {_origin(body)}",
         updated_by=body.confirmed_by,
     )
     updated.append(
@@ -251,8 +262,8 @@ async def _apply_relations(
         from_page = resolved.get(_title_key(relation.from_title))
         if from_page is None:
             logger.warning(
-                "change set of session %s: relation source '%s' has no page",
-                body.session_id, relation.from_title,
+                "change set of %s: relation source '%s' has no page",
+                _origin(body), relation.from_title,
             )
             continue
         to_page = None
@@ -280,8 +291,8 @@ async def _apply_relations(
             created += 1
         except HTTPException as exc:  # duplicate/deleted target: keep going
             logger.warning(
-                "change set of session %s: relation %s -> %s failed: %s",
-                body.session_id, relation.from_title, relation.to_title or relation.to_page_id,
-                exc.detail,
+                "change set of %s: relation %s -> %s failed: %s",
+                _origin(body), relation.from_title,
+                relation.to_title or relation.to_page_id, exc.detail,
             )
     return created

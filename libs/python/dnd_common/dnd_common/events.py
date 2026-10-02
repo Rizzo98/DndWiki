@@ -57,6 +57,11 @@ TOPOLOGY: dict[str, list[str]] = {
     # summary review loop (summary.regenerate), the change-set proposal built
     # from the confirmed summary (summary.confirmed) and the write of the
     # change set the DM confirmed (plan.confirmed)
+    #
+    # The DM toolkit's plan rides the same queue: note.plan.requested reads a
+    # selection of the DM's planning notes into a proposed change set (no
+    # session involved), and note.plan.confirmed writes the set they reviewed.
+    # Same worker, same review layer, different source of the prose.
     "content.generate": [
         # the redesign's trigger: the review is over (finished, skipped or
         # waived) and the attributed artifact is final
@@ -66,6 +71,8 @@ TOPOLOGY: dict[str, list[str]] = {
         "summary.regenerate",
         "summary.confirmed",
         "plan.confirmed",
+        "note.plan.requested",
+        "note.plan.confirmed",
     ],
     "search.events": ["wiki.published", "wiki.updated", "wiki.archived"],
     "notification.events": [

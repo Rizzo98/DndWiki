@@ -24,6 +24,7 @@ import {
   type ReviewStatus,
   type ReviewStop,
 } from "@/lib/api";
+import { sessionAtReview } from "@/lib/session-status";
 import { errMessage } from "@/lib/use-async";
 
 type Phase = "loading" | "ready" | "asking" | "done" | "error" | "disabled";
@@ -204,6 +205,22 @@ export function SessionReviewCard({
   }
 
   if (phase === "loading") {
+    // The placeholder is drawn only while the session is RESTING on the review.
+    //
+    // That is the one status where the card is certainly coming: the engine
+    // parked the session there because there is something to ask. Everywhere
+    // else it is aiming at nothing - a session past the review has it CLOSED
+    // (pressing Finish is what moves the session on), one the engine has not
+    // attributed yet has no review at all, and one it is still working on has
+    // nothing stored to fetch. Drawing "Checking what we still need to ask…"
+    // for those and then removing it half a second later is exactly the flash
+    // the DM sees on a session they already confirmed.
+    //
+    // Withheld only on a POSITIVE reading of the status: with no status to go
+    // on, the placeholder stays, because asking is what we are doing.
+    if (sessionStatus !== undefined && !sessionAtReview(sessionStatus)) {
+      return null;
+    }
     return (
       <Card>
         <div className="flex items-center gap-3 text-sm text-[color:var(--rl-text-on-parchment-muted)]">

@@ -37,6 +37,19 @@ PLAN_DRAFT = "draft"  # proposed, awaiting the DM's review
 PLAN_APPLYING = "applying"  # the DM confirmed it; the wiki is being written
 PLAN_APPLIED = "applied"  # written; the pages/events exist in the wiki
 
+#: CampaignNote.status values (the DM toolkit's planning notes).
+NOTE_DRAFT = "draft"  # still being written; kept out of the way
+NOTE_READY = "ready"  # the DM considers it settled and may plan from it
+
+#: NotePlan.status values: the campaign's note -> wiki change set. It shares
+#: the session change set's vocabulary (draft/applying/applied) and adds the
+#: two states only a note plan needs, because nothing else traces its progress:
+#: the row IS the job. The API flips it to 'generating' before it publishes the
+#: event and the worker flips it back to 'draft' (or 'failed'), so the plan page
+#: can poll one row instead of a separate generation_jobs record.
+NOTE_PLAN_GENERATING = "generating"
+NOTE_PLAN_FAILED = "failed"
+
 
 class GenerationJob(Base):
     """One LLM generation run for a session (summary draft, rewrite or wiki)."""
@@ -196,6 +209,108 @@ class WikiChangeSet(Base):
     )
     # Entities the campaign already documents (exact title/alias match): NOT
     # changes, just context for the DM ('skipped': [{title, kind, matched_title}]).
+    skipped: Mapped[list | None] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=list, server_default="[]"
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_by: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CampaignNote(Base):
+    """A DM's free-form planning note (the 'plan' toolkit).
+
+    The session pipeline reads what the TABLE said; a note is what the DM has in
+    mind before anyone sits down — the world they are setting up, or the ground
+    they are preparing between two sessions. It is the only content in the
+    platform a human writes from scratch, so it is plain text: no schema, no
+    chunks, and no review layer of its own. The review happens later, on the
+    change set a set of notes is turned into.
+
+    'status' is the DM's own bookkeeping, not a pipeline state: 'draft' while
+    they are still writing it, 'ready' once they consider it settled. Only the
+    note page reads it — planning does not require it, because the DM picks the
+    notes to plan from explicitly, note by note.
+    """
+
+    __tablename__ = "campaign_notes"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    # The note itself, as the DM typed it. May carry '@slug' page references
+    # (the editor's autocomplete writes them): they are notes for a human to
+    # read, and the campaign's own renderer links them like any other prose.
+    body: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=NOTE_DRAFT, server_default=NOTE_DRAFT
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class NotePlan(Base):
+    """The PROPOSED wiki changes a DM built from their notes (one per campaign).
+
+    Same review shape as a session's change set (WikiChangeSet): one entry per
+    page to create or update, carrying the payload to write ('after') plus, for
+    updates, the page's current state ('before') so the plan page can render a
+    diff. Nothing reaches the wiki before the DM confirms it, and the confirmed
+    set is written through wiki-service's internal apply endpoint, which creates
+    the pages published.
+
+    Unlike a session — which has a state machine of its own living in
+    session-service — nothing else carries the progress of a note plan, so this
+    row does: 'status' goes generating -> draft -> applying -> applied, and a
+    failure parks it on 'failed' with 'error' explaining what happened. That is
+    why there is no generation_jobs row here: a job table exists to track work a
+    session owns, and this work is owned by the plan itself.
+
+    One row per campaign (unique campaign_id): a campaign has ONE plan under
+    construction, which is what makes regenerating an update rather than a
+    second, competing proposal. Regenerating from a different set of notes
+    overwrites the draft, and a set that was already applied slides back to
+    'draft' as the next proposal — the pages it wrote keep their own history in
+    the wiki's page_versions.
+    """
+
+    __tablename__ = "note_plans"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, unique=True, index=True)
+    # generating | draft | applying | applied | failed
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=NOTE_PLAN_GENERATING, server_default=NOTE_PLAN_GENERATING
+    )
+    # The notes this proposal was built from, kept so the review can say what it
+    # read and a regeneration can be repeated over the same selection.
+    note_ids: Mapped[list | None] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=list, server_default="[]"
+    )
+    llm_provider: Mapped[str | None] = mapped_column(String(64))
+    llm_model: Mapped[str | None] = mapped_column(String(128))
+    prompt_version: Mapped[str | None] = mapped_column(String(32))
+    # The language the notes were written in (drafted page language).
+    language: Mapped[str | None] = mapped_column(String(16))
+    # [{id, action: create|update, kind, title, page_id, before, after, dropped}]
+    changes: Mapped[list | None] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=list, server_default="[]"
+    )
+    # [{id, from_title, to_title, to_page_id, relation_type, dropped}]
+    relations: Mapped[list | None] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=list, server_default="[]"
+    )
+    # Notes that produced nothing: [{title, reason}] - context for the DM, never
+    # a change to review, so a note about nothing does not look like a failure.
     skipped: Mapped[list | None] = mapped_column(
         JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=list, server_default="[]"
     )

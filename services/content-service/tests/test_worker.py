@@ -1191,7 +1191,9 @@ async def test_process_plan_generation_failure_marks_failed(session_factory, set
     await _confirm_summary(session_factory)
 
     class BrokenWikiClient(FakeWikiClient):
-        async def list_campaign_pages(self, campaign_id: str) -> list[dict]:
+        async def list_campaign_pages(
+            self, campaign_id: str, *, limit: int = 200
+        ) -> list[dict]:
             raise RuntimeError("wiki down")
 
     async with session_factory() as db:

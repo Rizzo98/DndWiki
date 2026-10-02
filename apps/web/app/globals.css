@@ -744,6 +744,91 @@ select option {
     color: var(--rl-text-on-parchment-muted);
   }
 
+  /* --------------------------------------------------- location hierarchy */
+  /* The Locations category is a tree, not a list: a place names the place it
+     sits in (attributes.region), so the panel renders depth as indentation and
+     draws one hairline per ancestor level. A campaign with no containment
+     renders as the flat list it already was — same rows, no guides. */
+  .rl-tree-row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 9px 16px 9px 12px;
+    border-top: 1px solid var(--rl-border-parchment);
+    transition: background-color 0.15s ease;
+  }
+  .rl-tree-row:hover {
+    background-color: var(--rl-bg-parchment-sunk);
+  }
+  /* Ancestors kept only to hold a filtered match in place read as context. */
+  .rl-tree-row--context .rl-list-row-title,
+  .rl-tree-row--context .rl-list-row-sub {
+    opacity: 0.55;
+  }
+  .rl-tree-guide {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background-color: color-mix(in srgb, var(--rl-cat-place) 20%, transparent);
+  }
+  .rl-tree-toggle {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    border-radius: var(--rl-radius-sm);
+    color: var(--rl-text-on-parchment-muted);
+    transition: background-color 0.15s ease, color 0.15s ease;
+  }
+  button.rl-tree-toggle:hover {
+    background-color: color-mix(in srgb, var(--rl-cat-place) 12%, transparent);
+    color: var(--rl-cat-place);
+  }
+  .rl-tree-toggle--empty {
+    visibility: hidden;
+  }
+  .rl-tree-toggle-icon {
+    transition: transform 0.18s ease;
+  }
+  .rl-tree-toggle-icon--open {
+    transform: rotate(90deg);
+  }
+  .rl-tree-link {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    flex: 1;
+    min-width: 0;
+  }
+  /* "Where this place sits": muted ancestors, chevron separators, no bold —
+     the page title right below it is the current segment. */
+  .rl-breadcrumb {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--rl-text-on-parchment-muted);
+  }
+  .rl-breadcrumb-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .rl-breadcrumb a {
+    color: inherit;
+  }
+  .rl-breadcrumb a:hover {
+    color: var(--rl-text-on-parchment-primary);
+    text-decoration: underline;
+  }
+  .rl-breadcrumb-sep {
+    opacity: 0.6;
+  }
+
   /* ------------------------------------------------------------- dark panel */
   .rl-dark-panel {
     position: relative;

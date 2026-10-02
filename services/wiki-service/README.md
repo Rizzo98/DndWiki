@@ -45,6 +45,7 @@ caller's role (checked against campaign-service).
 | PATCH | `/api/wiki/pages/{id}/visibility` | DM | `public|dm_only|hidden` |
 | GET | `/api/wiki/pages/{id}/versions` | members | newest first |
 | GET/POST/DELETE | `/api/wiki/pages/{id}/relations` | read: members, write: DM | |
+| GET | `/api/wiki/campaigns/{id}/locations/tree` | members | location pages nested by containment, derived from the free-text `attributes.region` / `notable_locations`; visibility-filtered like the flat list |
 | GET/POST | `/api/wiki/timeline` | GET: members, POST: DM | players see approved events only |
 | PATCH | `/api/wiki/timeline/{id}` | DM | edit/approve |
 

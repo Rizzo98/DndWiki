@@ -1,12 +1,26 @@
-// Session plan: the "git status" of a session, as a stack of panels.
+// Plan review: a proposed change set as a stack of panels.
 //
-// The confirmed summary is turned into a set of PROPOSED wiki changes — pages
-// to create, pages to update, the timeline entries they back and the links
-// between them. Nothing is in the wiki yet: every proposed page gets its own
-// panel (never a row inside one shared box), where the DM reads the page
-// exactly as it will be written (Inspect), fixes what is wrong field by field
-// (Edit) or drops it. Confirming the set is the only thing that writes pages
-// (published) and timeline entries (approved) into the wiki.
+// A change set is a set of PROPOSED wiki changes — pages to create, pages to
+// update, the timeline entries they back and the links between them. Nothing is
+// in the wiki yet: every proposed page gets its own panel (never a row inside
+// one shared box), where the DM reads the page exactly as it will be written
+// (Inspect), fixes what is wrong field by field (Edit) or drops it. Confirming
+// the set is the only thing that writes pages (published) and timeline entries
+// (approved) into the wiki.
+//
+// TWO things produce a change set, and both are reviewed HERE:
+//
+// - a session (content-service distils a recording; the set is computed once
+//   the DM confirms the summary), and
+// - the DM's own planning notes (the toolkit's 'plan' tool; the set is computed
+//   when they pick notes and generate).
+//
+// The shape is identical, so the review is too, and keeping one screen for both
+// is the point: the DM learns it once. Only the few sentences that name where
+// the material came from differ - they come from COPY below, chosen by 'source'.
+// The module still lives under components/session/ because that is where it
+// grew up; the note plan imports it across that boundary deliberately rather
+// than forking a second, drifting review.
 
 "use client";
 
@@ -48,6 +62,76 @@ import {
   type WikiPageKind,
 } from "@/lib/api";
 
+/** Where a reviewed change set came from (they write the same kind of set). */
+export type PlanSource = "session" | "toolkit";
+
+/**
+ * The parts of a proposed change set this card renders, whichever built it.
+ *
+ * Deliberately structural rather than SessionPlan | NotePlan: the two differ
+ * only in how they are keyed (a session vs a campaign) and in what 'status'
+ * carries, and the review renders neither of those. 'status' is a plain string
+ * because a note plan's row also tracks the run itself ('generating').
+ */
+export type ReviewablePlan = Pick<
+  SessionPlan,
+  | "id"
+  | "language"
+  | "changes"
+  | "relations"
+  | "skipped"
+  | "error"
+  | "confirmed_at"
+  | "confirmed_by"
+  | "applied_at"
+> & { status: string };
+
+/** The few sentences that name where the reviewed material came from. */
+const COPY: Record<
+  PlanSource,
+  {
+    eyebrow: string;
+    empty: string;
+    generatingEmpty: string;
+    nothingToWrite: string;
+    skipped: string;
+    skippedEyebrow: string;
+    skippedNoun: string;
+    skippedMeta: string;
+  }
+> = {
+  session: {
+    eyebrow: "Session review",
+    empty:
+      "Once you confirm the session summary, the pages and events it implies are proposed here — nothing is written to the wiki before you confirm them.",
+    generatingEmpty:
+      "The confirmed summary is being turned into the pages and timeline entries it implies — they appear here as soon as they are ready. Nothing is written to the wiki before you confirm them.",
+    nothingToWrite: "This session adds nothing the wiki does not already have.",
+    skipped:
+      "The campaign documents these already, so the session only adds to their pages through the session references above. Edit them directly if needed.",
+    // A session's leftovers are entities the campaign already documents.
+    skippedEyebrow: "Already in the wiki",
+    skippedNoun: "entity",
+    skippedMeta: " — not proposed again",
+  },
+  toolkit: {
+    eyebrow: "Plan review",
+    empty:
+      "Pick the notes you want to build on and generate: the pages they imply are proposed here — nothing is written to the wiki before you confirm them.",
+    generatingEmpty:
+      "Your notes are being read into the pages they imply — they appear here as soon as they are ready. Nothing is written to the wiki before you confirm them.",
+    nothingToWrite: "These notes add nothing the wiki does not already have.",
+    skipped:
+      "Not everything the notes yield is a change: an idea for a later session, a reminder to yourself, a subject too vague to write down, or something the campaign's page already says. They are kept here so nothing you wrote disappears without a trace.",
+    // A note plan's leftovers are mostly NOT existing pages - they are things
+    // the notes mention that no page should be made of, or that add nothing -
+    // so the section says what it is instead of claiming the wiki has them.
+    skippedEyebrow: "Read, but not a change",
+    skippedNoun: "item",
+    skippedMeta: " — nothing to write",
+  },
+};
+
 /** "1 new page" / "3 new pages". */
 function plural(count: number, one: string, many: string): string {
   return count + " " + noun(count, one, many);
@@ -64,28 +148,31 @@ function joinList(parts: string[]): string {
   return parts.slice(0, -1).join(", ") + " and " + parts[parts.length - 1];
 }
 
-export function SessionPlanCard({
+export function PlanReviewCard({
   plan,
   campaignId,
   linkIndex,
   pages = [],
   sessionNames,
-  sessionStatus,
+  source = "session",
+  generating = false,
   canReview,
   busy,
   error,
   onSave,
   onConfirm,
 }: {
-  plan: SessionPlan | null;
+  plan: ReviewablePlan | null;
   campaignId: string;
   linkIndex?: LinkIndex | null;
   /** The campaign's pages: the "#" autocomplete and the relation resolver. */
   pages?: PageSummary[];
   /** session id -> display name, for the session references of a preview. */
   sessionNames?: Record<string, string>;
-  /** Session status: 'generating_wiki' is the moment the set is computed. */
-  sessionStatus?: string;
+  /** Which material the set was built from (it changes the wording only). */
+  source?: PlanSource;
+  /** The set is being computed right now (nothing to review yet). */
+  generating?: boolean;
   /** DM (or dev): may edit and confirm the proposed changes. */
   canReview: boolean;
   /** Which action is in flight. */
@@ -96,6 +183,7 @@ export function SessionPlanCard({
   /** Save (when needed) and confirm in one go: the parent orders the calls. */
   onConfirm: (changes: PlanChangeEdit[], relations: PlanRelationEdit[]) => void;
 }) {
+  const copy = COPY[source];
   // Local, unsaved edits: the panels render the server state plus these
   // overrides, so a background poll never discards what the DM is typing.
   const [edits, setEdits] = useState<Record<string, Partial<PlanChange>>>({});
@@ -270,21 +358,18 @@ export function SessionPlanCard({
   }
 
   if (!plan) {
-    // The set is computed while the session runs 'generating_wiki' and is
-    // ready when it parks on 'wiki_plan_ready': the panel says which of the
-    // two it is looking at instead of showing an empty review.
-    const generating = sessionStatus === "generating_wiki";
+    // The set is being computed ('generating') or has not been asked for yet:
+    // the panel says which of the two it is looking at instead of showing an
+    // empty review that looks like a proposal with nothing in it.
     return (
       <RlPanel>
         <RlPanelHead
-          eyebrow="Session review"
+          eyebrow={copy.eyebrow}
           action={generating ? <RlTag tint="item">computing…</RlTag> : undefined}
         />
         <div className="border-t border-[color:var(--rl-border-parchment)] px-4 pb-4 pt-5">
           <RlEmptyState icon="book" tint="muted" title="No proposed changes yet">
-            {generating
-              ? "The confirmed summary is being turned into the pages and timeline entries it implies — they appear here as soon as they are ready. Nothing is written to the wiki before you confirm them."
-              : "Once you confirm the session summary, the pages and events it implies are proposed here — nothing is written to the wiki before you confirm them."}
+            {generating ? copy.generatingEmpty : copy.empty}
           </RlEmptyState>
         </div>
       </RlPanel>
@@ -302,7 +387,7 @@ export function SessionPlanCard({
         <div className="space-y-4 px-4 py-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
-              <span className="rl-eyebrow">Session review</span>
+              <span className="rl-eyebrow">{copy.eyebrow}</span>
               <h2 className="rl-title mt-1 text-[22px]">Proposed wiki changes</h2>
               <p className="rl-body mt-1 max-w-[75ch]">
                 {isApplied
@@ -368,7 +453,7 @@ export function SessionPlanCard({
         <RlPanel>
           <div className="px-4 pb-4 pt-5">
             <RlEmptyState icon="spark" tint="neutral" title="Nothing to write">
-              This session adds nothing the wiki does not already have.
+              {copy.nothingToWrite}
             </RlEmptyState>
           </div>
         </RlPanel>
@@ -461,12 +546,11 @@ export function SessionPlanCard({
       {plan.skipped.length > 0 ? (
         <RlPanel>
           <RlPanelHead
-            eyebrow="Already in the wiki"
-            meta={plural(plan.skipped.length, "entity", "entities") + " — not proposed again"}
+            eyebrow={copy.skippedEyebrow}
+            meta={plural(plan.skipped.length, copy.skippedNoun, copy.skippedNoun + "s") + copy.skippedMeta}
           />
           <p className="rl-body border-t border-[color:var(--rl-border-parchment)] px-4 py-3">
-            The campaign documents these already, so the session only adds to their pages
-            through the session references above. Edit them directly if needed.
+            {copy.skipped}
           </p>
           <ul>
             {plan.skipped.map((skipped) => (

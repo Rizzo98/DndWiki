@@ -18,7 +18,7 @@ from dnd_common.db import get_session
 from fastapi import Depends, FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api import internal, plan, summary_review
+from app.api import internal, notes, plan, summary_review
 from app.broker import EventPublisher
 from app.core.config import get_settings
 from app.services import jobs, summaries
@@ -47,6 +47,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="content-service", version="0.1.0", lifespan=lifespan)
 app.include_router(summary_review.router)
 app.include_router(plan.router)
+# The DM toolkit (the 'plan' tool): planning notes + the wiki they become.
+app.include_router(notes.router)
 app.include_router(internal.router)
 
 

@@ -138,6 +138,49 @@ export type PageOut = WikiPage;
 /** Page detail response: WikiPage plus a freshly presigned portrait URL. */
 export type PageDetail = WikiPage & { image_url: string | null };
 
+/** Location types wiki-service knows (mirrors page_attributes.LocationType). */
+export type LocationType =
+  | "city"
+  | "town"
+  | "village"
+  | "region"
+  | "continent"
+  | "world"
+  | "building"
+  | "structure"
+  | "dungeon"
+  | "wilderness"
+  | "other";
+
+/** Display labels for the location types (badges on the hierarchy view). */
+export const LOCATION_TYPE_LABELS: Record<string, string> = {
+  world: "World",
+  continent: "Continent",
+  region: "Region",
+  city: "City",
+  town: "Town",
+  village: "Village",
+  wilderness: "Wilderness",
+  structure: "Structure",
+  building: "Building",
+  dungeon: "Dungeon",
+  other: "Place",
+};
+
+/**
+ * One place of the campaign's location tree: a page summary plus the places it
+ * contains. The nesting is derived server-side from the free-text
+ * attributes.region / attributes.notable_locations of each page, so the same
+ * page can sit at a different depth for a DM than for a player (a branch the
+ * caller may not read is not part of their tree).
+ */
+export interface LocationTreeNode extends PageSummary {
+  location_type: string;
+  /** The region string that named no page — why this place is top level. */
+  unresolved_region: string | null;
+  children: LocationTreeNode[];
+}
+
 export interface PageVersion {
   id: string;
   page_id: string;
@@ -271,12 +314,23 @@ export interface PlanRelation {
   dropped: boolean;
 }
 
-/** An entity the campaign already documents: context, never a change. */
+/**
+ * Something the reviewed material mentioned that is NOT a change.
+ *
+ * A session's leftovers are entities the campaign already documents, so they
+ * carry the kind that was matched and the page they matched, and the review
+ * lists them as "already in the wiki". A note plan's leftovers are usually
+ * something else entirely - an idea for a later session, a reminder the DM
+ * wrote to themselves - so it has no kind and no page to name. Both are the
+ * same list; 'kind'/'matched_title' are optional because only one of the two
+ * sources can always fill them in, and the review falls back to a generic
+ * sigil when they are absent.
+ */
 export interface PlanSkipped {
   title: string;
-  kind: string;
-  matched_title: string | null;
   reason: string;
+  kind?: string;
+  matched_title?: string | null;
 }
 
 /** The 'git status' of a session: what confirming would write to the wiki. */
@@ -318,6 +372,155 @@ export interface PlanRelationEdit {
   id: string;
   dropped?: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// DM toolkit: the 'plan' tool (notes + the wiki they become)
+// ---------------------------------------------------------------------------
+
+/** One planning note as the toolkit lists it (body is a preview). */
+export interface NoteSummary {
+  id: string;
+  campaign_id: string;
+  title: string;
+  /** A one-line preview in the list, the full note in the editor. */
+  body: string;
+  status: NoteStatus;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/** The DM's own bookkeeping on a note: still writing it, or settled. */
+export type NoteStatus = "draft" | "ready";
+
+export const NOTE_STATUSES: NoteStatus[] = ["draft", "ready"];
+export const NOTE_STATUS_LABELS: Record<NoteStatus, string> = {
+  draft: "Draft",
+  ready: "Ready",
+};
+
+/**
+ * The campaign's proposed wiki changes, built from a selection of notes.
+ *
+ * The same shape as a session's plan - one entry per page to create or update,
+ * 'before' on updates so the review can diff - with two differences: it is
+ * keyed by campaign (a campaign has ONE plan under construction), and 'status'
+ * carries the progress of the run itself, because nothing else does. That is
+ * what the plan page polls: 'generating' means the notes are being read.
+ */
+export interface NotePlan {
+  id: string;
+  campaign_id: string;
+  status: "generating" | "draft" | "applying" | "applied" | "failed";
+  /** The notes this proposal was built from. */
+  note_ids: string[];
+  language: string | null;
+  changes: PlanChange[];
+  relations: PlanRelation[];
+  skipped: PlanSkipped[];
+  counts: {
+    create: number;
+    update: number;
+    pages: number;
+    events: number;
+    relations: number;
+    dropped: number;
+  };
+  error: string | null;
+  llm_provider: string | null;
+  llm_model: string | null;
+  prompt_version: string | null;
+  confirmed_at: string | null;
+  confirmed_by: string | null;
+  applied_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/**
+ * The DM toolkit: planning notes, and the wiki generated from them.
+ *
+ * Every call is DM-only server-side (campaign role, or the 'dev' realm role),
+ * so a player reaching one of these gets a 403 rather than an empty list.
+ */
+export const toolkitApi = {
+  notes: (token: string, campaignId: string) =>
+    request<{ notes: NoteSummary[] }>(token, `/api/content/campaigns/${campaignId}/notes`),
+
+  note: (token: string, campaignId: string, noteId: string) =>
+    request<{ note: NoteSummary }>(
+      token,
+      `/api/content/campaigns/${campaignId}/notes/${noteId}`,
+    ),
+
+  createNote: (
+    token: string,
+    campaignId: string,
+    body: { title?: string; body?: string; status?: NoteStatus },
+  ) =>
+    request<{ note: NoteSummary }>(
+      token,
+      `/api/content/campaigns/${campaignId}/notes`,
+      jsonInit("POST", body),
+    ),
+
+  /** Save a note. Omitted fields are left as they are. */
+  updateNote: (
+    token: string,
+    campaignId: string,
+    noteId: string,
+    body: { title?: string; body?: string; status?: NoteStatus },
+  ) =>
+    request<{ note: NoteSummary }>(
+      token,
+      `/api/content/campaigns/${campaignId}/notes/${noteId}`,
+      jsonInit("PUT", body),
+    ),
+
+  deleteNote: (token: string, campaignId: string, noteId: string) =>
+    request<void>(token, `/api/content/campaigns/${campaignId}/notes/${noteId}`, {
+      method: "DELETE",
+    }),
+
+  /** The campaign's proposed changes (null when nothing was generated yet). */
+  plan: (token: string, campaignId: string) =>
+    request<{ plan: NotePlan | null }>(token, `/api/content/campaigns/${campaignId}/plan`),
+
+  /**
+   * Read the selected notes and propose the wiki changes they describe.
+   * Asynchronous: the answer opens the run ('generating') and the plan page
+   * polls plan() until it becomes a 'draft' to review.
+   */
+  generatePlan: (token: string, campaignId: string, noteIds: string[]) =>
+    request<{ plan: NotePlan; queued: boolean }>(
+      token,
+      `/api/content/campaigns/${campaignId}/plan/generate`,
+      jsonInit("POST", { note_ids: noteIds }),
+    ),
+
+  /** Save the review (edited payloads, dropped changes and links). */
+  updatePlan: (
+    token: string,
+    campaignId: string,
+    body: { changes?: PlanChangeEdit[]; relations?: PlanRelationEdit[] },
+  ) =>
+    request<{ plan: NotePlan }>(
+      token,
+      `/api/content/campaigns/${campaignId}/plan`,
+      jsonInit("PUT", body),
+    ),
+
+  /** Confirm the proposed changes - the worker writes them into the wiki. */
+  confirmPlan: (token: string, campaignId: string) =>
+    request<{ plan: NotePlan; queued: boolean }>(
+      token,
+      `/api/content/campaigns/${campaignId}/plan/confirm`,
+      jsonInit("POST"),
+    ),
+
+  /** Throw the proposal away without writing anything. */
+  discardPlan: (token: string, campaignId: string) =>
+    request<void>(token, `/api/content/campaigns/${campaignId}/plan`, { method: "DELETE" }),
+};
 
 /** One review request: the passages concerned + what must change. */
 export interface SummaryEdit {
@@ -763,6 +966,9 @@ export const wikiApi = {
     return request<PageSummary[]>(token, `/api/wiki/pages?${qs.toString()}`);
   },
   page: (token: string, pageId: string) => request<PageDetail>(token, `/api/wiki/pages/${pageId}`),
+  /** Every visible location of a campaign, nested by containment. */
+  locationTree: (token: string, campaignId: string) =>
+    request<LocationTreeNode[]>(token, `/api/wiki/campaigns/${campaignId}/locations/tree`),
   uploadImage: (token: string, pageId: string, file: File) => {
     const fd = new FormData();
     fd.append("file", file);

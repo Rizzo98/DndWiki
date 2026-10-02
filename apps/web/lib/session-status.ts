@@ -39,6 +39,20 @@ export function sessionStage(status: SessionStatus): number {
   return STAGE_BY_STATUS[status] ?? 0;
 }
 
+/**
+ * True while the session is RESTING on the review - the state the DM answers
+ * its questions in.
+ *
+ * Deliberately narrower than the attribution stage it belongs to: 'attributing'
+ * is the engine computing and 'attribution_ready' is the belief being written
+ * down, and on the way through them there is no review to fetch yet. This is
+ * the one status where a review is not merely possible but the reason the
+ * session stopped, which is what makes the review card safe to announce.
+ */
+export function sessionAtReview(status: string): boolean {
+  return status === "attribution_review";
+}
+
 const NOTE_BY_STATUS: Record<SessionStatus, string> = {
   uploaded: "Waiting for a recording",
   recorded: "Recording in — waiting to be transcribed",

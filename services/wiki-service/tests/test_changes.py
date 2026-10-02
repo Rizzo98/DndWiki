@@ -94,6 +94,71 @@ async def test_apply_creates_published_pages(client, claims, session_factory, fa
     assert [ev.type for ev in fake_publisher.events] == ["wiki.published"]
 
 
+async def test_apply_accepts_a_change_set_with_no_session_behind_it(
+    client, claims, session_factory, fake_publisher
+):
+    """The DM's own planning notes confirm a change set too (the plan toolkit).
+
+    A note plan has no session to attribute its pages to, so the apply has to
+    work without one: the pages are still created published, they simply carry
+    no source_session_id - and their history says where they came from, because
+    a DM reading a page's version history needs to know whether a machine or
+    their own notes wrote it.
+    """
+    _service_auth(claims)
+    resp = await client.post(
+        "/internal/wiki/changes/apply",
+        json={
+            "campaign_id": str(CAMPAIGN),
+            "confirmed_by": str(DM),
+            "changes": [_change()],
+            "relations": [],
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["created"][0]["title"] == "Aragorn"
+
+    pages = await _pages(session_factory)
+    assert len(pages) == 1
+    assert pages[0].status == "published"
+    assert pages[0].source_session_id is None
+    async with session_factory() as db:
+        versions = list((await db.execute(select(PageVersion))).scalars().all())
+    assert "planning notes" in (versions[0].change_note or "")
+    assert [ev.type for ev in fake_publisher.events] == ["wiki.published"]
+
+
+async def test_apply_without_a_session_refreshes_an_existing_timeline_entry(
+    client, claims, session_factory, fake_publisher
+):
+    """An event written from notes backs a timeline entry like any other."""
+    _service_auth(claims)
+    resp = await client.post(
+        "/internal/wiki/changes/apply",
+        json={
+            "campaign_id": str(CAMPAIGN),
+            "changes": [
+                _change(
+                    kind="event",
+                    title="The Siege of Bree",
+                    content_json={"summary": "The town held."},
+                    timeline={"summary": "The town held.", "in_world_date": "17 Ches 1492"},
+                )
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["timeline_entries"] == 1
+    async with session_factory() as db:
+        events = list((await db.execute(select(TimelineEvent))).scalars().all())
+    assert len(events) == 1
+    assert events[0].summary == "The town held."
+    assert events[0].in_world_date == "17 Ches 1492"
+    assert events[0].source_session_id is None
+    # the DM confirmed the entry, so it does not land pending approval
+    assert events[0].approved is True
+
+
 async def test_apply_never_duplicates_a_documented_page(
     client, claims, session_factory, fake_publisher
 ):

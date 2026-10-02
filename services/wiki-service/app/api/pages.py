@@ -34,6 +34,7 @@ from app.models import WikiPage
 from app.schemas import (
     PAGE_KIND,
     PAGE_STATUS,
+    LocationNodeOut,
     PageCreate,
     PageOut,
     PageRelationCreate,
@@ -164,6 +165,34 @@ async def list_pages(
     return await services.list_pages(
         db, campaign_id, role, kind=kind, status=status, q=q, limit=limit, offset=offset
     )
+
+
+def _out_location_node(node: services.LocationNode) -> LocationNodeOut:
+    """Flatten one service-level tree node into its response model."""
+    return LocationNodeOut(
+        **PageSummaryOut.model_validate(node.page).model_dump(),
+        location_type=node.location_type,
+        unresolved_region=node.unresolved_region,
+        children=[_out_location_node(child) for child in node.children],
+    )
+
+
+@router.get("/campaigns/{campaign_id}/locations/tree", response_model=list[LocationNodeOut])
+async def location_tree(
+    campaign_id: UUID,
+    db: AsyncSession = Depends(get_session),
+    user: dict[str, Any] = Depends(current_user),
+    campaign_client: CampaignServiceClient = Depends(get_campaign_client),
+):
+    """The campaign's locations, nested by containment.
+
+    Containment is not a column: it is derived from the free-text
+    attributes.region / attributes.notable_locations of each location page
+    (see app/services/locations.py). Roots come back in coarse-to-fine order,
+    children nested underneath, so the caller renders depth as indentation.
+    """
+    role = await _member_or_403(campaign_client, campaign_id, _user_id(user))
+    return [_out_location_node(node) for node in await services.location_tree(db, campaign_id, role)]
 
 
 @router.get("/pages/{page_id}", response_model=PageOut)

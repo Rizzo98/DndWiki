@@ -13,6 +13,7 @@ import { AuthGate } from "@/lib/auth";
 import { PAGE_KINDS, PAGE_KIND_LABELS, campaignsApi, type Campaign } from "@/lib/api";
 import { CampaignProvider } from "@/lib/campaign-context";
 import { worldPath } from "@/lib/page-kinds";
+import { DM_TOOLKITS, toolkitPath } from "@/lib/toolkits";
 import { useAsyncData } from "@/lib/use-async";
 import { RlAlert } from "@/components/ravenlore";
 
@@ -87,6 +88,21 @@ function CampaignTabStrip({ campaign }: { campaign: Campaign }) {
           </Link>
         );
       })}
+      {/* The DM toolkits, which the desktop sidebar carries as their own group. */}
+      {isDm
+        ? DM_TOOLKITS.map((tool) => {
+            const href = toolkitPath(campaign.id, tool.href);
+            return (
+              <Link
+                key={href}
+                href={href}
+                className={"rl-tab" + (pathname.startsWith(href) ? " rl-tab--active" : "")}
+              >
+                {tool.label}
+              </Link>
+            );
+          })
+        : null}
     </nav>
   );
 }

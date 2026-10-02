@@ -84,12 +84,16 @@ async def confirm_plan(
     return row
 
 
-def _validate_change(stored: dict[str, Any], submitted: dict[str, Any]) -> dict[str, Any]:
+def validate_change(stored: dict[str, Any], submitted: dict[str, Any]) -> dict[str, Any]:
     """Apply the DM's edits of ONE change on top of the stored (pipeline) one.
 
     Identity and provenance stay pipeline-owned ('id', 'action', 'kind',
     'page_id', 'before', 'after.confidence'): the DM edits WHAT the change
     says, never which page it targets.
+
+    Public because the note plan (app/services/note_plans.py) reviews changes of
+    exactly this shape and must accept exactly the same edits: there is one set
+    of rules for what a reviewing DM may rewrite, wherever the change came from.
     """
     updated = dict(stored)
     if "title" in submitted and submitted["title"] is not None:
@@ -160,7 +164,7 @@ async def replace_reviewable(
             raise PlanEditError("unknown change id(s): " + ", ".join(unknown))
         patches = {str(c.get("id")): c for c in changes}
         row.changes = [
-            _validate_change(stored, patches[str(stored.get("id"))])
+            validate_change(stored, patches[str(stored.get("id"))])
             if str(stored.get("id")) in patches
             else stored
             for stored in (row.changes or [])

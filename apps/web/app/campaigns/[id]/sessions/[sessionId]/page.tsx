@@ -11,7 +11,7 @@ import { Alert, Badge, Button, Card, Collapsible, EmptyState, Field, FileInput, 
 import { AudioPlayer } from "@/components/session/audio-player";
 import { SessionReviewCard } from "@/components/session/review";
 
-import { SessionPlanCard } from "@/components/session/session-plan";
+import { PlanReviewCard } from "@/components/session/session-plan";
 import { SessionSummaryCard } from "@/components/session/session-summary";
 import { LOW_SPEAKER_CONFIDENCE, TranscriptViewer, speakerConfidenceByLabel } from "@/components/session/transcript";
 import { AuthGate, useAuth } from "@/lib/auth";
@@ -689,13 +689,13 @@ export default function SessionDetailPage({ params }: { params: { id: string; se
       />
 
       {isDm || isDeveloper ? (
-        <SessionPlanCard
+        <PlanReviewCard
           plan={plan}
           campaignId={params.id}
           linkIndex={linkIndex}
           pages={pages ?? []}
           sessionNames={{ [params.sessionId]: session.title ?? "this session" }}
-          sessionStatus={session.status}
+          generating={session.status === "generating_wiki"}
           canReview={canReviewSummary}
           busy={planBusy}
           error={planError}

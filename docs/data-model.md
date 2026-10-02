@@ -268,6 +268,14 @@ attributes (validated by app/page_attributes.py; unknown keys are rejected):
   quest         {quest_status: open|in_progress|completed|failed (=open),
                  giver?, reward?}
 
+Location containment is DERIVED, never stored: a place names the place it sits
+in with the free-text region attribute, and lists what is inside it with
+notable_locations. app/services/locations.py turns that prose into the tree
+served by GET /api/wiki/campaigns/{id}/locations/tree (matching by title, slug
+or alias, ignoring case/accents/punctuation, dropping any edge that would close
+a loop). Renaming a parent page therefore re-reads the whole tree — there is no
+parent_id column to migrate.
+
 page_versions
   id            uuid PK
   page_id       uuid FK -> wiki_pages
@@ -396,6 +404,66 @@ notifications
   payload       jsonb
   read_at       timestamptz NULL
   created_at    timestamptz
+
+campaign_notes                      -- the DM toolkit's 'plan' tool: what the DM
+                                    -- wrote for THEMSELVES. The session pipeline
+                                    -- records what the table said; a note is
+                                    -- what the DM has in mind before anyone sits
+                                    -- down, or between two sessions. Never shown
+                                    -- to players, never generated from: a note is
+                                    -- a text box until the DM picks it below.
+  id            uuid PK
+  campaign_id   uuid NOT NULL
+  title         text NOT NULL
+  body          text NOT NULL DEFAULT ''  -- free prose; may carry '@slug' page
+                                    -- references (the editor's autocomplete),
+                                    -- which the plan reads back as tags
+  status        text DEFAULT 'draft'  -- draft | ready (the DM's own bookkeeping)
+  created_by    uuid NULL
+  updated_by    uuid NULL
+  created_at    timestamptz
+  updated_at    timestamptz
+
+note_plans                          -- the PROPOSED wiki changes built from a
+                                    -- selection of those notes. The same review
+                                    -- layer as wiki_change_sets (same changes/
+                                    -- relations/skipped payloads, same
+                                    -- before/after per change), with two
+                                    -- differences that come from having no
+                                    -- session behind it: the row IS the job
+                                    -- ('status' carries the run, because nothing
+                                    -- else does), and it is keyed by CAMPAIGN
+                                    -- (one plan under construction, so
+                                    -- regenerating is an UPDATE of the proposal
+                                    -- rather than a second, competing one).
+  id            uuid PK
+  campaign_id   uuid UNIQUE NOT NULL
+  status        text DEFAULT 'generating'
+                -- generating (the worker is reading the notes) | draft (awaiting
+                -- the DM) | applying (confirmed, being written) | applied |
+                -- failed (error says why)
+  note_ids      jsonb DEFAULT '[]'    -- the notes this proposal was built from
+  llm_provider  text
+  llm_model     text
+  prompt_version text                 -- the note-plan prompt version (recorded
+                                      -- separately from the session
+                                      -- PROMPT_VERSION: it changes on its own)
+  language      text NULL             -- the language the notes were written in
+  changes       jsonb DEFAULT '[]'    -- [{id, action: create|update, kind, title,
+                                      --   page_id, before, after, timeline,
+                                      --   dropped}] - the shape wiki_change_sets
+                                      -- uses, so one review screen renders both
+  relations     jsonb DEFAULT '[]'    -- [{id, from_title, to_title, to_page_id,
+                                      --   relation_type, dropped}]
+  skipped       jsonb DEFAULT '[]'    -- [{title, reason}]: material in the notes
+                                      -- that is not a page (an idea for a later
+                                      -- session, a reminder to themselves)
+  confirmed_at  timestamptz NULL
+  confirmed_by  uuid NULL
+  applied_at    timestamptz NULL
+  error         text                  -- why a failed generation/apply stopped
+  created_at    timestamptz
+  updated_at    timestamptz
 ```
 
 ---
@@ -415,5 +483,24 @@ notifications
   rows of the session (summary, jobs, change set) and the session itself — and
   is refused (409) if wiki-service still reports pages or timeline entries
   attributed to it.
+- A **note** (the DM toolkit's 'plan') is the DM's own working material: every
+  route that reads or writes one is DM-only, and no note text ever reaches a
+  player-facing surface. Deleting a note is a hard delete (nothing links to it
+  — a proposal keeps the note *ids* it read, and a missing note there is simply
+  a note that no longer exists); the pages already generated from it stay in the
+  wiki, because those are the campaign's record, not the note's.
+- A note's `@slug` **tag** is resolved back to the campaign's pages before the
+  model reads the notes (`app/note_references.py`), and the tagged pages are
+  shown to it with their current *content*, not just their name. The fold never
+  overwrites, so without that content a note about a page the table already has
+  would restate it, add nothing, and be dropped as a no-op before the DM ever
+  saw the proposal. A tag naming no page is simply a page that does not exist
+  yet — the note is proposing one.
+- A **note plan** is never written to the wiki before the DM confirms it, exactly
+  like a session's change set, and it goes through the same internal apply
+  endpoint. Since it has no session, the pages it writes carry
+  `wiki_pages.source_session_id = NULL` and say "the DM's planning notes" in
+  their version history — a DM reading a page's history can tell whether a
+  machine or their own notes wrote it.
 - All MinIO URIs are `bucket/key` pairs; services resolve them against
   `MINIO_ENDPOINT` + presigned URLs only.

@@ -86,6 +86,7 @@ export function PageDraftForm({
   content,
   onChange,
   pages,
+  campaignId,
   excludePageId,
   sessionNames,
 }: {
@@ -94,6 +95,8 @@ export function PageDraftForm({
   onChange: (next: DraftContent) => void;
   /** Campaign pages offered by the "#" autocomplete. */
   pages: PageLinkSuggestion[];
+  /** The campaign, so the autocomplete's tags can link to the page. */
+  campaignId?: string;
   /** The page being edited: never suggested (no self-links). */
   excludePageId?: string | null;
   /** session id -> display name, for the session facts of the page. */
@@ -158,6 +161,7 @@ export function PageDraftForm({
         spec={spec}
         value={inAttributes ? attributes[spec.key] : content[spec.key]}
         pages={pages}
+        campaignId={campaignId}
         excludePageId={excludePageId}
         onChange={(next) =>
           inAttributes ? setAttribute(spec.key, next) : set(spec.key, next)
@@ -175,6 +179,7 @@ export function PageDraftForm({
             value={asText(content[spec.key])}
             onChange={(value) => set(spec.key, value)}
             pages={pages}
+            campaignId={campaignId}
             excludePageId={excludePageId}
           />
         </Field>
@@ -359,12 +364,14 @@ function ListField({
   value,
   onChange,
   pages,
+  campaignId,
   excludePageId,
 }: {
   spec: DraftFieldSpec;
   value: unknown;
   onChange: (next: string[]) => void;
   pages: PageLinkSuggestion[];
+  campaignId?: string;
   excludePageId?: string | null;
 }) {
   const items = Array.isArray(value) ? value.map((item) => asText(item)) : [];
@@ -394,6 +401,7 @@ function ListField({
                   value={item}
                   onChange={(next) => replace(index, next)}
                   pages={pages}
+                  campaignId={campaignId}
                   excludePageId={excludePageId}
                 />
               )}
